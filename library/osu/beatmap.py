@@ -252,6 +252,8 @@ class Beatmap:
                 if m2 is not None:
                     cfg[section][m2.group(1)] = m2.group(2).strip()
 
+        return cfg
+
     @staticmethod
     def all_maps(src_path: str, meta_only: bool = False) -> Generator["Beatmap", None, None]:
         path = Path(src_path)

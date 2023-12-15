@@ -1,4 +1,3 @@
-import math
 from typing import List, Tuple
 
 import bezier
@@ -6,10 +5,6 @@ import numpy as np
 import numpy.typing as npt
 
 from library.osu.hit_objects import Slider
-
-
-def binomial_coefficient(n: int) -> List[float]:
-    return [math.comb(n, k) for k in range(n + 1)]
 
 
 def round_and_cast(value: npt.ArrayLike) -> npt.ArrayLike:
@@ -184,7 +179,7 @@ def from_control_points(
         b = np.linalg.norm(pos3 - pos1)
         c = np.linalg.norm(pos2 - pos1)
         s = (a + b + c) / 2
-        r = a * b * c / (4 * np.sqrt(s * (s - a) * (s - b) * (s - c)))
+        r = a * b * c / 4 / np.sqrt(s * (s - a) * (s - b) * (s - c))
 
         if r > 320 and np.dot(pos3 - pos2, pos2 - pos1) > 0:
             return Bezier(t, beat_length, slider_multiplier, new_combo, slides, length, control_points)
@@ -192,17 +187,17 @@ def from_control_points(
         b1 = a * a * (b * b + c * c - a * a)
         b2 = b * b * (a * a + c * c - b * b)
         b3 = c * c * (a * a + b * b - c * c)
-        p = np.column_stack([pos1, pos2, pos3]).dot(np.hstack([b1, b2, b3]))
+        p = np.column_stack((pos1, pos2, pos3)).dot(np.hstack((b1, b2, b3)))
         p /= b1 + b2 + b3
 
         start_angle = np.arctan2(*(pos1 - p)[[1, 0]])
         end_angle = np.arctan2(*(pos3 - p)[[1, 0]])
 
         if cross_product < 0:  # Clockwise
-            while end_angle < start_angle:
+            while end_angle > start_angle:
                 end_angle -= 2 * np.pi
         else:  # Counter-clockwise
-            while end_angle > start_angle:
+            while start_angle > end_angle:
                 start_angle -= 2 * np.pi
 
         return Perfect(t, beat_length, slider_multiplier, new_combo, slides, length, p, r, start_angle, end_angle)
