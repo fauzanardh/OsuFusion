@@ -106,7 +106,10 @@ class UNet(nn.Module):
         self.dim_emb = dim_h * 4
 
         self.pre_conv = CausalConv1d(dim_in, dim_h, 7)
-        self.final_conv = CausalConv1d(dim_h, dim_out, 1)
+        self.final_conv = nn.Sequential(
+            CausalConv1d(dim_h, dim_out, 1),
+            nn.Tanh(),
+        )
         self.time_embedding = nn.Sequential(
             LearnedSinusoidalPositionalEmbedding(dim_learned_sinu),
             nn.Linear(dim_learned_sinu + 1, self.dim_emb),
