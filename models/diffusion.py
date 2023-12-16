@@ -66,7 +66,7 @@ class OsuFusion(nn.Module):
         c: torch.Tensor,
         t_next: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        pred = self.unet(x, a, t, c)
+        pred = self.unet(x, a, self.scheduler.get_condition(t), c)
         x_0 = self.scheduler.predict_start_from_noise(x, t, pred)
         x_0.clamp_(-1.0, 1.0)
 
@@ -84,10 +84,10 @@ class OsuFusion(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         b = x.shape[0]
         (model_mean, _, model_log_variance), x_0 = self.p_mean_variance(x, a, t, c, t_next=t_next)
-        noise = torch.randn_like(x_0)
+        noise = torch.randn_like(x)
         is_last_sampling_step = t_next == 0.0
         nonzero_mask = (1 - is_last_sampling_step.float()).reshape(b, *((1,) * (len(x.shape) - 1)))
-        pred = model_mean + nonzero_mask * (0.5 + model_log_variance).exp() * noise
+        pred = model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise
         return pred, x_0
 
     @torch.no_grad()

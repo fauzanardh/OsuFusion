@@ -20,7 +20,7 @@ def beta_linear_log_snr(t: torch.Tensor) -> torch.Tensor:
 
 @torch.jit.script
 def alpha_cosine_log_snr(t: torch.Tensor, s: float = 0.008) -> torch.Tensor:
-    res = torch.cos((t + s) / (1 + s) * math.pi * 0.5) ** 2
+    res = (torch.cos((t + s) / (1 + s) * math.pi * 0.5) ** -2) - 1
     return -torch.log(res.clamp(min=1e-8))
 
 
@@ -88,7 +88,7 @@ class GaussianDiffusionContinuousTimes(nn.Module):
         log_snr = right_pad_dims_to(x_t, self.log_snr(t))
         log_snr_next = right_pad_dims_to(x_t, self.log_snr(t_next))
 
-        alpha, sigma = log_snr_to_alpha_sigma(log_snr)
+        alpha, _ = log_snr_to_alpha_sigma(log_snr)
         alpha_next, sigma_next = log_snr_to_alpha_sigma(log_snr_next)
 
         c = -torch.expm1(log_snr - log_snr_next)
