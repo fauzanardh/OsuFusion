@@ -234,7 +234,8 @@ class UNet(nn.Module):
             )
         self.up_layers = nn.ModuleList(up_layers)
 
-    def forward(self: "UNet", x: torch.Tensor, t: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+    def forward(self: "UNet", x: torch.Tensor, a: torch.Tensor, t: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+        x = torch.cat([x, a], dim=1)
         x = self.pre_conv(x)
 
         t_emb = self.time_embedding(t)
