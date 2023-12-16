@@ -2,8 +2,8 @@ from collections import namedtuple
 from typing import Optional
 
 import torch
-import torch.functional as F  # noqa: N812
 import torch.nn as nn
+import torch.nn.functional as F  # noqa: N812
 from einops import rearrange
 from packaging import version
 from torch import einsum
@@ -28,11 +28,9 @@ class Attention(nn.Module):
 
         device_properties = torch.cuda.get_device_properties(torch.device("cuda"))
         if device_properties.major == 8 and device_properties.minor == 0:
-            print("A100 detected, using flash attention")
-            self.config = _config(True, False, False)
+            self.cuda_config = _config(True, False, False)
         else:
-            print("Non-A100 detected, using math or memory efficient attention")
-            self.config = _config(False, True, True)
+            self.cuda_config = _config(False, True, True)
 
     def sdpa_attn(
         self: "Attention",
@@ -41,9 +39,6 @@ class Attention(nn.Module):
         v: torch.Tensor,
     ) -> torch.Tensor:
         is_cuda, dtype = q.is_cuda, q.dtype
-
-        k = rearrange(k, "b ... -> b 1 ...").expand_as(q)
-        v = rearrange(v, "b ... -> b 1 ...").expand_as(q)
 
         config = self.cuda_config if is_cuda else self.cpu_config
 
@@ -86,8 +81,8 @@ class MultiHeadAttention(nn.Module):
     def __init__(
         self: "MultiHeadAttention",
         dim: int,
-        context_dim: Optional[int] = None,
-        dim_head: int = 64,
+        dim_context: Optional[int] = None,
+        dim_head: int = 32,
         heads: int = 8,
         dropout: float = 0.25,
         sdpa: bool = False,
@@ -100,14 +95,14 @@ class MultiHeadAttention(nn.Module):
         inner_dim = dim_head * heads
 
         if is_cross_attention:
-            assert context_dim is not None, "context_dim must be provided for cross attention"
-            self.to_q = nn.Conv1d(dim, inner_dim, 1, bias=False)
-            self.to_kv = nn.Conv1d(context_dim, inner_dim * 2, 1, bias=False)
+            assert dim_context is not None, "context_dim must be provided for cross attention"
+            self.to_q = nn.Linear(dim, inner_dim, 1)
+            self.to_kv = nn.Linear(dim_context, inner_dim * 2, 1)
         else:
-            self.to_qkv = nn.Conv1d(dim, inner_dim * 3, 1, bias=False)
+            self.to_qkv = nn.Linear(dim, inner_dim * 3, 1)
         self.attention = Attention(dropout=dropout, sdpa=sdpa)
         self.to_out = nn.Sequential(
-            nn.Conv1d(inner_dim, dim, 1, bias=False),
+            nn.Linear(inner_dim, dim, 1),
             nn.Dropout(dropout),
         )
 
@@ -119,16 +114,14 @@ class MultiHeadAttention(nn.Module):
         if self.is_cross_attention:
             assert context is not None, "context must be provided for cross attention"
             q = self.to_q(x)
-            k, v = self.to_kv(context).chunk(2, dim=-2)
+            k, v = self.to_kv(context).chunk(2, dim=-1)
         else:
-            q, k, v = self.to_qkv(x).chunk(3, dim=-2)
+            q, k, v = self.to_qkv(x).chunk(3, dim=-1)
 
-        q = rearrange(q, "b (h d) n -> b h n d", h=self.heads)
-        k = rearrange(k, "b (h d) n -> b h n d", h=self.heads)
-        v = rearrange(v, "b (h d) n -> b h n d", h=self.heads)
+        q, k, v = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q, k, v))
 
         out = self.attention(q, k, v)
-        out = rearrange(out, "b h n d -> b (h d) n")
+        out = rearrange(out, "b h n d -> b n (h d)")
 
         out = self.to_out(out)
         return out
