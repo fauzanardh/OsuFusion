@@ -16,7 +16,7 @@ class FeedForward(nn.Sequential):
         super().__init__(
             nn.LayerNorm(dim),
             nn.Linear(dim, inner_dim),
-            nn.ReLU(inplace=True),
+            nn.ReLU(),
             nn.LayerNorm(inner_dim),
             nn.Dropout(dropout),
             nn.Linear(inner_dim, dim),

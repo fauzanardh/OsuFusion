@@ -14,7 +14,7 @@ class SqueezeExcite(nn.Module):
         hidden_dim = max(dim // reduction_factor, dim_minimum)
         self.layers = nn.Sequential(
             nn.Conv1d(dim, hidden_dim, 1),
-            nn.ReLU(inplace=True),
+            nn.ReLU(),
             nn.Conv1d(hidden_dim, dim, 1),
             nn.Sigmoid(),
         )
@@ -42,14 +42,14 @@ class ResidualBlock(nn.Module):
         super().__init__()
 
         self.emb = nn.Sequential(
-            nn.SiLU(inplace=True),
+            nn.SiLU(),
             nn.Linear(dim_emb, dim_in),
         )
         self.layers = nn.Sequential(
             CausalConv1d(dim_in, dim_out, kernel_size, dilation=dilation),
-            nn.ReLU(inplace=True),
+            nn.ReLU(),
             CausalConv1d(dim_out, dim_out, 1),
-            nn.ReLU(inplace=True),
+            nn.ReLU(),
             SqueezeExcite(dim_out) if squeeze_excite else nn.Identity(),
         )
         self.res_conv = nn.Conv1d(dim_in, dim_out, 1) if dim_in != dim_out else nn.Identity()
@@ -77,9 +77,9 @@ class Block(nn.Module):
         self.norm = nn.GroupNorm(1, dim_in) if norm else nn.Identity()
         self.layers = nn.Sequential(
             CausalConv1d(dim_in, dim_out, kernel_size, dilation=dilation),
-            nn.ReLU(inplace=True),
+            nn.ReLU(),
             CausalConv1d(dim_out, dim_out, 1),
-            nn.ReLU(inplace=True),
+            nn.ReLU(),
             SqueezeExcite(dim_out) if squeeze_excite else nn.Identity(),
         )
 
@@ -112,7 +112,7 @@ class ResidualBlockV2(nn.Module):
         super().__init__()
 
         self.time_mlp = nn.Sequential(
-            nn.SiLU(inplace=True),
+            nn.SiLU(),
             nn.Linear(dim_emb, dim_out * 2),
         )
         self.cross_attention = MultiHeadAttention(
