@@ -2,10 +2,12 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
+from einops import reduce
 from torch.nn import functional as F  # noqa: N812
+from tqdm.auto import tqdm
 
 from library.osu.from_beatmap import AUDIO_DIM, CONTEXT_DIM, TOTAL_DIM
-from library.scheduler import CosineBetaScheduler, StridedBetaScheduler
+from modules.scheduler import GaussianDiffusionContinuousTimes
 from modules.unet import UNet
 
 MINIMUM_LENGTH = 1024
@@ -25,8 +27,7 @@ class OsuFusion(nn.Module):
         attn_dropout: float = 0.25,
         attn_sdpa: bool = True,
         attn_ff_dropout: float = 0.25,
-        timesteps: int = 1000,
-        sample_steps: int = 35,
+        timesteps: int = 35,
     ) -> None:
         super().__init__()
 
@@ -47,8 +48,7 @@ class OsuFusion(nn.Module):
             attn_ff_dropout,
         )
 
-        self.scheduler = CosineBetaScheduler(timesteps, self.unet)
-        self.sampling_scheduler = StridedBetaScheduler(self.scheduler, sample_steps, self.unet)
+        self.scheduler = GaussianDiffusionContinuousTimes(timesteps=timesteps)
         self.depth = len(dim_h_mult) - 1
 
     def pad_data(self: "OsuFusion", x: torch.Tensor) -> Tuple[torch.Tensor, Tuple[int, int]]:
@@ -58,17 +58,76 @@ class OsuFusion(nn.Module):
         x = F.pad(x, (0, pad_size))
         return x, (..., slice(0, original_length))
 
-    def forward(
+    def p_mean_variance(
+        self: "OsuFusion",
+        x: torch.Tensor,
+        a: torch.Tensor,
+        t: torch.Tensor,
+        c: torch.Tensor,
+        t_next: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        pred = self.unet(x, a, t, c)
+        x_0 = self.scheduler.predict_start_from_noise(x, t, pred)
+        x_0.clamp_(-1.0, 1.0)
+
+        mean_and_variance = self.scheduler.q_posterior(x_0, x, t, t_next=t_next)
+        return mean_and_variance, x_0
+
+    @torch.no_grad()
+    def p_sample(
+        self: "OsuFusion",
+        x: torch.Tensor,
+        a: torch.Tensor,
+        t: torch.Tensor,
+        c: torch.Tensor,
+        t_next: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        b = x.shape[0]
+        (model_mean, _, model_log_variance), x_0 = self.p_mean_variance(x, a, t, c, t_next=t_next)
+        noise = torch.randn_like(x_0)
+        is_last_sampling_step = t_next == 0.0
+        nonzero_mask = (1 - is_last_sampling_step.float()).reshape(b, *((1,) * (len(x.shape) - 1)))
+        pred = model_mean + nonzero_mask * (0.5 + model_log_variance).exp() * noise
+        return pred, x_0
+
+    @torch.no_grad()
+    def sample(
         self: "OsuFusion",
         a: torch.Tensor,
         c: torch.Tensor,
-        x: Optional[torch.Tensor] = None,
-        sample_steps: Optional[int] = None,
     ) -> torch.Tensor:
-        if sample_steps is not None:
-            scheduler = StridedBetaScheduler(self.scheduler, sample_steps, self.unet)
-        else:
-            scheduler = self.sampling_scheduler
-
         a, _slice = self.pad_data(a)
-        return scheduler.sample(a, c, x)[_slice]
+
+        (b, _, n), device = a.shape, a.device
+        x = torch.randn((b, TOTAL_DIM, n), device=device)
+
+        timesteps = self.scheduler.get_sampling_timesteps(b, device=device)
+        for t, t_next in tqdm(timesteps, desc="sampling loop time step"):
+            x, _ = self.p_sample(x, a, t, c, t_next=t_next)
+
+        return x[_slice]
+
+    def forward(
+        self: "OsuFusion",
+        x: torch.Tensor,
+        a: torch.Tensor,
+        t: torch.Tensor,
+        c: torch.Tensor,
+    ) -> torch.Tensor:
+        noise = torch.randn_like(x)
+
+        x_noisy, log_snr, _, _ = self.scheduler.q_sample(x, t, noise=noise)
+        noise_cond = self.scheduler.get_condition(t)
+
+        pred = self.unet(x_noisy, a, noise_cond, c)
+        target = noise
+
+        losses = F.mse_loss(pred, target, reduction="none")
+        losses = reduce(losses, "b ... -> b", "mean")
+
+        snr = log_snr.exp()
+        clamped_snr = snr.clone().clamp_(max=5)
+        loss_weight = clamped_snr / snr
+
+        losses = losses * loss_weight
+        return losses.mean()
