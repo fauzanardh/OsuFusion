@@ -12,7 +12,7 @@ AUDIO_DIM = 40
 SLIDER_DIM = 1
 CURSOR_DIM = 2
 TOTAL_DIM = HIT_DIM + SLIDER_DIM + CURSOR_DIM
-CONTEXT_DIM = 4
+CONTEXT_DIM = 6
 
 
 def hit_object_pairs(
@@ -23,7 +23,7 @@ def hit_object_pairs(
     _curr, _next = next(pairs)
     for t in frame_times:
         while _next is not None and _next.t <= t:
-            _curr, _next = _next, next(pairs)
+            _curr, _next = next(pairs)
         yield _curr, _next
 
 
@@ -44,7 +44,7 @@ def hit_signal(beatmap: Beatmap, frame_times: npt.NDArray) -> npt.NDArray:
 
 
 def slider_signal(beatmap: Beatmap, frame_times: npt.NDArray) -> npt.NDArray:
-    slider_signals = np.full((2, frame_times.shape[0]), -1.0)
+    slider_signals = np.full((1, frame_times.shape[0]), -1.0)
 
     for hit_object in beatmap.hit_objects:
         if not isinstance(hit_object, Slider):
@@ -64,7 +64,7 @@ def cursor_signal(beatmap: Beatmap, frame_times: npt.NDArray) -> npt.NDArray:
             if isinstance(_curr, Spinner):
                 pos.append(_curr.start_pos())
             else:
-                single_slide = _curr.slide_duration / _curr.slides
+                single_slide = _curr.slider_duration / _curr.slides
                 ts = (t - _curr.t) % (2 * single_slide) / single_slide
                 if ts < 1:
                     pos.append(_curr.lerp(ts))
@@ -76,7 +76,9 @@ def cursor_signal(beatmap: Beatmap, frame_times: npt.NDArray) -> npt.NDArray:
             f = (t - _curr.end_time()) / (_next.t - _curr.end_time())
             pos.append((1 - f) * _curr.end_pos() + f * _next.start_pos())
 
-    cursor_signals = np.array(pos).T / np.array([512, 384])
+    cursor_signals = np.array(pos).T
+    cursor_signals[0] /= 512
+    cursor_signals[1] /= 384
     cursor_signals = cursor_signals * 2 - 1
 
     return cursor_signals

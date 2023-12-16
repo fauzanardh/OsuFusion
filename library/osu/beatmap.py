@@ -13,7 +13,7 @@ CX, CY = 256, 192
 
 class Beatmap:
     def __init__(self: "Beatmap", filename: Path, meta_only: bool = False) -> None:
-        self.filename = Path(filename)
+        self.filename = filename
 
         self.timing_points = []
         self.uninherited_timing_points = []
@@ -96,7 +96,7 @@ class Beatmap:
             raise ValueError(msg)
 
     def get_active_timing_point(self: "Beatmap", t: int) -> TimingPoint:
-        idx = bisect.bisect_left(self.timing_points, Timed(t)) - 1
+        idx = bisect.bisect(self.timing_points, Timed(t)) - 1
         if idx < 0:
             msg = f"no active timing point at {t}"
             raise ValueError(msg)
