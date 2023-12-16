@@ -6,9 +6,9 @@ from einops import reduce
 from torch.nn import functional as F  # noqa: N812
 from tqdm.auto import tqdm
 
-from library.osu.from_beatmap import AUDIO_DIM, CONTEXT_DIM, TOTAL_DIM
-from modules.scheduler import GaussianDiffusionContinuousTimes
-from modules.unet import UNet
+from osu_fusion.library.osu.from_beatmap import AUDIO_DIM, CONTEXT_DIM, TOTAL_DIM
+from osu_fusion.modules.scheduler import GaussianDiffusionContinuousTimes
+from osu_fusion.modules.unet import UNet
 
 MINIMUM_LENGTH = 1024
 

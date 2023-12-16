@@ -5,8 +5,8 @@ from typing import Any, Dict, Generator, List, Tuple
 
 import numpy as np
 
-from library.osu.hit_objects import Circle, Slider, Spinner, Timed, TimingPoint
-from library.osu.sliders import from_control_points
+from osu_fusion.library.osu.hit_objects import Circle, Slider, Spinner, Timed, TimingPoint
+from osu_fusion.library.osu.sliders import from_control_points
 
 CX, CY = 256, 192
 

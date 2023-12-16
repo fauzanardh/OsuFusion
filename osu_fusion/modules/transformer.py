@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from einops import rearrange, repeat
 
-from modules.attention import MultiHeadAttention
+from osu_fusion.modules.attention import MultiHeadAttention
 
 
 class FeedForward(nn.Sequential):

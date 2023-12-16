@@ -3,9 +3,9 @@ from typing import Generator, Tuple
 import numpy as np
 import numpy.typing as npt
 
-from library.osu.beatmap import Beatmap
-from library.osu.hit_objects import Circle, HitObject, Slider, Spinner
-from library.osu.utils.smooth_hit import encode_hit, encode_hold
+from osu_fusion.library.osu.beatmap import Beatmap
+from osu_fusion.library.osu.hit_objects import Circle, HitObject, Slider, Spinner
+from osu_fusion.library.osu.utils.smooth_hit import encode_hit, encode_hold
 
 HIT_DIM = 4
 AUDIO_DIM = 40

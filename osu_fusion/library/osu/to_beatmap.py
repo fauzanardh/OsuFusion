@@ -6,10 +6,10 @@ import numpy as np
 import numpy.typing as npt
 import scipy
 
-from library.osu.from_beatmap import CURSOR_DIM, HIT_DIM, SLIDER_DIM
-from library.osu.hit_objects import TimingPoint
-from library.osu.utils.fit_bezier import fit_bezier
-from library.osu.utils.smooth_hit import decode_hit, decode_hold
+from osu_fusion.library.osu.from_beatmap import CURSOR_DIM, HIT_DIM, SLIDER_DIM
+from osu_fusion.library.osu.hit_objects import TimingPoint
+from osu_fusion.library.osu.utils.fit_bezier import fit_bezier
+from osu_fusion.library.osu.utils.smooth_hit import decode_hit, decode_hold
 
 BEAT_DIVISOR = 4
 SLIDER_MULTIPLIER = 1.0

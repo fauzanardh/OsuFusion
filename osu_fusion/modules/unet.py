@@ -5,9 +5,9 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
-from modules.causal_convolution import CausalConv1d, CausalConvTranspose1d
-from modules.residual import ResidualBlockV2
-from modules.transformer import Transformer
+from osu_fusion.modules.causal_convolution import CausalConv1d, CausalConvTranspose1d
+from osu_fusion.modules.residual import ResidualBlockV2
+from osu_fusion.modules.transformer import Transformer
 
 
 class ResnetBlock(nn.Module):

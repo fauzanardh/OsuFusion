@@ -4,7 +4,6 @@ from typing import Dict, Generator
 
 import numpy as np
 import torch
-from torch._tensor import Tensor
 from torch.utils.data import IterableDataset
 
 
@@ -53,7 +52,7 @@ class StreamPerSample(IterableDataset):
 class FullSequenceDataset(StreamPerSample):
     MAX_LENGTH = 60000
 
-    def sample_stream(self: StreamPerSample, map_file: Path) -> Generator[Tensor, None, None]:
+    def sample_stream(self: StreamPerSample, map_file: Path) -> Generator[torch.Tensor, None, None]:
         x, a, c = load_tensor(map_file)
         yield x[..., : self.MAX_LENGTH], a[..., : self.MAX_LENGTH], c
 
@@ -66,7 +65,7 @@ class SubsequenceDataset(StreamPerSample):
         self.subsequence_density = kwargs.pop("subsequence_density", 2.0)
         super().__init__(**kwargs)
 
-    def sample_stream(self: StreamPerSample, map_file: Path) -> Generator[Tensor, None, None]:
+    def sample_stream(self: StreamPerSample, map_file: Path) -> Generator[torch.Tensor, None, None]:
         x, a, c = load_tensor(map_file)
         n = x.shape[-1]
 

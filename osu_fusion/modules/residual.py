@@ -4,8 +4,8 @@ import torch
 import torch.nn as nn
 from einops import rearrange, repeat
 
-from modules.attention import MultiHeadAttention
-from modules.causal_convolution import CausalConv1d
+from osu_fusion.modules.attention import MultiHeadAttention
+from osu_fusion.modules.causal_convolution import CausalConv1d
 
 
 class SqueezeExcite(nn.Module):

@@ -4,7 +4,7 @@ import bezier
 import numpy as np
 import numpy.typing as npt
 
-from library.osu.hit_objects import Slider
+from osu_fusion.library.osu.hit_objects import Slider
 
 
 def round_and_cast(value: npt.NDArray) -> npt.NDArray:

@@ -8,8 +8,8 @@ from audioread.ffdec import FFmpegAudioFile
 from rosu_pp_py import Beatmap as RosuBeatmap
 from rosu_pp_py import Calculator as RosuCalculator
 
-from library.osu.beatmap import Beatmap
-from library.osu.from_beatmap import AUDIO_DIM, from_beatmap
+from osu_fusion.library.osu.beatmap import Beatmap
+from osu_fusion.library.osu.from_beatmap import AUDIO_DIM, from_beatmap
 
 N_FFT = 2048
 N_MELS = 64
