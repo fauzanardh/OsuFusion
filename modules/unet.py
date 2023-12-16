@@ -1,12 +1,13 @@
+import math
 from typing import Tuple
 
 import torch
 import torch.nn as nn
+from einops import rearrange
 
 from modules.causal_convolution import CausalConv1d, CausalConvTranspose1d
 from modules.residual import ResidualBlockV2
 from modules.transformer import Transformer
-from modules.utils import timestep_embedding
 
 
 class ResnetBlock(nn.Module):
@@ -67,6 +68,21 @@ class ResnetBlock(nn.Module):
         return x
 
 
+class LearnedSinusoidalPositionalEmbedding(nn.Module):
+    def __init__(self: "LearnedSinusoidalPositionalEmbedding", dim: int) -> None:
+        super().__init__()
+        assert dim % 2 == 0, "Dim must be divisible by 2"
+        half_dim = dim // 2
+        self.weights = nn.Parameter(torch.randn(half_dim))
+
+    def forward(self: "LearnedSinusoidalPositionalEmbedding", x: torch.Tensor) -> torch.Tensor:
+        x = rearrange(x, "b -> b 1")
+        freqs = x * rearrange(self.weights, "d -> 1 d") * 2 * math.pi
+        fourier = torch.cat([freqs.sin(), freqs.cos()], dim=-1)
+        fourier = torch.cat([x, fourier], dim=-1)
+        return fourier
+
+
 class Unet(nn.Module):
     def __init__(
         self: "Unet",
@@ -75,6 +91,7 @@ class Unet(nn.Module):
         dim_h: int,
         dim_cond: int,
         dim_h_mult: Tuple[int] = (1, 2, 4, 8),
+        dim_learned_sinu: int = 16,
         res_strides: Tuple[int] = (2, 2, 2, 2),
         res_dilations: Tuple[int] = (1, 3, 9),
         attn_dim_head: int = 32,
@@ -91,7 +108,8 @@ class Unet(nn.Module):
         self.pre_conv = CausalConv1d(dim_in, dim_h, 7)
         self.final_conv = CausalConv1d(dim_h, dim_out, 1)
         self.time_embedding = nn.Sequential(
-            nn.Linear(dim_h, self.dim_emb),
+            LearnedSinusoidalPositionalEmbedding(dim_learned_sinu),
+            nn.Linear(dim_learned_sinu + 1, self.dim_emb),
             nn.ReLU(inplace=True),
             nn.Linear(self.dim_emb, self.dim_emb),
         )
@@ -219,8 +237,7 @@ class Unet(nn.Module):
     def forward(self: "Unet", x: torch.Tensor, t: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
         x = self.pre_conv(x)
 
-        t_emb = timestep_embedding(t, self.dim_h)
-        t_emb = self.time_embedding(t_emb).squeeze(1)
+        t_emb = self.time_embedding(t)
 
         skip_connections = []
         for down_resnet, down_transformer, downsample in self.down_layers:
