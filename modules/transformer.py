@@ -15,11 +15,11 @@ class FeedForward(nn.Sequential):
         inner_dim = dim * dim_mult
         super().__init__(
             nn.LayerNorm(dim),
-            nn.Linear(dim, inner_dim),
-            nn.ReLU(),
+            nn.Linear(dim, inner_dim, bias=False),
+            nn.GELU(),
             nn.LayerNorm(inner_dim),
             nn.Dropout(dropout),
-            nn.Linear(inner_dim, dim),
+            nn.Linear(inner_dim, dim, bias=False),
         )
 
 
