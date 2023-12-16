@@ -83,9 +83,9 @@ class LearnedSinusoidalPositionalEmbedding(nn.Module):
         return fourier
 
 
-class Unet(nn.Module):
+class UNet(nn.Module):
     def __init__(
-        self: "Unet",
+        self: "UNet",
         dim_in: int,
         dim_out: int,
         dim_h: int,
@@ -234,7 +234,7 @@ class Unet(nn.Module):
             )
         self.up_layers = nn.ModuleList(up_layers)
 
-    def forward(self: "Unet", x: torch.Tensor, t: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+    def forward(self: "UNet", x: torch.Tensor, t: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
         x = self.pre_conv(x)
 
         t_emb = self.time_embedding(t)
