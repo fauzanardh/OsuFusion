@@ -14,7 +14,7 @@ class SqueezeExcite(nn.Module):
         hidden_dim = max(dim // reduction_factor, dim_minimum)
         self.layers = nn.Sequential(
             nn.Conv1d(dim, hidden_dim, 1),
-            nn.ReLU(),
+            nn.SiLU(),
             nn.Conv1d(hidden_dim, dim, 1),
             nn.Sigmoid(),
         )
@@ -77,9 +77,9 @@ class Block(nn.Module):
         self.norm = nn.GroupNorm(1, dim_in) if norm else nn.Identity()
         self.layers = nn.Sequential(
             CausalConv1d(dim_in, dim_out, kernel_size, dilation=dilation),
-            nn.ReLU(),
+            nn.SiLU(),
             CausalConv1d(dim_out, dim_out, 1),
-            nn.ReLU(),
+            nn.SiLU(),
             SqueezeExcite(dim_out) if squeeze_excite else nn.Identity(),
         )
 
