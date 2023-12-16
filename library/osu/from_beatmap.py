@@ -8,9 +8,11 @@ from library.osu.hit_objects import Circle, HitObject, Slider, Spinner
 from library.osu.utils.smooth_hit import encode_hit, encode_hold
 
 HIT_DIM = 4
+AUDIO_DIM = 40
 SLIDER_DIM = 1
 CURSOR_DIM = 2
 TOTAL_DIM = HIT_DIM + SLIDER_DIM + CURSOR_DIM
+CONTEXT_DIM = 4
 
 
 def hit_object_pairs(
