@@ -3,10 +3,10 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F  # noqa: N812
 from einops import rearrange
 from packaging import version
 from torch import einsum
+from torch.nn import functional as F  # noqa: N812
 
 _config = namedtuple("Config", ["enable_flash", "enable_math", "enable_mem_efficient"])
 
