@@ -100,10 +100,10 @@ class ResidualBlockV2(nn.Module):
         dim_in: int,
         dim_out: int,
         dim_emb: int,
-        dim_context: int,
         dilation: int,
         kernel_size: int = 7,
         squeeze_excite: bool = True,
+        dim_context: Optional[int] = None,
         attn_dim_head: int = 32,
         attn_heads: int = 8,
         attn_dropout: float = 0.25,
@@ -115,15 +115,16 @@ class ResidualBlockV2(nn.Module):
             nn.SiLU(),
             nn.Linear(dim_emb, dim_out * 2),
         )
-        self.cross_attention = MultiHeadAttention(
-            dim_out,
-            dim_context=dim_context,
-            dim_head=attn_dim_head,
-            heads=attn_heads,
-            dropout=attn_dropout,
-            sdpa=attn_sdpa,
-            is_cross_attention=True,
-        )
+        if dim_context is not None:
+            self.cross_attention = MultiHeadAttention(
+                dim_out,
+                dim_context=dim_context,
+                dim_head=attn_dim_head,
+                heads=attn_heads,
+                dropout=attn_dropout,
+                sdpa=attn_sdpa,
+                is_cross_attention=True,
+            )
         self.block1 = Block(dim_in, dim_out, dilation, kernel_size=kernel_size, squeeze_excite=squeeze_excite)
         self.block2 = Block(dim_out, dim_out, dilation, kernel_size=kernel_size, squeeze_excite=squeeze_excite)
 
@@ -133,7 +134,7 @@ class ResidualBlockV2(nn.Module):
         self: "ResidualBlockV2",
         x: torch.Tensor,
         time_emb: torch.Tensor,
-        context: torch.Tensor,
+        context: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         time_emb = self.time_mlp(time_emb)
         time_emb = rearrange(time_emb, "b n -> b n 1")
@@ -141,10 +142,11 @@ class ResidualBlockV2(nn.Module):
 
         h = self.block1(x)
 
-        h = rearrange(h, "b d n -> b n d")
-        context = repeat(context, "b d -> b n d", n=h.shape[-1])
-        h = self.cross_attention(h, context) + h
-        h = rearrange(h, "b n d -> b d n")
+        if hasattr(self, "cross_attention") and context is not None:
+            h = rearrange(h, "b d n -> b n d")
+            context = repeat(context, "b d -> b n d", n=h.shape[-1])
+            h = self.cross_attention(h, context) + h
+            h = rearrange(h, "b n d -> b d n")
 
         h = self.block2(h, scale_shift=scale_shift)
 

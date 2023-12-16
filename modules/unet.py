@@ -16,14 +16,9 @@ class ResnetBlock(nn.Module):
         dim_in: int,
         dim_out: int,
         dim_emb: int,
-        dim_context: int,
         dilations: Tuple[int] = (1, 3, 9),
         kernel_size: int = 7,
         squeeze_excite: bool = True,
-        attn_dim_head: int = 32,
-        attn_heads: int = 8,
-        attn_dropout: float = 0.25,
-        attn_sdpa: bool = True,
     ) -> None:
         super().__init__()
 
@@ -34,14 +29,9 @@ class ResnetBlock(nn.Module):
                         dim_in,
                         dim_in,
                         dim_emb,
-                        dim_context,
                         dilation,
                         kernel_size=kernel_size,
                         squeeze_excite=squeeze_excite,
-                        attn_dim_head=attn_dim_head,
-                        attn_heads=attn_heads,
-                        attn_dropout=attn_dropout,
-                        attn_sdpa=attn_sdpa,
                     )
                     for dilation in dilations[:-1]
                 ],
@@ -49,21 +39,16 @@ class ResnetBlock(nn.Module):
                     dim_in,
                     dim_out,
                     dim_emb,
-                    dim_context,
                     dilations[-1],
                     kernel_size=kernel_size,
                     squeeze_excite=squeeze_excite,
-                    attn_dim_head=attn_dim_head,
-                    attn_heads=attn_heads,
-                    attn_dropout=attn_dropout,
-                    attn_sdpa=attn_sdpa,
                 ),
             ],
         )
 
-    def forward(self: "ResnetBlock", x: torch.Tensor, t_emb: torch.Tensor, context: torch.Tensor) -> torch.Tensor:
+    def forward(self: "ResnetBlock", x: torch.Tensor, t_emb: torch.Tensor) -> torch.Tensor:
         for residual_block in self.residual_blocks:
-            x = residual_block(x, t_emb, context)
+            x = residual_block(x, t_emb)
 
         return x
 
@@ -131,17 +116,24 @@ class UNet(nn.Module):
             down_layers.append(
                 nn.ModuleList(
                     [
-                        ResnetBlock(
+                        ResidualBlockV2(
                             layer_dim_in,
                             layer_dim_in,
                             self.dim_emb,
-                            dim_cond,
-                            dilations=res_dilations,
-                            squeeze_excite=i == n_layers - 1,
+                            dilation=1,
+                            squeeze_excite=False,
+                            dim_context=dim_cond,
                             attn_dim_head=attn_dim_head,
                             attn_heads=attn_heads,
                             attn_dropout=attn_dropout,
                             attn_sdpa=attn_sdpa,
+                        ),
+                        ResnetBlock(
+                            layer_dim_in,
+                            layer_dim_in,
+                            self.dim_emb,
+                            dilations=res_dilations,
+                            squeeze_excite=i == n_layers - 1,
                         ),
                         Transformer(
                             layer_dim_in,
@@ -165,13 +157,8 @@ class UNet(nn.Module):
             dims_h[-1],
             dims_h[-1],
             self.dim_emb,
-            dim_cond,
             dilations=res_dilations,
             squeeze_excite=False,
-            attn_dim_head=attn_dim_head,
-            attn_heads=attn_heads,
-            attn_dropout=attn_dropout,
-            attn_sdpa=attn_sdpa,
         )
         self.middle_transformer = Transformer(
             dims_h[-1],
@@ -187,13 +174,8 @@ class UNet(nn.Module):
             dims_h[-1],
             dims_h[-1],
             self.dim_emb,
-            dim_cond,
             dilations=res_dilations,
             squeeze_excite=False,
-            attn_dim_head=attn_dim_head,
-            attn_heads=attn_heads,
-            attn_dropout=attn_dropout,
-            attn_sdpa=attn_sdpa,
         )
 
         # Upsample
@@ -210,17 +192,24 @@ class UNet(nn.Module):
                 nn.ModuleList(
                     [
                         CausalConvTranspose1d(layer_dim_out, layer_dim_in, 2 * stride, stride=stride),
-                        ResnetBlock(
+                        ResidualBlockV2(
                             layer_dim_in + skip_connection_dim,
                             layer_dim_in,
                             self.dim_emb,
-                            dim_cond,
-                            dilations=res_dilations,
-                            squeeze_excite=i == 0,
+                            dilation=1,
+                            squeeze_excite=False,
+                            dim_context=dim_cond,
                             attn_dim_head=attn_dim_head,
                             attn_heads=attn_heads,
                             attn_dropout=attn_dropout,
                             attn_sdpa=attn_sdpa,
+                        ),
+                        ResnetBlock(
+                            layer_dim_in + skip_connection_dim,
+                            layer_dim_in,
+                            self.dim_emb,
+                            dilations=res_dilations,
+                            squeeze_excite=i == 0,
                         ),
                         Transformer(
                             layer_dim_in,
@@ -244,19 +233,22 @@ class UNet(nn.Module):
         t_emb = self.time_embedding(t)
 
         skip_connections = []
-        for down_resnet, down_transformer, downsample in self.down_layers:
-            x = down_resnet(x, t_emb, c)
+        for down_init, down_resnet, down_transformer, downsample in self.down_layers:
+            x = down_init(x, t_emb, c)
+            x = down_resnet(x, t_emb)
             skip_connections.append(x)
             x = down_transformer(x, c)
+            skip_connections.append(x)
             x = downsample(x)
 
-        x = self.middle_resnet1(x, t_emb, c)
+        x = self.middle_resnet1(x, t_emb)
         x = self.middle_transformer(x, c)
-        x = self.middle_resnet2(x, t_emb, c)
+        x = self.middle_resnet2(x, t_emb)
 
-        for upsample, up_resnet, up_transformer in self.up_layers:
+        for upsample, up_init, up_resnet, up_transformer in self.up_layers:
             x = upsample(x)
-            x = up_resnet(torch.cat([x, skip_connections.pop()], dim=1), t_emb, c)
+            x = up_init(torch.cat([x, skip_connections.pop()], dim=1), t_emb, c)
+            x = up_resnet(torch.cat([x, skip_connections.pop()], dim=1), t_emb)
             x = up_transformer(x, c)
 
         return self.final_conv(x)
