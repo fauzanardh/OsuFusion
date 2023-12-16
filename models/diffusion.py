@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F  # noqa: N812
 
-from library.osu.from_beatmap import AUDIO_DIM, TOTAL_DIM
+from library.osu.from_beatmap import AUDIO_DIM, CONTEXT_DIM, TOTAL_DIM
 from library.scheduler import CosineBetaScheduler, StridedBetaScheduler
 from modules.unet import UNet
 
@@ -15,7 +15,6 @@ class OsuFusion(nn.Module):
     def __init__(
         self: "OsuFusion",
         dim_h: int,
-        dim_cond: int,
         dim_h_mult: Tuple[int] = (1, 2, 4, 8),
         dim_learned_sinu: int = 16,
         res_strides: Tuple[int] = (2, 2, 2, 2),
@@ -35,7 +34,7 @@ class OsuFusion(nn.Module):
             TOTAL_DIM + AUDIO_DIM,
             TOTAL_DIM,
             dim_h,
-            dim_cond,
+            CONTEXT_DIM,
             dim_h_mult,
             dim_learned_sinu,
             res_strides,
