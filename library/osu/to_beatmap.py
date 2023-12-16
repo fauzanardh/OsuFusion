@@ -47,8 +47,8 @@ SliderTickRate: 1
 
 
 def to_sorted_hits(
-    signals: npt.ArrayLike,
-) -> List[Tuple[npt.ArrayLike, npt.ArrayLike, int, bool]]:
+    signals: npt.NDArray,
+) -> List[Tuple[npt.NDArray, npt.NDArray, int, bool]]:
     tap_signal, hold_signal, spinner_signal, new_combo_signal = signals
 
     tap_idxs = decode_hit(tap_signal)
@@ -75,15 +75,15 @@ def to_sorted_hits(
     return sorted_hits
 
 
-def to_playfield_coordinates(cursor_signal: npt.ArrayLike) -> npt.ArrayLike:
+def to_playfield_coordinates(cursor_signal: npt.NDArray) -> npt.NDArray:
     return ((cursor_signal + 1) / 2) * np.array([512, 384])
 
 
-def to_slider_decoder(cursor_signal: npt.ArrayLike, slider_signal: npt.ArrayLike) -> npt.ArrayLike:
+def to_slider_decoder(cursor_signal: npt.NDArray, slider_signal: npt.NDArray) -> npt.NDArray:
     repeat_signal = slider_signal[0]
     repeat_idxs = decode_hit(repeat_signal)
 
-    def decoder(a: int, b: int) -> Tuple[float, int, npt.ArrayLike]:
+    def decoder(a: int, b: int) -> Tuple[float, int, npt.NDArray]:
         repeat_idx_in_range = [r for r in repeat_idxs if a < r < b]
         if len(repeat_idx_in_range):
             r = repeat_idx_in_range[0]
@@ -107,8 +107,8 @@ def to_slider_decoder(cursor_signal: npt.ArrayLike, slider_signal: npt.ArrayLike
 
 def to_beatmap(  # noqa: C901
     metadata: Dict,
-    signals: npt.ArrayLike,
-    frame_times: npt.ArrayLike,
+    signals: npt.NDArray,
+    frame_times: npt.NDArray,
     timing: Optional[Union[int, List[TimingPoint]]],
 ) -> str:
     hit_signals, signals = np.split(signals, (HIT_DIM,))

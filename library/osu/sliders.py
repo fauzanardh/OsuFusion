@@ -7,7 +7,7 @@ import numpy.typing as npt
 from library.osu.hit_objects import Slider
 
 
-def round_and_cast(value: npt.ArrayLike) -> npt.ArrayLike:
+def round_and_cast(value: npt.NDArray) -> npt.NDArray:
     return value.round(0).astype(int)
 
 
@@ -20,21 +20,21 @@ class Line(Slider):
         new_combo: bool,
         slides: int,
         length: float,
-        start: npt.ArrayLike,
-        end: npt.ArrayLike,
+        start: npt.NDArray,
+        end: npt.NDArray,
     ) -> None:
         super().__init__(t, beat_length, slider_multiplier, new_combo, slides, length)
         self.start = np.array(start)
         self.end = self._calculate_end(end, length)
 
-    def _calculate_end(self: "Line", end: npt.ArrayLike, length: float) -> None:
+    def _calculate_end(self: "Line", end: npt.NDArray, length: float) -> None:
         vec = end - self.start
         return self.start + vec / np.linalg.norm(vec) * length
 
-    def lerp(self: "Line", t: float) -> npt.ArrayLike:
+    def lerp(self: "Line", t: float) -> npt.NDArray:
         return round_and_cast((1 - t) * self.start + t * self.end)
 
-    def velocity(self: "Line", t: float) -> npt.ArrayLike:
+    def velocity(self: "Line", t: float) -> npt.NDArray:
         return round_and_cast((self.end - self.start) / (self.slider_duration / self.slides))
 
 
@@ -47,7 +47,7 @@ class Perfect(Slider):
         new_combo: bool,
         slides: int,
         length: float,
-        center: npt.ArrayLike,
+        center: npt.NDArray,
         radius: float,
         start: float,
         end: float,
@@ -64,11 +64,11 @@ class Perfect(Slider):
     def _calculate_theta(self: "Perfect", t: float) -> float:
         return (1 - t) * self.start + t * self.end
 
-    def lerp(self: "Perfect", t: float) -> npt.ArrayLike:
+    def lerp(self: "Perfect", t: float) -> npt.NDArray:
         theta = self._calculate_theta(t)
         return round_and_cast(self.center + self.radius * np.array([np.cos(theta), np.sin(theta)]))
 
-    def velocity(self: "Perfect", t: float) -> npt.ArrayLike:
+    def velocity(self: "Perfect", t: float) -> npt.NDArray:
         theta = self._calculate_theta(t)
         return round_and_cast(
             self.radius * np.array([-np.sin(theta), np.cos(theta)]) / (self.slider_duration / self.slides),
@@ -86,7 +86,7 @@ class Bezier(Slider):
         new_combo: bool,
         slides: int,
         length: float,
-        control_points: List[npt.ArrayLike],
+        control_points: List[npt.NDArray],
     ) -> None:
         super().__init__(t, beat_length, slider_multiplier, new_combo, slides, length)
         self.control_points = control_points
@@ -136,11 +136,11 @@ class Bezier(Slider):
         t = (t - range_start) / (range_end - range_start)
         return int(idx), t
 
-    def lerp(self: "Bezier", t: float) -> npt.ArrayLike:
+    def lerp(self: "Bezier", t: float) -> npt.NDArray:
         idx, t = self.curve_reparametrize(t)
         return round_and_cast(self.path_segments[idx].evaluate(t)[:, 0])
 
-    def velocity(self: "Bezier", t: float) -> npt.ArrayLike:
+    def velocity(self: "Bezier", t: float) -> npt.NDArray:
         idx, t = self.curve_reparametrize(t)
         return round_and_cast(
             self.path_segments[idx].evaluate_hodograph(t)[:, 0] / (self.slider_duration / self.slides),
@@ -154,7 +154,7 @@ def from_control_points(
     new_combo: bool,
     slides: int,
     length: float,
-    control_points: List[npt.ArrayLike],
+    control_points: List[npt.NDArray],
 ) -> Slider:
     assert len(control_points) >= 2, f"not enough control points: {len(control_points)}"
 

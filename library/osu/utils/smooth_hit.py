@@ -7,19 +7,19 @@ import scipy
 HIT_STD = 3
 
 
-def sigmoid(x: npt.ArrayLike) -> npt.ArrayLike:
+def sigmoid(x: npt.NDArray) -> npt.NDArray:
     return np.exp(-np.logaddexp(-x, 0))
 
 
-def encode_hit(sig: npt.ArrayLike, frame_times: npt.ArrayLike, i: float) -> None:
+def encode_hit(sig: npt.NDArray, frame_times: npt.NDArray, i: float) -> None:
     z = (frame_times - i) / HIT_STD
 
     sig *= 1 - 2 * sigmoid(z)
 
 
 def encode_hold(
-    sig: npt.ArrayLike,
-    frame_times: npt.ArrayLike,
+    sig: npt.NDArray,
+    frame_times: npt.NDArray,
     i: Union[float, int],
     j: Union[float, int],
 ) -> None:
@@ -27,7 +27,7 @@ def encode_hold(
     sig += 2 * (sigmoid((frame_times - i) / HIT_STD) - sigmoid((frame_times - j) / HIT_STD)) / m
 
 
-def flips(sig: npt.ArrayLike) -> List[npt.ArrayLike]:
+def flips(sig: npt.NDArray) -> List[npt.NDArray]:
     sig_grad = np.gradient(sig)
     return (
         scipy.signal.find_peaks(sig_grad, height=0.5)[0].astype(int),
@@ -35,12 +35,12 @@ def flips(sig: npt.ArrayLike) -> List[npt.ArrayLike]:
     )
 
 
-def decode_hit(sig: npt.ArrayLike) -> List[npt.ArrayLike]:
+def decode_hit(sig: npt.NDArray) -> List[npt.NDArray]:
     rising, falling = flips(sig)
     return sorted([*rising, *falling])
 
 
-def decode_hold(sig: npt.ArrayLike) -> List[npt.ArrayLike]:
+def decode_hold(sig: npt.NDArray) -> List[npt.NDArray]:
     rising, falling = flips(sig)
     start_idxs, end_idxs = list(rising), list(falling)
 

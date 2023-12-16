@@ -17,7 +17,7 @@ CONTEXT_DIM = 4
 
 def hit_object_pairs(
     beatmap: Beatmap,
-    frame_times: npt.ArrayLike,
+    frame_times: npt.NDArray,
 ) -> Generator[Tuple[HitObject, HitObject], None, None]:
     pairs = zip([None, *beatmap.hit_objects], [*beatmap.hit_objects, None])
     _curr, _next = next(pairs)
@@ -27,7 +27,7 @@ def hit_object_pairs(
         yield _curr, _next
 
 
-def hit_signal(beatmap: Beatmap, frame_times: npt.ArrayLike) -> npt.ArrayLike:
+def hit_signal(beatmap: Beatmap, frame_times: npt.NDArray) -> npt.NDArray:
     hit_signals = np.full((4, frame_times.shape[0]), -1.0)
     for hit_object in beatmap.hit_objects:
         if isinstance(hit_object, Circle):
@@ -43,7 +43,7 @@ def hit_signal(beatmap: Beatmap, frame_times: npt.ArrayLike) -> npt.ArrayLike:
     return hit_signals
 
 
-def slider_signal(beatmap: Beatmap, frame_times: npt.ArrayLike) -> npt.ArrayLike:
+def slider_signal(beatmap: Beatmap, frame_times: npt.NDArray) -> npt.NDArray:
     slider_signals = np.full((2, frame_times.shape[0]), -1.0)
 
     for hit_object in beatmap.hit_objects:
@@ -55,7 +55,7 @@ def slider_signal(beatmap: Beatmap, frame_times: npt.ArrayLike) -> npt.ArrayLike
     return slider_signals
 
 
-def cursor_signal(beatmap: Beatmap, frame_times: npt.ArrayLike) -> npt.ArrayLike:
+def cursor_signal(beatmap: Beatmap, frame_times: npt.NDArray) -> npt.NDArray:
     pos = []
     for t, (_curr, _next) in zip(frame_times, hit_object_pairs(beatmap, frame_times)):
         if _curr is None:
@@ -82,7 +82,7 @@ def cursor_signal(beatmap: Beatmap, frame_times: npt.ArrayLike) -> npt.ArrayLike
     return cursor_signals
 
 
-def from_beatmap(beatmap: Beatmap, frame_times: npt.ArrayLike) -> npt.ArrayLike:
+def from_beatmap(beatmap: Beatmap, frame_times: npt.NDArray) -> npt.NDArray:
     signals = np.concatenate(
         [
             hit_signal(beatmap, frame_times),

@@ -7,26 +7,26 @@ import numpy as np
 import numpy.typing as npt
 
 
-def hodo(p: npt.ArrayLike) -> npt.ArrayLike:
+def hodo(p: npt.NDArray) -> npt.NDArray:
     return p.shape[0] * (p[1:] - p[:-1])
 
 
-def q(p: npt.ArrayLike, t: npt.ArrayLike) -> npt.ArrayLike:
+def q(p: npt.NDArray, t: npt.NDArray) -> npt.NDArray:
     """evaluates bezier at t"""
     return bezier.Curve.from_nodes(p.T).evaluate_multi(t).T
 
 
-def qprime(p: npt.ArrayLike, t: npt.ArrayLike) -> npt.ArrayLike:
+def qprime(p: npt.NDArray, t: npt.NDArray) -> npt.NDArray:
     """evaluates bezier first derivative at t"""
     return bezier.Curve.from_nodes(hodo(p).T).evaluate_multi(t).T
 
 
-def qprimeprime(p: npt.ArrayLike, t: npt.ArrayLike) -> npt.ArrayLike:
+def qprimeprime(p: npt.NDArray, t: npt.NDArray) -> npt.NDArray:
     """evaluates bezier second derivative at t"""
     return bezier.Curve.from_nodes(hodo(hodo(p)).T).evaluate_multi(t).T
 
 
-def normalize(v: npt.ArrayLike) -> npt.ArrayLike:
+def normalize(v: npt.NDArray) -> npt.NDArray:
     magnitude = np.sqrt(np.dot(v, v))
     if magnitude < np.finfo(float).eps:
         return v
@@ -34,21 +34,21 @@ def normalize(v: npt.ArrayLike) -> npt.ArrayLike:
 
 
 def compute_error(
-    p: npt.ArrayLike,
-    points: npt.ArrayLike,
-    u: npt.ArrayLike,
-) -> npt.ArrayLike:
+    p: npt.NDArray,
+    points: npt.NDArray,
+    u: npt.NDArray,
+) -> npt.NDArray:
     errs = ((q(p, u) - points) ** 2).sum(-1)
     split_point = errs.argmax()
     return errs[split_point], split_point
 
 
 def fit_bezier(
-    points: npt.ArrayLike,
-    max_err: npt.ArrayLike,
-    left_tangent: npt.ArrayLike = None,
-    right_tangent: npt.ArrayLike = None,
-) -> List[npt.ArrayLike]:
+    points: npt.NDArray,
+    max_err: npt.NDArray,
+    left_tangent: npt.NDArray = None,
+    right_tangent: npt.NDArray = None,
+) -> List[npt.NDArray]:
     """fit one (or more) Bezier curves to a set of points"""
 
     if len(points) < 2:
@@ -104,11 +104,11 @@ def fit_bezier(
 
 
 def generate_bezier(
-    points: npt.ArrayLike,
-    u: npt.ArrayLike,
-    left_tangent: npt.ArrayLike,
-    right_tangent: npt.ArrayLike,
-) -> npt.ArrayLike:
+    points: npt.NDArray,
+    u: npt.NDArray,
+    left_tangent: npt.NDArray,
+    right_tangent: npt.NDArray,
+) -> npt.NDArray:
     bez_curve = np.array([points[0], points[0], points[-1], points[-1]])
 
     # compute the A's
@@ -151,10 +151,10 @@ def generate_bezier(
 
 
 def newton_raphson_root_find(
-    bez: npt.ArrayLike,
-    points: npt.ArrayLike,
-    u: npt.ArrayLike,
-) -> npt.ArrayLike:
+    bez: npt.NDArray,
+    points: npt.NDArray,
+    u: npt.NDArray,
+) -> npt.NDArray:
     """
     Newton's root finding algorithm calculates f(x)=0 by reiterating
     x_n+1 = x_n - f(x_n)/f'(x_n)

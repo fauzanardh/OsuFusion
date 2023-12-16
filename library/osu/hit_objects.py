@@ -45,10 +45,10 @@ class HitObject(Timed):
     def end_time(self: "HitObject") -> int:
         raise NotImplementedError
 
-    def start_pos(self: "HitObject") -> npt.ArrayLike:
+    def start_pos(self: "HitObject") -> npt.NDArray:
         raise NotImplementedError
 
-    def end_pos(self: "HitObject") -> npt.ArrayLike:
+    def end_pos(self: "HitObject") -> npt.NDArray:
         return self.start_pos()
 
 
@@ -61,7 +61,7 @@ class Circle(HitObject):
     def end_time(self: "Circle") -> int:
         return self.t
 
-    def start_pos(self: "Circle") -> npt.ArrayLike:
+    def start_pos(self: "Circle") -> npt.NDArray:
         return np.array([self.x, self.y])
 
 
@@ -73,7 +73,7 @@ class Spinner(HitObject):
     def end_time(self: "Spinner") -> int:
         return self.u
 
-    def start_pos(self: "Spinner") -> npt.ArrayLike:
+    def start_pos(self: "Spinner") -> npt.NDArray:
         return np.array([256, 192])
 
 
@@ -96,11 +96,11 @@ class Slider(HitObject):
     def end_time(self: "Slider") -> int:
         return int(self.t + self.slider_duration)
 
-    def lerp(self: "Slider", t: int) -> npt.ArrayLike:
+    def lerp(self: "Slider", t: int) -> npt.NDArray:
         raise NotImplementedError
 
-    def start_pos(self: "Slider") -> npt.ArrayLike:
+    def start_pos(self: "Slider") -> npt.NDArray:
         return self.lerp(0.0)
 
-    def end_pos(self: "Slider") -> npt.ArrayLike:
+    def end_pos(self: "Slider") -> npt.NDArray:
         return self.lerp(self.slides % 2)
