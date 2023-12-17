@@ -50,7 +50,7 @@ class OsuFusion(nn.Module):
         )
 
         self.scheduler = GaussianDiffusionContinuousTimes(timesteps=timesteps)
-        self.depth = len(dim_h_mult) - 1
+        self.depth = len(dim_h_mult)
         self.min_snr_gamma = min_snr_gamma
 
     def pad_data(self: "OsuFusion", x: torch.Tensor) -> Tuple[torch.Tensor, Tuple[int, int]]:
