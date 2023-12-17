@@ -28,6 +28,7 @@ class OsuFusion(nn.Module):
         attn_sdpa: bool = True,
         attn_ff_dropout: float = 0.25,
         timesteps: int = 35,
+        min_snr_gamma: int = 5,
     ) -> None:
         super().__init__()
 
@@ -50,6 +51,7 @@ class OsuFusion(nn.Module):
 
         self.scheduler = GaussianDiffusionContinuousTimes(timesteps=timesteps)
         self.depth = len(dim_h_mult) - 1
+        self.min_snr_gamma = min_snr_gamma
 
     def pad_data(self: "OsuFusion", x: torch.Tensor) -> Tuple[torch.Tensor, Tuple[int, int]]:
         original_length = x.shape[-1]
@@ -71,7 +73,7 @@ class OsuFusion(nn.Module):
         x_0.clamp_(-1.0, 1.0)
 
         mean_and_variance = self.scheduler.q_posterior(x_0, x, t, t_next=t_next)
-        return mean_and_variance, x_0
+        return mean_and_variance
 
     @torch.no_grad()
     def p_sample(
@@ -83,12 +85,12 @@ class OsuFusion(nn.Module):
         t_next: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         b = x.shape[0]
-        (model_mean, _, model_log_variance), x_0 = self.p_mean_variance(x, a, t, c, t_next=t_next)
+        model_mean, _, model_log_variance = self.p_mean_variance(x, a, t, c, t_next=t_next)
         noise = torch.randn_like(x)
         is_last_sampling_step = t_next == 0.0
         nonzero_mask = (1 - is_last_sampling_step.float()).reshape(b, *((1,) * (len(x.shape) - 1)))
         pred = model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise
-        return pred, x_0
+        return pred
 
     @torch.no_grad()
     def sample(
@@ -103,7 +105,7 @@ class OsuFusion(nn.Module):
 
         timesteps = self.scheduler.get_sampling_timesteps(b, device=device)
         for t, t_next in tqdm(timesteps, desc="sampling loop time step"):
-            x, _ = self.p_sample(x, a, t, c, t_next=t_next)
+            x = self.p_sample(x, a, t, c, t_next=t_next)
 
         return x[_slice]
 
@@ -126,7 +128,7 @@ class OsuFusion(nn.Module):
         losses = reduce(losses, "b ... -> b", "mean")
 
         snr = log_snr.exp()
-        clamped_snr = snr.clone().clamp_(max=5)
+        clamped_snr = snr.clone().clamp_(max=self.min_snr_gamma)
         loss_weight = clamped_snr / snr
 
         losses = losses * loss_weight
