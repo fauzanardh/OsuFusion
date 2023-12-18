@@ -17,7 +17,10 @@ def run(
 ) -> None:
     data = osu_files[worker_index::world_size]
     for osu_file in tqdm(data, position=worker_index):
-        prepare_map(dataset_dir, osu_file)
+        try:
+            prepare_map(dataset_dir, osu_file)
+        except Exception:
+            continue
 
 
 def main() -> None:
