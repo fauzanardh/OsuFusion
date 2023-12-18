@@ -12,55 +12,52 @@ from osu_fusion.library.osu.utils.fit_bezier import fit_bezier
 from osu_fusion.library.osu.utils.smooth_hit import decode_hit, decode_hold
 
 BEAT_DIVISOR = 4
-SLIDER_MULTIPLIER = 1.0
 
-map_template = f"""osu file format v14
+map_template = """osu file format v14
 
 [General]
-AudioFilename: {{audio_filename}}
+AudioFilename: {audio_filename}
 AudioLeadIn: 0
 Mode: 0
 
 [Metadata]
-Title: {{title}}
-TitleUnicode: {{title}}
-Artist: {{artist}}
-ArtistUnicode: {{artist}}
-Creator: osu!dreamer
-Version: {{version}}
-Tags: osu_dreamer
+Title: {title}
+TitleUnicode: {title}
+Artist: {artist}
+ArtistUnicode: {artist}
+Creator: OsuFusion
+Version: {version}
+Tags: OsuFusion
 
 [Difficulty]
-HPDrainRate: 0
-CircleSize: 4.1
-OverallDifficulty: 0
+HPDrainRate: 5
+CircleSize: 4
+OverallDifficulty: 9.5
 ApproachRate: 9.5
-SliderMultiplier: {SLIDER_MULTIPLIER}
+SliderMultiplier: 1
 SliderTickRate: 1
 
 [TimingPoints]
-{{timing_points}}
+{timing_points}
 
 [HitObjects]
-{{hit_objects}}
+{hit_objects}
 """
 
 
-def to_sorted_hits(
-    signals: npt.NDArray,
-) -> List[Tuple[npt.NDArray, npt.NDArray, int, bool]]:
-    tap_signal, hold_signal, spinner_signal, new_combo_signal = signals
+def to_sorted_hits(signals: npt.NDArray) -> List[Tuple[npt.NDArray, npt.NDArray, int, bool]]:
+    tap_signal, slider_hold_signal, spinner_signal, new_combo_signal = signals
 
     tap_idxs = decode_hit(tap_signal)
-    hold_start_idxs, hold_end_idxs = decode_hold(hold_signal)
+    slider_hold_start_idxs, slider_hold_end_idxs = decode_hold(slider_hold_signal)
     spinner_start_idxs, spinner_end_idxs = decode_hold(spinner_signal)
     new_combo_idxs = decode_hit(new_combo_signal)
 
     sorted_hits = sorted(
         [
             *[(t, t, 0, False) for t in tap_idxs],
-            *[(s, e, 1, False) for s, e in zip(hold_start_idxs, hold_end_idxs)],
-            *[(s, e, 2, False) for s, e in zip(spinner_start_idxs, spinner_end_idxs)],
+            *[(s, e, 1, False) for s, e in zip(sorted(slider_hold_start_idxs), sorted(slider_hold_end_idxs))],
+            *[(s, e, 2, False) for s, e in zip(sorted(spinner_start_idxs), sorted(spinner_end_idxs))],
         ],
     )
 
@@ -76,10 +73,10 @@ def to_sorted_hits(
 
 
 def to_playfield_coordinates(cursor_signal: npt.NDArray) -> npt.NDArray:
-    return ((cursor_signal + 1) / 2) * np.array([512, 384])
+    return (cursor_signal + 1) / 2 * np.array([[512], [384]])
 
 
-def to_slider_decoder(cursor_signal: npt.NDArray, slider_signal: npt.NDArray) -> npt.NDArray:
+def to_slider_decoder(processed_cursor_signals: npt.NDArray, slider_signal: npt.NDArray) -> callable:
     repeat_signal = slider_signal[0]
     repeat_idxs = decode_hit(repeat_signal)
 
@@ -93,13 +90,12 @@ def to_slider_decoder(cursor_signal: npt.NDArray, slider_signal: npt.NDArray) ->
 
         length = 0
         control_points = []
-        full_slider = cursor_signal.T[a : b + 1]
-        segment_slider = full_slider[: np.ceil(full_slider.shape[0] / slides).astype(int)]
-        for _bezier in fit_bezier(segment_slider, max_err=50):
+        full_slider = processed_cursor_signals.T[a : b + 1]
+        slider_segments = full_slider[: np.ceil(full_slider.shape[0] / slides).astype(int)]
+        for _bezier in fit_bezier(slider_segments, max_err=50):
             _bezier_np = np.array(_bezier).round().astype(int)
             control_points.extend(_bezier_np)
-            length = bezier.Curve.from_nodes(_bezier_np.T).length
-
+            length += bezier.Curve.from_nodes(_bezier_np.T).length
         return length, slides, control_points
 
     return decoder
@@ -111,14 +107,14 @@ def to_beatmap(  # noqa: C901
     frame_times: npt.NDArray,
     timing: Optional[Union[int, List[TimingPoint]]],
 ) -> str:
-    hit_signals, signals = np.split(signals, (HIT_DIM,))
-    slider_signals, signals = np.split(signals, (SLIDER_DIM,))
-    cursor_signals, signals = np.split(signals, (CURSOR_DIM,))
-    assert signals.shape[0] == 0, f"Expected no more signals, got {signals.shape[0]}"
+    hit_signal, signals = np.split(signals, (HIT_DIM,))
+    slider_signal, signals = np.split(signals, (SLIDER_DIM,))
+    cursor_signal, signals = np.split(signals, (CURSOR_DIM,))
+    assert signals.shape[0] == 0
 
-    sorted_hits = to_sorted_hits(hit_signals)
-    processed_cursor_signals = to_playfield_coordinates(cursor_signals)
-    slider_decoder = to_slider_decoder(processed_cursor_signals, slider_signals)
+    sorted_hits = to_sorted_hits(hit_signal)
+    processed_cursor_signals = to_playfield_coordinates(cursor_signal)
+    slider_decoder = to_slider_decoder(processed_cursor_signals, slider_signal)
 
     if isinstance(timing, list) and len(timing) > 0:
         beat_snap, timing_points = True, timing
@@ -126,9 +122,9 @@ def to_beatmap(  # noqa: C901
         # TODO: Compute beatmap timing from hit times
         beat_snap, timing_points = False, [TimingPoint(0, 60000 / 200, None, 4, None)]
     elif isinstance(timing, (int, float)):
-        timing_beat_length = 60 * 1000 / timing
-        offset_dist = scipy.stats.gaussian_kde([frame_times[i]] % timing_beat_length for i, _, _, _ in sorted_hits)
-        offset = offset_dist.pdf(np.linspace(0, timing_beat_length, 1000)).argmax() / 1000 * timing_beat_length
+        timing_beat_length = 60.0 * 1000.0 / float(timing)
+        offset_dist = scipy.stats.gaussian_kde([frame_times[i] % timing_beat_length for i, _, _, _ in sorted_hits])
+        offset = offset_dist.pdf(np.linspace(0, timing_beat_length, 1000)).argmax() / 1000.0 * timing_beat_length
         beat_snap, timing_points = True, [TimingPoint(offset, timing_beat_length, None, 4, None)]
 
     hit_objects_str = []
@@ -139,7 +135,7 @@ def to_beatmap(  # noqa: C901
     beat_offset = timing_points[0].t
 
     def add_circle(i: int, j: int, t: int, u: int, new_combo: bool) -> None:
-        x, y = cursor_signals[:, i].round().astype(int)
+        x, y = processed_cursor_signals[:, i].round().astype(int)
         hit_objects_str.append(f"{x},{y},{t},{1 + new_combo},0,0:0:0:0:")
 
     def add_spinner(i: int, j: int, t: int, u: int, new_combo: bool) -> None:
@@ -153,12 +149,15 @@ def to_beatmap(  # noqa: C901
 
         length, slides, control_points = slider_decoder(i, j)
 
+        if length == 0:
+            return add_circle(i, j, t, u, new_combo)
+
         slider_velocity = length * slides / (u - t) / base_slider_velocity
         if slider_velocity > 10 or slider_velocity < 0.1:
             print(f"Warning: slider velocity {slider_velocity} is out of bounds, slider will not be good")
 
         x1, y1 = control_points[0]
-        curve_points = "|".join(f"{x},{y}" for x, y in control_points[1:])
+        curve_points = "|".join(f"{x}:{y}" for x, y in control_points[1:])
         hit_objects_str.append(f"{x1},{y1},{t},{2 + new_combo},0,B|{curve_points},{slides},{length}")
 
         if len(timing_points_str) == 0:
