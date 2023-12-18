@@ -28,7 +28,7 @@ def hit_object_pairs(
 
 
 def hit_signal(beatmap: Beatmap, frame_times: npt.NDArray) -> npt.NDArray:
-    hit_signals = np.full((4, frame_times.shape[0]), -1.0)
+    hit_signals = np.full((4, frame_times.shape[0]), -1.0, dtype=np.float32)
     for hit_object in beatmap.hit_objects:
         if isinstance(hit_object, Circle):
             encode_hit(hit_signals[0], frame_times, hit_object.t)
@@ -44,7 +44,7 @@ def hit_signal(beatmap: Beatmap, frame_times: npt.NDArray) -> npt.NDArray:
 
 
 def slider_signal(beatmap: Beatmap, frame_times: npt.NDArray) -> npt.NDArray:
-    slider_signals = np.full((1, frame_times.shape[0]), -1.0)
+    slider_signals = np.full((1, frame_times.shape[0]), -1.0, dtype=np.float32)
 
     for hit_object in beatmap.hit_objects:
         if not isinstance(hit_object, Slider):
@@ -76,9 +76,9 @@ def cursor_signal(beatmap: Beatmap, frame_times: npt.NDArray) -> npt.NDArray:
             f = (t - _curr.end_time()) / (_next.t - _curr.end_time())
             pos.append((1 - f) * _curr.end_pos() + f * _next.start_pos())
 
-    cursor_signals = np.array(pos).T
-    cursor_signals[0] /= 512
-    cursor_signals[1] /= 384
+    cursor_signals = np.array(pos, dtype=np.float32).T
+    cursor_signals[0] /= 512.0
+    cursor_signals[1] /= 384.0
     cursor_signals = cursor_signals * 2 - 1
 
     return cursor_signals
