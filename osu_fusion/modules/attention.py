@@ -15,7 +15,6 @@ class Attention(nn.Module):
     def __init__(self: "Attention", dropout: float = 0.0, sdpa: bool = False) -> None:
         super().__init__()
         self.dropout = dropout
-        self.attn_dropout = nn.Dropout(dropout)
 
         assert not (sdpa and version.parse(torch.__version__) < version.parse("2.0.0")), "sdpa requires torch>=2.0.0"
         self.sdpa = sdpa
@@ -71,7 +70,7 @@ class Attention(nn.Module):
         sim = einsum("b h i d, b h j d -> b h i j", q, k) * scale
 
         attn = sim.softmax(dim=-1)
-        attn = self.attn_dropout(attn)
+        attn = F.dropout(attn, p=self.dropout, training=self.training)
 
         out = einsum("b h i j, b h j d -> b h i d", attn, v)
         return out
@@ -101,10 +100,7 @@ class MultiHeadAttention(nn.Module):
         else:
             self.to_qkv = nn.Linear(dim, inner_dim * 3, 1)
         self.attention = Attention(dropout=dropout, sdpa=sdpa)
-        self.to_out = nn.Sequential(
-            nn.Linear(inner_dim, dim, 1),
-            nn.Dropout(dropout),
-        )
+        self.to_out = nn.Linear(inner_dim, dim, 1)
 
     def forward(
         self: "MultiHeadAttention",

@@ -26,7 +26,6 @@ class OsuFusion(nn.Module):
         attn_depth: int = 4,
         attn_dropout: float = 0.25,
         attn_sdpa: bool = True,
-        attn_ff_dropout: float = 0.25,
         timesteps: int = 35,
         min_snr_gamma: int = 5,
     ) -> None:
@@ -46,7 +45,6 @@ class OsuFusion(nn.Module):
             attn_depth,
             attn_dropout,
             attn_sdpa,
-            attn_ff_dropout,
         )
 
         self.scheduler = GaussianDiffusionContinuousTimes(timesteps=timesteps)
@@ -97,11 +95,15 @@ class OsuFusion(nn.Module):
         self: "OsuFusion",
         a: torch.Tensor,
         c: torch.Tensor,
+        x: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         a, _slice = self.pad_data(a)
 
         (b, _, n), device = a.shape, a.device
-        x = torch.randn((b, TOTAL_DIM, n), device=device)
+        if x is None:
+            x = torch.randn((b, TOTAL_DIM, n), device=device)
+        else:
+            x, _ = self.pad_data(x)
 
         timesteps = self.scheduler.get_sampling_timesteps(b, device=device)
         for t, t_next in tqdm(timesteps, desc="sampling loop time step"):

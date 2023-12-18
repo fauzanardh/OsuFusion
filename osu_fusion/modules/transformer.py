@@ -10,7 +10,6 @@ class FeedForward(nn.Sequential):
         self: "FeedForward",
         dim: int,
         dim_mult: int = 4,
-        dropout: float = 0.25,
     ) -> None:
         inner_dim = dim * dim_mult
         super().__init__(
@@ -18,7 +17,6 @@ class FeedForward(nn.Sequential):
             nn.Linear(dim, inner_dim, bias=False),
             nn.GELU(),
             nn.LayerNorm(inner_dim),
-            nn.Dropout(dropout),
             nn.Linear(inner_dim, dim, bias=False),
         )
 
@@ -32,7 +30,6 @@ class TransformerBlock(nn.Module):
         heads: int = 8,
         dropout: float = 0.25,
         sdpa: bool = True,
-        ff_dropout: float = 0.25,
     ) -> None:
         super().__init__()
         self.self_attention = MultiHeadAttention(
@@ -42,7 +39,7 @@ class TransformerBlock(nn.Module):
             dropout=dropout,
             sdpa=sdpa,
         )
-        self.feed_forward = FeedForward(dim, dropout=ff_dropout)
+        self.feed_forward = FeedForward(dim)
         self.cross_attention = MultiHeadAttention(
             dim,
             dim_context=dim_context,
@@ -73,7 +70,6 @@ class Transformer(nn.Module):
         depth: int = 4,
         dropout: float = 0.25,
         sdpa: bool = True,
-        ff_dropout: float = 0.25,
     ) -> None:
         super().__init__()
         self.layers = nn.ModuleList(
@@ -85,7 +81,6 @@ class Transformer(nn.Module):
                     heads=heads,
                     dropout=dropout,
                     sdpa=sdpa,
-                    ff_dropout=ff_dropout,
                 )
                 for _ in range(depth)
             ],

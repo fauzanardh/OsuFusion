@@ -84,7 +84,6 @@ class UNet(nn.Module):
         attn_depth: int = 4,
         attn_dropout: float = 0.25,
         attn_sdpa: bool = True,
-        attn_ff_dropout: float = 0.25,
     ) -> None:
         super().__init__()
         self.dim_h = dim_h
@@ -143,7 +142,6 @@ class UNet(nn.Module):
                             depth=attn_depth,
                             dropout=attn_dropout,
                             sdpa=attn_sdpa,
-                            ff_dropout=attn_ff_dropout,
                         ),
                         CausalConv1d(layer_dim_in, layer_dim_out, 2 * stride, stride=stride),
                     ],
@@ -168,7 +166,6 @@ class UNet(nn.Module):
             depth=attn_depth,
             dropout=attn_dropout,
             sdpa=attn_sdpa,
-            ff_dropout=attn_ff_dropout,
         )
         self.middle_resnet2 = ResnetBlock(
             dims_h[-1],
@@ -219,7 +216,6 @@ class UNet(nn.Module):
                             depth=attn_depth,
                             dropout=attn_dropout,
                             sdpa=attn_sdpa,
-                            ff_dropout=attn_ff_dropout,
                         ),
                     ],
                 ),
