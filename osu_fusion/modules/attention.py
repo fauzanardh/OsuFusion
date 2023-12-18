@@ -5,7 +5,6 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 from packaging import version
-from torch import einsum
 from torch.nn import functional as F  # noqa: N812
 
 _config = namedtuple("Config", ["enable_flash", "enable_math", "enable_mem_efficient"])
@@ -67,12 +66,12 @@ class Attention(nn.Module):
             return self.sdpa_attn(q, k, v)
 
         scale = q.shape[-1] ** -0.5
-        sim = einsum("b h i d, b h j d -> b h i j", q, k) * scale
+        sim = torch.einsum("b h i d, b h j d -> b h i j", q, k) * scale
 
         attn = sim.softmax(dim=-1)
         attn = F.dropout(attn, p=self.dropout, training=self.training)
 
-        out = einsum("b h i j, b h j d -> b h i d", attn, v)
+        out = torch.einsum("b h i j, b h j d -> b h i d", attn, v)
         return out
 
 
