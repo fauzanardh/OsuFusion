@@ -1,4 +1,5 @@
 import os  # noqa: F401
+import random
 from argparse import ArgumentParser
 from pathlib import Path
 from typing import Tuple
@@ -55,6 +56,7 @@ def train(args: ArgumentParser) -> None:
     print("Loading dataset...")
     dataset_dir = Path(args.dataset_dir)
     all_maps = list(dataset_dir.rglob("*.map.npz"))
+    random.shuffle(all_maps)
     dataset = SubsequenceDataset(dataset=all_maps, sequence_length=args.sequence_length)
     dataloader = DataLoader(
         dataset,

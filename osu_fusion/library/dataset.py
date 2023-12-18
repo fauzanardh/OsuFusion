@@ -48,6 +48,9 @@ class StreamPerSample(IterableDataset):
             for x in self.sample_stream(sample):
                 yield x
 
+        # Randomize the dataset order for each epoch
+        random.shuffle(self.dataset)
+
 
 class FullSequenceDataset(StreamPerSample):
     MAX_LENGTH = 60000
