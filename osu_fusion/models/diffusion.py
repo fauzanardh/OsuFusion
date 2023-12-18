@@ -2,7 +2,7 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
-from einops import reduce
+from einops import rearrange, reduce
 from torch.nn import functional as F  # noqa: N812
 from tqdm.auto import tqdm
 
@@ -13,6 +13,13 @@ from osu_fusion.modules.unet import UNet
 MINIMUM_LENGTH = 1024
 
 
+def right_pad_dims_to(x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+    padding_dims = x.ndim - t.ndim
+    if padding_dims <= 0:
+        return t
+    return t.view(*t.shape, *((1,) * padding_dims))
+
+
 class OsuFusion(nn.Module):
     def __init__(
         self: "OsuFusion",
@@ -20,14 +27,16 @@ class OsuFusion(nn.Module):
         dim_h_mult: Tuple[int] = (1, 2, 4, 8),
         dim_learned_sinu: int = 16,
         res_strides: Tuple[int] = (2, 2, 2, 2),
-        res_dilations: Tuple[int] = (1, 3, 9),
+        res_num_layers: int = 4,
         attn_dim_head: int = 32,
         attn_heads: int = 8,
         attn_depth: int = 4,
         attn_dropout: float = 0.1,
+        attn_use_global_context_attention: bool = True,
         attn_sdpa: bool = True,
         timesteps: int = 35,
         min_snr_gamma: int = 5,
+        dynamic_thresholding_percentile: float = 0.95,
     ) -> None:
         super().__init__()
 
@@ -36,20 +45,22 @@ class OsuFusion(nn.Module):
             TOTAL_DIM,
             dim_h,
             CONTEXT_DIM,
-            dim_h_mult,
-            dim_learned_sinu,
-            res_strides,
-            res_dilations,
-            attn_dim_head,
-            attn_heads,
-            attn_depth,
-            attn_dropout,
-            attn_sdpa,
+            dim_h_mult=dim_h_mult,
+            dim_learned_sinu=dim_learned_sinu,
+            res_strides=res_strides,
+            res_num_layers=res_num_layers,
+            attn_dim_head=attn_dim_head,
+            attn_heads=attn_heads,
+            attn_depth=attn_depth,
+            attn_dropout=attn_dropout,
+            attn_use_global_context_attention=attn_use_global_context_attention,
+            attn_sdpa=attn_sdpa,
         )
 
         self.scheduler = GaussianDiffusionContinuousTimes(timesteps=timesteps)
         self.depth = len(dim_h_mult)
         self.min_snr_gamma = min_snr_gamma
+        self.dynamic_thresholding_percentile = dynamic_thresholding_percentile
 
     def pad_data(self: "OsuFusion", x: torch.Tensor) -> Tuple[torch.Tensor, Tuple[int, int]]:
         original_length = x.shape[-1]
@@ -68,7 +79,16 @@ class OsuFusion(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         pred = self.unet(x, a, self.scheduler.get_condition(t), c)
         x_0 = self.scheduler.predict_start_from_noise(x, t, pred)
-        x_0.clamp_(-1.0, 1.0)
+
+        # dynamic thresholding
+        s = torch.quantile(
+            rearrange(x_0, "b ... -> b (...)").abs(),
+            q=self.dynamic_thresholding_percentile,
+            dim=-1,
+        )
+        s.clamp_(min=1.0)
+        s = right_pad_dims_to(x_0, s)
+        x_0 = x_0.clamp(-s, s) / s
 
         mean_and_variance = self.scheduler.q_posterior(x_0, x, t, t_next=t_next)
         return mean_and_variance
