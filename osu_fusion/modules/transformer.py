@@ -28,7 +28,7 @@ class TransformerBlock(nn.Module):
         dim_context: int,
         dim_head: int = 32,
         heads: int = 8,
-        dropout: float = 0.25,
+        dropout: float = 0.1,
         sdpa: bool = True,
     ) -> None:
         super().__init__()
@@ -68,7 +68,7 @@ class Transformer(nn.Module):
         dim_head: int = 32,
         heads: int = 8,
         depth: int = 4,
-        dropout: float = 0.25,
+        dropout: float = 0.1,
         sdpa: bool = True,
     ) -> None:
         super().__init__()

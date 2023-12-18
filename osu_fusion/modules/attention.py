@@ -83,7 +83,7 @@ class MultiHeadAttention(nn.Module):
         dim_context: Optional[int] = None,
         dim_head: int = 32,
         heads: int = 8,
-        dropout: float = 0.25,
+        dropout: float = 0.1,
         sdpa: bool = False,
         is_cross_attention: bool = False,
     ) -> None:

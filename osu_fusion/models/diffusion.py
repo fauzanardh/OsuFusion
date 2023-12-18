@@ -24,7 +24,7 @@ class OsuFusion(nn.Module):
         attn_dim_head: int = 32,
         attn_heads: int = 8,
         attn_depth: int = 4,
-        attn_dropout: float = 0.25,
+        attn_dropout: float = 0.1,
         attn_sdpa: bool = True,
         timesteps: int = 35,
         min_snr_gamma: int = 5,

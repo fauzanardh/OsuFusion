@@ -82,7 +82,7 @@ class UNet(nn.Module):
         attn_dim_head: int = 32,
         attn_heads: int = 8,
         attn_depth: int = 4,
-        attn_dropout: float = 0.25,
+        attn_dropout: float = 0.1,
         attn_sdpa: bool = True,
     ) -> None:
         super().__init__()
