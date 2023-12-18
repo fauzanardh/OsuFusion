@@ -2,6 +2,7 @@ import time
 import warnings
 from multiprocessing import Lock
 from pathlib import Path
+from typing import Dict
 
 import librosa
 import numpy as np
@@ -22,7 +23,7 @@ HOP_LENGTH = int(SR * FRAME_RATE / 1000)
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 _calculator = RosuCalculator(mode=0)
-_global_lock = Lock()
+_global_lock: Dict[str, Lock] = {}
 
 
 def load_audio(audio_file: Path) -> npt.NDArray:
@@ -55,6 +56,43 @@ def normalize_context(context: npt.NDArray) -> npt.NDArray:
     context[5] = context[5] / 150 - 1
 
     return context
+
+
+def get_lock(path: Path) -> Lock:
+    return _global_lock.setdefault(str(path), Lock())
+
+
+def get_audio_spec(beatmap: Beatmap, audio_file: Path) -> npt.NDArray:
+    with get_lock(audio_file):
+        if audio_file.exists():
+            for i in range(5):  # backoff
+                try:
+                    spec = np.load(audio_file)["a"]
+                    return spec
+                except ValueError:
+                    time.sleep(0.001 * 2**i)
+                except EOFError:
+                    audio_file.unlink()
+                    try:
+                        spec = load_audio(beatmap.audio_filename)
+                        return spec
+                    except Exception as e:
+                        print(f"Failed to load audio {beatmap.audio_filename}: {e}")
+                        return
+            else:
+                print(f"Failed to load spec {audio_file}")
+                return
+        else:
+            try:
+                spec = load_audio(beatmap.audio_filename)
+            except Exception as e:
+                print(f"Failed to load audio {beatmap.audio_filename}: {e}")
+                return
+
+            audio_file.parent.mkdir(parents=True, exist_ok=True)
+            np.savez_compressed(audio_file, a=spec)
+
+            return spec
 
 
 def prepare_map(data_dir: Path, map_file: Path) -> None:
@@ -103,26 +141,7 @@ def prepare_map(data_dir: Path, map_file: Path) -> None:
         print(f"Library failed to parse beatmap {map_file}: {e}")
         return
 
-    with _global_lock:
-        if spec_path.exists():
-            for i in range(5):  # backoff
-                try:
-                    spec = np.load(spec_path)["a"]
-                    break
-                except ValueError:
-                    time.sleep(0.001 * 2**i)
-            else:
-                print(f"Failed to load spec {spec_path}")
-                return
-        else:
-            try:
-                spec = load_audio(beatmap.audio_filename)
-            except Exception as e:
-                print(f"Failed to load audio {beatmap.audio_filename}: {e}")
-                return
-
-            spec_path.parent.mkdir(parents=True, exist_ok=True)
-            np.savez_compressed(spec_path, a=spec)
+    spec = get_audio_spec(beatmap, spec_path)
 
     frame_times = (
         librosa.frames_to_time(
