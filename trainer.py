@@ -83,7 +83,7 @@ def train(args: ArgumentParser) -> None:
     print("Training...")
     iter_dataloader = iter(dataloader)
     losses = []  # Keep track of the last `args.save_every` losses
-    with tqdm() as pbar:
+    with tqdm(total=args.total_steps, smoothing=1.0) as pbar:
         for step in range(args.total_steps):
             try:
                 batch = next(iter_dataloader)
