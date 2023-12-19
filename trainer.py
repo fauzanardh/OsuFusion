@@ -17,6 +17,13 @@ from osu_fusion.library.dataset import SubsequenceDataset
 from osu_fusion.models.diffusion import OsuFusion
 
 
+def delete_old_checkpoints(project_dir: Path, max_num_checkpoints: int) -> None:
+    checkpoints = list(project_dir.rglob("checkpoint-*"))
+    checkpoints.sort(key=lambda path: int(path.stem.split("-")[1]))
+    for checkpoint in checkpoints[:-max_num_checkpoints]:
+        checkpoint.rmdir()
+
+
 def train_step(
     accelerator: Accelerator,
     model: OsuFusion,
@@ -54,8 +61,7 @@ def train(args: ArgumentParser) -> None:
     )
 
     print("Loading dataset...")
-    dataset_dir = Path(args.dataset_dir)
-    all_maps = list(dataset_dir.rglob("*.map.npz"))
+    all_maps = list(args.dataset_dir.rglob("*.map.npz"))
     random.shuffle(all_maps)
     dataset = SubsequenceDataset(dataset=all_maps, sequence_length=args.sequence_length)
     dataloader = DataLoader(
@@ -118,17 +124,19 @@ def train(args: ArgumentParser) -> None:
 
                 if accelerator.is_main_process:
                     wandb.log({"save_loss": avg_loss}, step=step + 1)
+                    delete_old_checkpoints(args.project_dir, args.max_num_checkpoints)
 
 
 def main() -> None:
     args = ArgumentParser()
-    args.add_argument("--project-dir", type=str)
-    args.add_argument("--dataset-dir", type=str)
+    args.add_argument("--project-dir", type=Path)
+    args.add_argument("--dataset-dir", type=Path)
     args.add_argument("--mixed-precision", type=str, default="no", choices=["no", "fp16", "bf16"])
     args.add_argument("--model-dim", type=int, default=128)
     args.add_argument("--lr", type=float, default=1e-4)
     args.add_argument("--total-steps", type=int, default=100000)
     args.add_argument("--save-every", type=int, default=1000)
+    args.add_argument("--max-num-checkpoints", type=int, default=5)
     args.add_argument("--pct-start", type=float, default=0.01)
     args.add_argument("--batch-size", type=int, default=64)
     args.add_argument("--num-workers", type=int, default=2)
