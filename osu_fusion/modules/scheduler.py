@@ -4,7 +4,8 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 from einops import repeat
-from modules.utils import right_pad_dims_to
+
+from osu_fusion.modules.utils import right_pad_dims_to
 
 
 @torch.jit.script
