@@ -9,15 +9,9 @@ from tqdm.auto import tqdm
 from osu_fusion.library.osu.from_beatmap import AUDIO_DIM, CONTEXT_DIM, TOTAL_DIM
 from osu_fusion.modules.scheduler import GaussianDiffusionContinuousTimes
 from osu_fusion.modules.unet import UNet
+from osu_fusion.modules.utils import right_pad_dims_to
 
 MINIMUM_LENGTH = 1024
-
-
-def right_pad_dims_to(x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-    padding_dims = x.ndim - t.ndim
-    if padding_dims <= 0:
-        return t
-    return t.view(*t.shape, *((1,) * padding_dims))
 
 
 class OsuFusion(nn.Module):
