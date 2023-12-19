@@ -7,6 +7,10 @@ import torch
 from torch.utils.data import IterableDataset
 
 
+def sanitize_input(x: torch.Tensor) -> torch.Tensor:
+    return x.clamp(min=-1.0, max=1.0)
+
+
 def load_tensor(map_file: Path) -> torch.Tensor:
     audio_file = map_file.parent / "audio_mp3" / "spec.npz"
 
@@ -15,7 +19,7 @@ def load_tensor(map_file: Path) -> torch.Tensor:
     x = torch.tensor(map_data["x"], dtype=torch.float32)
     c = torch.tensor(map_data["c"], dtype=torch.float32)
     a = torch.tensor(audio_data["a"], dtype=torch.float32)
-    return x, a, c
+    return sanitize_input(x), a, sanitize_input(c)
 
 
 class StreamPerSample(IterableDataset):
