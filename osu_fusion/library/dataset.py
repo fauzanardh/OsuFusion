@@ -6,9 +6,18 @@ import numpy as np
 import torch
 from torch.utils.data import IterableDataset
 
+MFCC_MAX_VALUE = 300
+MFCC_MIN_VALUE = -600
+
 
 def sanitize_input(x: torch.Tensor) -> torch.Tensor:
     return x.clamp(min=-1.0, max=1.0)
+
+
+# Temporary function to normalize MFCCs in my dataset
+# TODO: Implement this to the dataset creator instead
+def normalize_mfcc(mfcc: torch.Tensor) -> torch.Tensor:
+    return (mfcc - MFCC_MIN_VALUE) / (MFCC_MAX_VALUE - MFCC_MIN_VALUE) * 2 - 1
 
 
 def load_tensor(map_file: Path) -> torch.Tensor:
@@ -19,7 +28,7 @@ def load_tensor(map_file: Path) -> torch.Tensor:
     x = torch.tensor(map_data["x"], dtype=torch.float32)
     c = torch.tensor(map_data["c"], dtype=torch.float32)
     a = torch.tensor(audio_data["a"], dtype=torch.float32)
-    return sanitize_input(x), a, sanitize_input(c)
+    return sanitize_input(x), sanitize_input(normalize_mfcc(a)), sanitize_input(c)
 
 
 class StreamPerSample(IterableDataset):
