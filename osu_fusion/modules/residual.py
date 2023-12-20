@@ -5,7 +5,6 @@ import torch.nn as nn
 from einops import rearrange, repeat
 
 from osu_fusion.modules.attention import MultiHeadAttention
-from osu_fusion.modules.causal_convolution import CausalConv1d
 
 
 class Always:
@@ -42,13 +41,13 @@ class GlobalContext(nn.Module):
 
     def __init__(self: "GlobalContext", dim_in: int, dim_out: int) -> None:
         super().__init__()
-        self.to_k = CausalConv1d(dim_in, 1, 1)
+        self.to_k = nn.Conv1d(dim_in, 1, 1)
         inner_dim = max(3, dim_out // 2)
 
         self.layers = nn.Sequential(
-            CausalConv1d(dim_in, inner_dim, 1),
+            nn.Conv1d(dim_in, inner_dim, 1),
             nn.SiLU(),
-            CausalConv1d(inner_dim, dim_out, 1),
+            nn.Conv1d(inner_dim, dim_out, 1),
             nn.Sigmoid(),
         )
 
@@ -75,9 +74,9 @@ class ResidualBlock(nn.Module):
             nn.Linear(dim_emb, dim_in),
         )
         self.layers = nn.Sequential(
-            CausalConv1d(dim_in, dim_out, kernel_size, dilation=dilation),
+            nn.Conv1d(dim_in, dim_out, kernel_size, dilation=dilation),
             nn.ReLU(),
-            CausalConv1d(dim_out, dim_out, 1),
+            nn.Conv1d(dim_out, dim_out, 1),
             nn.ReLU(),
             SqueezeExcite(dim_out) if squeeze_excite else nn.Identity(),
         )
@@ -102,7 +101,7 @@ class Block(nn.Module):
         super().__init__()
         self.norm = nn.GroupNorm(1, dim_in) if norm else nn.Identity()
         self.activation = nn.SiLU()
-        self.res_conv = CausalConv1d(dim_in, dim_out, 7)
+        self.res_conv = nn.Conv1d(dim_in, dim_out, 7, padding=3)
 
     def forward(self: "Block", x: torch.Tensor, scale_shift: Optional[torch.Tensor] = None) -> torch.Tensor:
         x = self.norm(x)
@@ -148,7 +147,7 @@ class ResidualBlockV2(nn.Module):
         self.block2 = Block(dim_out, dim_out)
 
         self.gca = GlobalContext(dim_in, dim_out) if use_gca else Always(1)
-        self.res_conv = CausalConv1d(dim_in, dim_out, 1) if dim_in != dim_out else nn.Identity()
+        self.res_conv = nn.Conv1d(dim_in, dim_out, 1) if dim_in != dim_out else nn.Identity()
 
     def forward(
         self: "ResidualBlockV2",

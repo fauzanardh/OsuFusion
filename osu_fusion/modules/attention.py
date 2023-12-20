@@ -94,12 +94,12 @@ class MultiHeadAttention(nn.Module):
 
         if is_cross_attention:
             assert dim_context is not None, "context_dim must be provided for cross attention"
-            self.to_q = nn.Linear(dim, inner_dim, 1)
-            self.to_kv = nn.Linear(dim_context, inner_dim * 2, 1)
+            self.to_q = nn.Linear(dim, inner_dim)
+            self.to_kv = nn.Linear(dim_context, inner_dim * 2)
         else:
-            self.to_qkv = nn.Linear(dim, inner_dim * 3, 1)
+            self.to_qkv = nn.Linear(dim, inner_dim * 3)
         self.attention = Attention(dropout=dropout, sdpa=sdpa)
-        self.to_out = nn.Linear(inner_dim, dim, 1)
+        self.to_out = nn.Linear(inner_dim, dim)
 
     def forward(
         self: "MultiHeadAttention",

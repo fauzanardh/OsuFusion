@@ -6,7 +6,6 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
-from osu_fusion.modules.causal_convolution import CausalConv1d, CausalConvTranspose1d
 from osu_fusion.modules.residual import ResidualBlockV2
 from osu_fusion.modules.transformer import Transformer
 
@@ -54,9 +53,9 @@ class UNet(nn.Module):
         self.dim_h = dim_h
         self.dim_emb = dim_h * 4
 
-        self.pre_conv = CausalConv1d(dim_in, dim_h, 7)
-        self.final_conv = CausalConv1d(dim_h, dim_out, 1)
-        zero_init_(self.final_conv.conv)
+        self.pre_conv = nn.Conv1d(dim_in, dim_h, 7, padding=3)
+        self.final_conv = nn.Conv1d(dim_h, dim_out, 1)
+        zero_init_(self.final_conv)
 
         self.time_embedding = nn.Sequential(
             LearnedSinusoidalPositionalEmbedding(dim_learned_sinu),
@@ -113,7 +112,7 @@ class UNet(nn.Module):
                             dropout=attn_dropout,
                             sdpa=attn_sdpa,
                         ),
-                        CausalConv1d(layer_dim_in, layer_dim_out, 2 * stride, stride=stride),
+                        nn.Conv1d(layer_dim_in, layer_dim_out, 2 * stride, stride=stride, padding=1),
                     ],
                 ),
             )
@@ -156,7 +155,7 @@ class UNet(nn.Module):
             up_layers.append(
                 nn.ModuleList(
                     [
-                        CausalConvTranspose1d(layer_dim_out, layer_dim_in, 2 * stride, stride=stride),
+                        nn.ConvTranspose1d(layer_dim_out, layer_dim_in, 2 * stride, stride=stride, padding=1),
                         resnet_block_attn(
                             layer_dim_in + skip_connection_dim,
                             layer_dim_in,
