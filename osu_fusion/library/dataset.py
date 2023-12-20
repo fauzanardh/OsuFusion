@@ -52,7 +52,7 @@ class StreamPerSample(IterableDataset):
             try:
                 for x in self.sample_stream(sample):
                     yield x
-            except FileNotFoundError:
+            except Exception:
                 continue
 
         # Randomize the dataset order for each epoch
