@@ -99,6 +99,12 @@ def train(args: ArgumentParser) -> None:
                     iter_dataloader = iter(dataloader)
 
             loss = train_step(accelerator, model, optimizer, scheduler, batch)
+            if torch.isnan(loss):
+                # Save the model before exiting
+                accelerator.wait_for_everyone()
+                accelerator.save_model(model, args.project_dir / f"checkpoint-{step + 1}-NaN")
+                msg = "NaN loss encountered"
+                raise RuntimeError(msg)
             losses.append(loss)
 
             if len(losses) > args.save_every:
