@@ -28,7 +28,27 @@ def load_tensor(map_file: Path) -> torch.Tensor:
     x = torch.tensor(map_data["x"], dtype=torch.float32)
     c = torch.tensor(map_data["c"], dtype=torch.float32)
     a = torch.tensor(audio_data["a"], dtype=torch.float32)
-    return sanitize_input(x), sanitize_input(normalize_mfcc(a)), sanitize_input(c)
+
+    x = sanitize_input(x)
+    a = sanitize_input(normalize_mfcc(a))
+    c = sanitize_input(c)
+
+    # Check if x a and c values are within the range of -1 to 1 and there are no NaN values
+    if (
+        x.max() > 1
+        or x.min() < -1
+        or torch.isnan(x).any()
+        or a.max() > 1
+        or a.min() < -1
+        or torch.isnan(a).any()
+        or c.max() > 1
+        or c.min() < -1
+        or torch.isnan(c).any()
+    ):
+        msg = "Invalid values in map file"
+        raise ValueError(msg)
+
+    return x, a, c
 
 
 class StreamPerSample(IterableDataset):
@@ -85,7 +105,10 @@ class SubsequenceDataset(StreamPerSample):
         super().__init__(**kwargs)
 
     def sample_stream(self: StreamPerSample, map_file: Path) -> Generator[torch.Tensor, None, None]:
-        x, a, c = load_tensor(map_file)
+        try:
+            x, a, c = load_tensor(map_file)
+        except ValueError:
+            return
         n = x.shape[-1]
 
         if self.sequence_length > n:
