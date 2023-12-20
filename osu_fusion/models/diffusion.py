@@ -35,7 +35,8 @@ class OsuFusion(nn.Module):
         super().__init__()
 
         self.unet = UNet(
-            TOTAL_DIM + AUDIO_DIM,
+            TOTAL_DIM,
+            AUDIO_DIM,
             TOTAL_DIM,
             dim_h,
             CONTEXT_DIM,
