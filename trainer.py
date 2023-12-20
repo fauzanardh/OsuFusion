@@ -39,7 +39,7 @@ def train_step(
     optimizer.step()
     optimizer.zero_grad(set_to_none=True)
     scheduler.step()
-    return loss.item()
+    return loss
 
 
 def train(args: ArgumentParser) -> None:
@@ -105,6 +105,7 @@ def train(args: ArgumentParser) -> None:
                 accelerator.save_model(model, args.project_dir / f"checkpoint-{step + 1}-NaN")
                 msg = "NaN loss encountered"
                 raise RuntimeError(msg)
+            loss = loss.item()
             losses.append(loss)
 
             if len(losses) > args.save_every:
