@@ -38,7 +38,7 @@ def train_step(
         t = model.scheduler.sample_random_times(x.shape[0], x.device)
         try:
             loss = model(x, a, t, c)
-        except ValueError:
+        except AssertionError:
             return None
     accelerator.backward(loss)
     optimizer.step()
