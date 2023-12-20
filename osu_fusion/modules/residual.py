@@ -10,7 +10,7 @@ from osu_fusion.modules.causal_convolution import CausalConv1d
 
 class Always:
     def __init__(self: "Always", value: int) -> None:
-        self.value = int
+        self.value = value
 
     def __call__(self: "Always", *args: List, **kwargs: Dict) -> int:
         return self.value
