@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from einops import rearrange, repeat
+from einops import rearrange
 
 from osu_fusion.modules.attention import MultiHeadAttention
 
@@ -89,7 +89,7 @@ class Transformer(nn.Module):
     def forward(self: "Transformer", x: torch.Tensor, context: torch.Tensor) -> torch.Tensor:
         x = rearrange(x, "b d n -> b n d")
         for layer in self.layers:
-            c = repeat(context, "b d -> b n d", n=x.shape[1])
+            c = rearrange(context, "b d -> b 1 d")
             x = layer(x, c)
         x = rearrange(x, "b n d -> b d n")
         return x

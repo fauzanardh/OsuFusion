@@ -2,7 +2,7 @@ from typing import Dict, List, Optional
 
 import torch
 import torch.nn as nn
-from einops import rearrange, repeat
+from einops import rearrange
 
 from osu_fusion.modules.attention import MultiHeadAttention
 
@@ -163,7 +163,7 @@ class ResidualBlockV2(nn.Module):
 
         if hasattr(self, "cross_attention") and context is not None:
             h = rearrange(h, "b d n -> b n d")
-            context = repeat(context, "b d -> b n d", n=h.shape[1])
+            context = rearrange(context, "b d -> b 1 d")
             h = self.cross_attention(h, context) + h
             h = rearrange(h, "b n d -> b d n")
 
