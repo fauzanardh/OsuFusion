@@ -150,7 +150,6 @@ def main() -> None:
     args.add_argument("--save-every", type=int, default=1000)
     args.add_argument("--max-num-checkpoints", type=int, default=5)
     args.add_argument("--pct-start", type=float, default=0.01)
-    args.add_argument("--batch-size", type=int, default=64)
     args = args.parse_args()
 
     train(args)
