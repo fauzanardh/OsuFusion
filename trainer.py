@@ -121,7 +121,7 @@ def train(args: ArgumentParser) -> None:
 
             if (step + 1) % args.save_every == 0:
                 accelerator.wait_for_everyone()
-                accelerator.save_model(model, args.progect_dir / f"checkpoint-{step + 1}")
+                accelerator.save_model(model, args.project_dir / f"checkpoint-{step + 1}")
 
                 if accelerator.is_main_process:
                     wandb.log({"save_loss": avg_loss}, step=step + 1)
