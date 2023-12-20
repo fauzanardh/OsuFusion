@@ -35,8 +35,7 @@ class LearnedSinusoidalPositionalEmbedding(nn.Module):
 class UNet(nn.Module):
     def __init__(
         self: "UNet",
-        dim_in_x: int,
-        dim_in_a: int,
+        dim_in: int,
         dim_out: int,
         dim_h: int,
         dim_cond: int,
@@ -55,8 +54,7 @@ class UNet(nn.Module):
         self.dim_h = dim_h
         self.dim_emb = dim_h * 4
 
-        self.pre_conv = CausalConv1d(dim_in_x + dim_in_a, dim_h, 7)
-        self.audio_pre_batchnorm = nn.BatchNorm1d(dim_in_a)
+        self.pre_conv = CausalConv1d(dim_in, dim_h, 7)
         self.final_conv = CausalConv1d(dim_h, dim_out, 1)
         zero_init_(self.final_conv.conv)
 
@@ -191,7 +189,6 @@ class UNet(nn.Module):
         self.up_layers = nn.ModuleList(up_layers)
 
     def forward(self: "UNet", x: torch.Tensor, a: torch.Tensor, t: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
-        a = self.audio_pre_batchnorm(a)
         x = torch.cat([x, a], dim=1)
         x = self.pre_conv(x)
 
