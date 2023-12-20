@@ -36,7 +36,10 @@ def train_step(
     x, a, c = batch
     with accelerator.autocast():
         t = model.scheduler.sample_random_times(x.shape[0], x.device)
-        loss = model(x, a, t, c)
+        try:
+            loss = model(x, a, t, c)
+        except ValueError:
+            return None
     accelerator.backward(loss)
     optimizer.step()
     optimizer.zero_grad(set_to_none=True)
@@ -100,6 +103,8 @@ def train(args: ArgumentParser) -> None:
                     iter_dataloader = iter(dataloader)
 
             loss = train_step(accelerator, model, optimizer, scheduler, batch)
+            if loss is None:
+                continue
             if torch.isnan(loss):
                 # Save the model before exiting
                 accelerator.wait_for_everyone()

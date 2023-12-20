@@ -135,6 +135,8 @@ class OsuFusion(nn.Module):
         x_padded, slice_ = self.pad_data(x)
         a_padded, _ = self.pad_data(a)
 
+        assert x_padded.shape[1] == a_padded.shape[1], "x and a must have the same number of sequence length"
+
         noise = torch.randn_like(x_padded)
 
         x_noisy, log_snr, _, _ = self.scheduler.q_sample(x_padded, t, noise=noise)
