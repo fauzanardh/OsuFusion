@@ -91,11 +91,12 @@ def train(args: ArgumentParser) -> None:
     losses = []  # Keep track of the last `args.save_every` losses
     with tqdm(total=args.total_steps, smoothing=1.0) as pbar:
         for step in range(args.total_steps):
-            try:
-                batch = next(iter_dataloader)
-            except StopIteration:
-                iter_dataloader = iter(dataloader)
-                batch = next(iter_dataloader)
+            batch = None
+            while batch is None:
+                try:
+                    batch = next(iter_dataloader)
+                except Exception:
+                    iter_dataloader = iter(dataloader)
 
             loss = train_step(accelerator, model, optimizer, scheduler, batch)
             losses.append(loss)
