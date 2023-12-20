@@ -132,13 +132,16 @@ class OsuFusion(nn.Module):
         t: torch.Tensor,
         c: torch.Tensor,
     ) -> torch.Tensor:
-        noise = torch.randn_like(x)
+        x_padded, slice_ = self.pad_data(x)
+        a_padded, _ = self.pad_data(a)
 
-        x_noisy, log_snr, _, _ = self.scheduler.q_sample(x, t, noise=noise)
+        noise = torch.randn_like(x_padded)
+
+        x_noisy, log_snr, _, _ = self.scheduler.q_sample(x_padded, t, noise=noise)
         noise_cond = self.scheduler.get_condition(t)
 
-        pred = self.unet(x_noisy, a, noise_cond, c)
-        target = noise
+        pred = self.unet(x_noisy, a_padded, noise_cond, c)[slice_]
+        target = noise[slice_]
 
         losses = F.mse_loss(pred, target, reduction="none")
         losses = reduce(losses, "b ... -> b", "mean")
