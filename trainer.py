@@ -121,14 +121,14 @@ def train(args: ArgumentParser) -> None:
 
             if (step + 1) % args.save_every == 0:
                 accelerator.wait_for_everyone()
-                accelerator.save_model(model, f"{args.project_dir}checkpoint-{step + 1}")
+                accelerator.save_model(model, args.progect_dir / f"checkpoint-{step + 1}")
 
                 if accelerator.is_main_process:
                     wandb.log({"save_loss": avg_loss}, step=step + 1)
                     delete_old_checkpoints(args.project_dir, args.max_num_checkpoints)
 
     accelerator.wait_for_everyone()
-    accelerator.save_model(model, f"{args.project_dir}checkpoint-final")
+    accelerator.save_model(model, args.project_dir / "checkpoint-final")
 
 
 def main() -> None:
