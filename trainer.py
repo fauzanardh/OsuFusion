@@ -127,6 +127,9 @@ def train(args: ArgumentParser) -> None:
                     wandb.log({"save_loss": avg_loss}, step=step + 1)
                     delete_old_checkpoints(args.project_dir, args.max_num_checkpoints)
 
+    accelerator.wait_for_everyone()
+    accelerator.save_model(model, f"{args.project_dir}checkpoint-final")
+
 
 def main() -> None:
     args = ArgumentParser()
