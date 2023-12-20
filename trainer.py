@@ -13,7 +13,7 @@ from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-from osu_fusion.library.dataset import SubsequenceDataset
+from osu_fusion.library.dataset import FullSequenceDataset
 from osu_fusion.models.diffusion import OsuFusion
 
 
@@ -65,11 +65,10 @@ def train(args: ArgumentParser) -> None:
     print("Loading dataset...")
     all_maps = list(args.dataset_dir.rglob("*.map.npz"))
     random.shuffle(all_maps)
-    dataset = SubsequenceDataset(dataset=all_maps, sequence_length=args.sequence_length)
+    dataset = FullSequenceDataset(dataset=all_maps)
     dataloader = DataLoader(
         dataset,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
+        batch_size=1,
         pin_memory=True,
     )
 
@@ -152,8 +151,6 @@ def main() -> None:
     args.add_argument("--max-num-checkpoints", type=int, default=5)
     args.add_argument("--pct-start", type=float, default=0.01)
     args.add_argument("--batch-size", type=int, default=64)
-    args.add_argument("--num-workers", type=int, default=2)
-    args.add_argument("--sequence-length", type=int, default=2048)
     args = args.parse_args()
 
     train(args)
