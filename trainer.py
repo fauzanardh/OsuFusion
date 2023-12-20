@@ -21,6 +21,8 @@ def delete_old_checkpoints(project_dir: Path, max_num_checkpoints: int) -> None:
     checkpoints = list(project_dir.rglob("checkpoint-*"))
     checkpoints.sort(key=lambda path: int(path.stem.split("-")[1]))
     for checkpoint in checkpoints[:-max_num_checkpoints]:
+        for path in checkpoint.iterdir():
+            path.unlink()
         checkpoint.rmdir()
 
 
