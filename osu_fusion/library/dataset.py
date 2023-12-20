@@ -49,8 +49,11 @@ class StreamPerSample(IterableDataset):
             if i % num_workers != worker_id:
                 continue
 
-            for x in self.sample_stream(sample):
-                yield x
+            try:
+                for x in self.sample_stream(sample):
+                    yield x
+            except FileNotFoundError:
+                continue
 
         # Randomize the dataset order for each epoch
         random.shuffle(self.dataset)
