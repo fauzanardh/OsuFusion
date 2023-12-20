@@ -15,7 +15,7 @@ class DynamicPositionBias(nn.Module):
         self: "DynamicPositionBias",
         dim: int,
         heads: int = 8,
-        depth: int = 4,
+        depth: int = 2,
         log_distance: bool = True,
         normalize: bool = True,
     ) -> None:
