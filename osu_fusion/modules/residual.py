@@ -164,7 +164,7 @@ class ResidualBlockV2(nn.Module):
 
         if hasattr(self, "cross_attention") and context is not None:
             h = rearrange(h, "b d n -> b n d")
-            context = repeat(context, "b d -> b n d", n=h.shape[-1])
+            context = repeat(context, "b d -> b n d", n=h.shape[1])
             h = self.cross_attention(h, context) + h
             h = rearrange(h, "b n d -> b d n")
 
