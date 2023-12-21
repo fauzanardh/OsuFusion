@@ -95,15 +95,18 @@ class RotaryPositionEmbedding(nn.Module):
         k: torch.Tensor,
         seq_dim: int = -2,
     ) -> torch.Tensor:
-        device, dtype, seq_len = q.device, q.dtype, q.shape[seq_dim]
+        device, dtype, q_seq_len, k_seq_len = q.device, q.dtype, q.shape[seq_dim], k.shape[seq_dim]
 
-        seq = self.get_seq_pos(seq_len, device, dtype)
+        q_seq = self.get_seq_pos(q_seq_len, device, dtype)
+        q_freqs = self(q_seq, seq_len=q_seq_len)
+        q_scale = self.get_scale(q_seq, seq_len=q_seq_len).to(dtype)
 
-        freqs = self(seq, seq_len=seq_len)
-        scale = self.get_scale(seq, seq_len=seq_len).to(dtype)
+        k_seq = self.get_seq_pos(k_seq_len, device, dtype)
+        k_freqs = self(k_seq, seq_len=k_seq_len)
+        k_scale = self.get_scale(k_seq, seq_len=k_seq_len).to(dtype)
 
-        rotated_q = apply_rotary_pos_emb(freqs, q, scale=scale, seq_dim=seq_dim)
-        rotated_k = apply_rotary_pos_emb(freqs, k, scale=scale**-1, seq_dim=seq_dim)
+        rotated_q = apply_rotary_pos_emb(q_freqs, q, scale=q_scale, seq_dim=seq_dim)
+        rotated_k = apply_rotary_pos_emb(k_freqs, k, scale=k_scale**-1, seq_dim=seq_dim)
 
         rotated_q = rotated_q.type(q.dtype)
         rotated_k = rotated_k.type(k.dtype)
@@ -169,15 +172,14 @@ class DynamicPositionBias(nn.Module):
         return next(self.parameters()).device
 
     def forward(self: "DynamicPositionBias", i: int, j: int) -> torch.Tensor:
-        assert i == j, "i and j must be equal for DynamicPositionBias"
-        n, device = j, self.device
-
-        seq_arange = torch.arange(n, device=device)
-        context_arange = torch.arange(n, device=device)
+        max_seq_len = max(i, j)
+        device = self.device
+        seq_arange = torch.arange(i, device=device)
+        context_arange = torch.arange(j, device=device)
         indices = rearrange(seq_arange, "i -> i 1") - rearrange(context_arange, "j -> 1 j")
-        indices += n - 1
+        indices += max_seq_len - 1
 
-        pos = torch.arange(-n + 1, n, device=device).float()
+        pos = torch.arange(-max_seq_len + 1, max_seq_len, device=device).float()
         pos = rearrange(pos, "... -> ... 1")
 
         if self.log_distance:
@@ -280,15 +282,13 @@ class MultiHeadAttention(nn.Module):
 
         inner_dim = dim_head * heads
 
+        self.rel_pos = DynamicPositionBias(dim // 4, heads=heads) if use_dynamic_position_bias else None
+        self.rotary_emb = RotaryPositionEmbedding(dim_head) if use_rotary_emb else None
         if is_cross_attention:
             assert dim_context is not None, "context_dim must be provided for cross attention"
-            self.rotary_emb = None
-            self.rel_pos = None
             self.to_q = nn.Linear(dim, inner_dim)
             self.to_kv = nn.Linear(dim_context, inner_dim * 2)
         else:
-            self.rotary_emb = RotaryPositionEmbedding(dim_head) if use_rotary_emb else None
-            self.rel_pos = DynamicPositionBias(dim // 4, heads=heads) if use_dynamic_position_bias else None
             self.to_qkv = nn.Linear(dim, inner_dim * 3)
         self.attention = Attention(dropout=dropout, sdpa=sdpa)
         self.to_out = nn.Linear(inner_dim, dim)
@@ -306,14 +306,10 @@ class MultiHeadAttention(nn.Module):
             q, k, v = self.to_qkv(x).chunk(3, dim=-1)
 
         q, k, v = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q, k, v))
+        q, k = self.rotary_emb.rotate_queries_and_keys(q, k)
 
-        if self.rotary_emb is not None:
-            q, k = self.rotary_emb.rotate_queries_and_keys(q, k)
-
-        attn_bias = None
-        if self.rel_pos is not None:
-            i, j = q.shape[-2], k.shape[-2]
-            attn_bias = self.rel_pos(i, j)
+        i, j = q.shape[-2], k.shape[-2]
+        attn_bias = self.rel_pos(i, j)
 
         out = self.attention(q, k, v, attn_bias=attn_bias)
         out = rearrange(out, "b h n d -> b n (h d)")
