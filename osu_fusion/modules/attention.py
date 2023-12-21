@@ -65,16 +65,27 @@ class RotaryPositionEmbedding(nn.Module):
         seq_len: int,
         device: torch.device,
         dtype: torch.dtype,
+        offset: int = 0,
     ) -> torch.Tensor:
-        return torch.arange(seq_len, device=device, dtype=dtype) / self.interpolation_factor
+        return (torch.arange(seq_len, device=device, dtype=dtype) + offset) / self.interpolation_factor
 
     def get_scale(
         self: "RotaryPositionEmbedding",
         t: torch.Tensor,
+        seq_len: Optional[int] = None,
+        offset: int = 0,
     ) -> torch.Tensor:
+        should_cache = seq_len is not None
+
+        if should_cache and self.cached_scale is not None and (offset + seq_len) <= self.cached_scale.shape[0]:
+            return self.cached_scale[offset : (offset + seq_len)]
+
         power = (t - t.shape[-1] // 2) / self.scale_base
         scale = self.scale ** rearrange(power, "n -> n 1")
         scale = torch.cat((scale, scale), dim=-1)
+
+        if should_cache:
+            self.register_buffer("cached_scale", scale, persistent=False)
 
         return scale
 
@@ -88,8 +99,8 @@ class RotaryPositionEmbedding(nn.Module):
 
         seq = self.get_seq_pos(seq_len, device, dtype)
 
-        freqs = self(seq)
-        scale = self.get_scale(seq).to(dtype)
+        freqs = self(seq, seq_len=seq_len)
+        scale = self.get_scale(seq, seq_len=seq_len).to(dtype)
 
         rotated_q = apply_rotary_pos_emb(freqs, q, scale=scale, seq_dim=seq_dim)
         rotated_k = apply_rotary_pos_emb(freqs, k, scale=scale**-1, seq_dim=seq_dim)
@@ -102,11 +113,21 @@ class RotaryPositionEmbedding(nn.Module):
     def forward(
         self: "RotaryPositionEmbedding",
         t: torch.Tensor,
+        seq_len: Optional[int] = None,
+        offset: int = 0,
     ) -> torch.Tensor:
+        should_cache = seq_len is not None
+
+        if should_cache and self.cached_freqs is not None and (offset + seq_len) <= self.cached_freqs.shape[0]:
+            return self.cached_freqs[offset : (offset + seq_len)]
+
         freqs = self.freqs
 
         freqs = torch.einsum("..., f -> ... f", t.type(freqs.dtype), freqs)
         freqs = repeat(freqs, "... n -> ... (n r)", r=2)
+
+        if should_cache:
+            self.register_buffer("cached_freqs", freqs, persistent=False)
 
         return freqs
 
