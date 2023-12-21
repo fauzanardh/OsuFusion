@@ -3,11 +3,112 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-from einops import rearrange
+from einops import rearrange, repeat
 from packaging import version
 from torch.nn import functional as F  # noqa: N812
 
 _config = namedtuple("Config", ["enable_flash", "enable_math", "enable_mem_efficient"])
+
+
+def rotate_half(x: torch.Tensor) -> torch.Tensor:
+    x = rearrange(x, "... (d r) -> ... d r", r=2)
+    x1, x2 = x.unbind(dim=-1)
+    x = torch.stack((-x2, x1), dim=-1)
+    return rearrange(x, "... d r -> ... (d r)")
+
+
+def apply_rotary_pos_emb(
+    freqs: torch.Tensor,
+    t: torch.Tensor,
+    start_index: int = 0,
+    scale: float = 1.0,
+    seq_dim: int = -2,
+) -> torch.Tensor:
+    if t.ndim == 3:
+        seq_len = t.shape[seq_dim]
+        freqs = freqs[-seq_len:].to(t)
+
+    rot_dim = freqs.shape[-1]
+    end_index = start_index + rot_dim
+
+    assert (
+        rot_dim <= t.shape[-1]
+    ), f"Features dim {t.shape[-1]} must be larger than the positional encoding dim {rot_dim}"
+
+    t_left, t, t_right = t[..., :start_index], t[..., start_index:end_index], t[..., end_index:]
+    t = (t * freqs.cos() * scale) + (rotate_half(t) * freqs.sin() * scale)
+    return torch.cat((t_left, t, t_right), dim=-1)
+
+
+class RotaryPositionEmbedding(nn.Module):
+    def __init__(
+        self: "RotaryPositionEmbedding",
+        dim: int,
+        theta: int = 10000,
+        interpolation_factor: float = 1.0,
+        scale_base: int = 8192,
+    ) -> None:
+        super().__init__()
+        freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
+        self.register_buffer("freqs", freqs, persistent=False)
+        self.interpolation_factor = interpolation_factor
+
+        self.scale_base = scale_base
+        scale = (torch.arange(0, dim, 2) + 0.4 * dim) / (1.4 * dim)
+        self.register_buffer("scale", scale, persistent=False)
+
+        self.register_buffer("cached_freqs", None, persistent=False)
+        self.register_buffer("cached_scale", None, persistent=False)
+
+    def get_seq_pos(
+        self: "RotaryPositionEmbedding",
+        seq_len: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        return torch.arange(seq_len, device=device, dtype=dtype) / self.interpolation_factor
+
+    def get_scale(
+        self: "RotaryPositionEmbedding",
+        t: torch.Tensor,
+    ) -> torch.Tensor:
+        power = (t - t.shape[-1] // 2) / self.scale_base
+        scale = self.scale ** rearrange(power, "n -> n 1")
+        scale = torch.cat((scale, scale), dim=-1)
+
+        return scale
+
+    def rotate_queries_and_keys(
+        self: "RotaryPositionEmbedding",
+        q: torch.Tensor,
+        k: torch.Tensor,
+        seq_dim: int = -2,
+    ) -> torch.Tensor:
+        device, dtype, seq_len = q.device, q.dtype, q.shape[seq_dim]
+
+        seq = self.get_seq_pos(seq_len, device, dtype)
+
+        freqs = self(seq)
+        scale = self.get_scale(seq).to(dtype)
+
+        rotated_q = apply_rotary_pos_emb(freqs, q, scale=scale, seq_dim=seq_dim)
+        rotated_k = apply_rotary_pos_emb(freqs, k, scale=scale**-1, seq_dim=seq_dim)
+
+        rotated_q = rotated_q.type(q.dtype)
+        rotated_k = rotated_k.type(k.dtype)
+
+        return rotated_q, rotated_k
+
+    def forward(
+        self: "RotaryPositionEmbedding",
+        t: torch.Tensor,
+    ) -> torch.Tensor:
+        freqs = self.freqs
+
+        freqs = torch.einsum("..., f -> ... f", t.type(freqs.dtype), freqs)
+        freqs = repeat(freqs, "... n -> ... (n r)", r=2)
+
+        return freqs
 
 
 class DynamicPositionBias(nn.Module):
@@ -149,6 +250,8 @@ class MultiHeadAttention(nn.Module):
         dropout: float = 0.1,
         sdpa: bool = False,
         is_cross_attention: bool = False,
+        use_rotary_emb: bool = True,
+        use_dynamic_position_bias: bool = True,
     ) -> None:
         super().__init__()
         self.heads = heads
@@ -158,11 +261,13 @@ class MultiHeadAttention(nn.Module):
 
         if is_cross_attention:
             assert dim_context is not None, "context_dim must be provided for cross attention"
+            self.rotary_emb = None
             self.rel_pos = None
             self.to_q = nn.Linear(dim, inner_dim)
             self.to_kv = nn.Linear(dim_context, inner_dim * 2)
         else:
-            self.rel_pos = DynamicPositionBias(dim // 4, heads=heads)
+            self.rotary_emb = RotaryPositionEmbedding(dim_head) if use_rotary_emb else None
+            self.rel_pos = DynamicPositionBias(dim // 4, heads=heads) if use_dynamic_position_bias else None
             self.to_qkv = nn.Linear(dim, inner_dim * 3)
         self.attention = Attention(dropout=dropout, sdpa=sdpa)
         self.to_out = nn.Linear(inner_dim, dim)
@@ -180,6 +285,9 @@ class MultiHeadAttention(nn.Module):
             q, k, v = self.to_qkv(x).chunk(3, dim=-1)
 
         q, k, v = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q, k, v))
+
+        if self.rotary_emb is not None:
+            q, k = self.rotary_emb.rotate_queries_and_keys(q, k)
 
         attn_bias = None
         if self.rel_pos is not None:

@@ -48,6 +48,8 @@ class UNet(nn.Module):
         attn_dropout: float = 0.1,
         attn_sdpa: bool = True,
         attn_use_global_context_attention: bool = True,
+        attn_use_rotary_emb: bool = True,
+        attn_use_dynamic_position_bias: bool = True,
     ) -> None:
         super().__init__()
         self.dim_h = dim_h
@@ -76,6 +78,8 @@ class UNet(nn.Module):
             attn_heads=attn_heads,
             attn_dropout=attn_dropout,
             attn_sdpa=attn_sdpa,
+            attn_use_rotary_emb=attn_use_rotary_emb,
+            attn_use_dynamic_position_bias=attn_use_dynamic_position_bias,
         )
 
         skip_connection_dims = []
@@ -111,6 +115,8 @@ class UNet(nn.Module):
                             depth=attn_depth,
                             dropout=attn_dropout,
                             sdpa=attn_sdpa,
+                            use_rotary_emb=attn_use_rotary_emb,
+                            use_dynamic_position_bias=attn_use_dynamic_position_bias,
                         ),
                         nn.Conv1d(layer_dim_in, layer_dim_out, 2 * stride, stride=stride, padding=1),
                     ],
@@ -181,6 +187,8 @@ class UNet(nn.Module):
                             depth=attn_depth,
                             dropout=attn_dropout,
                             sdpa=attn_sdpa,
+                            use_rotary_emb=attn_use_rotary_emb,
+                            use_dynamic_position_bias=attn_use_dynamic_position_bias,
                         ),
                     ],
                 ),
