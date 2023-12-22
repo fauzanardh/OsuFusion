@@ -126,7 +126,6 @@ class ResidualBlockV2(nn.Module):
         attn_dropout: float = 0.1,
         attn_sdpa: bool = True,
         attn_use_rotary_emb: bool = True,
-        attn_use_dynamic_position_bias: bool = True,
         use_gca: bool = True,
     ) -> None:
         super().__init__()
@@ -145,7 +144,6 @@ class ResidualBlockV2(nn.Module):
                 sdpa=attn_sdpa,
                 is_cross_attention=True,
                 use_rotary_emb=attn_use_rotary_emb,
-                use_dynamic_position_bias=attn_use_dynamic_position_bias,
             )
         self.block1 = Block(dim_in, dim_out)
         self.block2 = Block(dim_out, dim_out)

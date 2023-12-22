@@ -135,64 +135,6 @@ class RotaryPositionEmbedding(nn.Module):
         return freqs
 
 
-class DynamicPositionBias(nn.Module):
-    def __init__(
-        self: "DynamicPositionBias",
-        dim: int,
-        heads: int = 8,
-        depth: int = 2,
-        log_distance: bool = True,
-        normalize: bool = True,
-    ) -> None:
-        super().__init__()
-        self.log_distance = log_distance
-
-        self.layers = [
-            nn.Sequential(
-                nn.Linear(1, dim),
-                nn.LayerNorm(dim) if normalize else nn.Identity(),
-                nn.SiLU(),
-            ),
-        ]
-
-        for _ in range(depth - 1):
-            self.layers.append(
-                nn.Sequential(
-                    nn.Linear(dim, dim),
-                    nn.LayerNorm(dim) if normalize else nn.Identity(),
-                    nn.SiLU(),
-                ),
-            )
-
-        self.layers.append(nn.Linear(dim, heads))
-        self.layers = nn.ModuleList(self.layers)
-
-    @property
-    def device(self: "DynamicPositionBias") -> torch.device:
-        return next(self.parameters()).device
-
-    def forward(self: "DynamicPositionBias", i: int, j: int) -> torch.Tensor:
-        max_seq_len = max(i, j)
-        device = self.device
-        seq_arange = torch.arange(i, device=device)
-        context_arange = torch.arange(j, device=device)
-        indices = rearrange(seq_arange, "i -> i 1") - rearrange(context_arange, "j -> 1 j")
-        indices += max_seq_len - 1
-
-        pos = torch.arange(-max_seq_len + 1, max_seq_len, device=device).float()
-        pos = rearrange(pos, "... -> ... 1")
-
-        if self.log_distance:
-            pos = torch.sign(pos) * torch.log(pos.abs() + 1)
-
-        for layer in self.layers:
-            pos = layer(pos)
-
-        bias = pos[indices]
-        bias = rearrange(bias, "i j h -> h i j")
-        return bias
-
-
 class Attention(nn.Module):
     def __init__(self: "Attention", dropout: float = 0.0, sdpa: bool = False) -> None:
         super().__init__()
@@ -218,12 +160,9 @@ class Attention(nn.Module):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        attn_bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         is_cuda, dtype = q.is_cuda, q.dtype
         config = self.cuda_config if is_cuda else self.cpu_config
-
-        attn_bias = rearrange(attn_bias, "h i j -> 1 h i j") if attn_bias is not None else None
 
         with torch.backends.cuda.sdp_kernel(**config._asdict()):
             if config.enable_flash:
@@ -236,7 +175,6 @@ class Attention(nn.Module):
                 q,
                 k,
                 v,
-                attn_mask=attn_bias,
                 dropout_p=self.dropout if self.training else 0.0,
             )
 
@@ -247,14 +185,12 @@ class Attention(nn.Module):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        attn_bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if self.sdpa:
             return self.sdpa_attn(q, k, v)
 
         scale = q.shape[-1] ** -0.5
         sim = torch.einsum("b h i d, b h j d -> b h i j", q, k) * scale
-        sim = sim + attn_bias if attn_bias is not None else sim
 
         attn = sim.softmax(dim=-1)
         attn = F.dropout(attn, p=self.dropout, training=self.training)
@@ -274,7 +210,6 @@ class MultiHeadAttention(nn.Module):
         sdpa: bool = False,
         is_cross_attention: bool = False,
         use_rotary_emb: bool = True,
-        use_dynamic_position_bias: bool = True,
     ) -> None:
         super().__init__()
         self.heads = heads
@@ -282,7 +217,6 @@ class MultiHeadAttention(nn.Module):
 
         inner_dim = dim_head * heads
 
-        self.rel_pos = DynamicPositionBias(dim // 4, heads=heads) if use_dynamic_position_bias else None
         self.rotary_emb = RotaryPositionEmbedding(dim_head) if use_rotary_emb else None
         if is_cross_attention:
             assert dim_context is not None, "context_dim must be provided for cross attention"
@@ -309,12 +243,7 @@ class MultiHeadAttention(nn.Module):
         if self.rotary_emb is not None:
             q, k = self.rotary_emb.rotate_queries_and_keys(q, k)
 
-        attn_bias = None
-        if self.rel_pos is not None:
-            i, j = q.shape[-2], k.shape[-2]
-            attn_bias = self.rel_pos(i, j)
-
-        out = self.attention(q, k, v, attn_bias=attn_bias)
+        out = self.attention(q, k, v)
         out = rearrange(out, "b h n d -> b n (h d)")
 
         out = self.to_out(out)

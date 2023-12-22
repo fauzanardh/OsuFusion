@@ -29,7 +29,6 @@ class OsuFusion(nn.Module):
         attn_use_global_context_attention: bool = True,
         attn_sdpa: bool = True,
         attn_use_rotary_emb: bool = True,
-        attn_use_dynamic_position_bias: bool = True,
         timesteps: int = 35,
         min_snr_gamma: int = 5,
         dynamic_thresholding_percentile: float = 0.95,
@@ -52,7 +51,6 @@ class OsuFusion(nn.Module):
             attn_use_global_context_attention=attn_use_global_context_attention,
             attn_sdpa=attn_sdpa,
             attn_use_rotary_emb=attn_use_rotary_emb,
-            attn_use_dynamic_position_bias=attn_use_dynamic_position_bias,
         )
 
         self.scheduler = GaussianDiffusionContinuousTimes(timesteps=timesteps)

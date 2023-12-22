@@ -31,7 +31,6 @@ class TransformerBlock(nn.Module):
         dropout: float = 0.1,
         sdpa: bool = True,
         use_rotary_emb: bool = True,
-        use_dynamic_position_bias: bool = True,
     ) -> None:
         super().__init__()
         self.self_attention = MultiHeadAttention(
@@ -41,7 +40,6 @@ class TransformerBlock(nn.Module):
             dropout=dropout,
             sdpa=sdpa,
             use_rotary_emb=use_rotary_emb,
-            use_dynamic_position_bias=use_dynamic_position_bias,
         )
         self.feed_forward = FeedForward(dim)
         self.cross_attention = MultiHeadAttention(
@@ -53,7 +51,6 @@ class TransformerBlock(nn.Module):
             sdpa=sdpa,
             is_cross_attention=True,
             use_rotary_emb=use_rotary_emb,
-            use_dynamic_position_bias=use_dynamic_position_bias,
         )
         self.norm1 = nn.LayerNorm(dim)
         self.norm2 = nn.LayerNorm(dim)
@@ -77,7 +74,6 @@ class Transformer(nn.Module):
         dropout: float = 0.1,
         sdpa: bool = True,
         use_rotary_emb: bool = True,
-        use_dynamic_position_bias: bool = True,
     ) -> None:
         super().__init__()
         self.layers = nn.ModuleList(
@@ -90,7 +86,6 @@ class Transformer(nn.Module):
                     dropout=dropout,
                     sdpa=sdpa,
                     use_rotary_emb=use_rotary_emb,
-                    use_dynamic_position_bias=use_dynamic_position_bias,
                 )
                 for _ in range(depth)
             ],
