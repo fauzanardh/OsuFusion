@@ -140,6 +140,8 @@ class UNet(nn.Module):
             depth=attn_depth,
             dropout=attn_dropout,
             sdpa=attn_sdpa,
+            use_rotary_emb=attn_use_rotary_emb,
+            use_dynamic_position_bias=attn_use_dynamic_position_bias,
         )
         self.middle_resnet2 = ResidualBlockV2(
             dims_h[-1],
