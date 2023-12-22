@@ -306,10 +306,13 @@ class MultiHeadAttention(nn.Module):
             q, k, v = self.to_qkv(x).chunk(3, dim=-1)
 
         q, k, v = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q, k, v))
-        q, k = self.rotary_emb.rotate_queries_and_keys(q, k)
+        if self.rotary_emb is not None:
+            q, k = self.rotary_emb.rotate_queries_and_keys(q, k)
 
-        i, j = q.shape[-2], k.shape[-2]
-        attn_bias = self.rel_pos(i, j)
+        attn_bias = None
+        if self.rel_pos is not None:
+            i, j = q.shape[-2], k.shape[-2]
+            attn_bias = self.rel_pos(i, j)
 
         out = self.attention(q, k, v, attn_bias=attn_bias)
         out = rearrange(out, "b h n d -> b n (h d)")
