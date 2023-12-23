@@ -89,7 +89,7 @@ class StreamPerSample(IterableDataset):
 
 
 class FullSequenceDataset(StreamPerSample):
-    MAX_LENGTH = 120000
+    MAX_LENGTH = 65536
 
     def sample_stream(self: StreamPerSample, map_file: Path) -> Generator[torch.Tensor, None, None]:
         x, a, c = load_tensor(map_file)
