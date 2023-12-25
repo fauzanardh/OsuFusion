@@ -163,3 +163,4 @@ cython_debug/
 weights/*
 !weights/.gitkeep
 experiments/
+.vscode/
