@@ -75,8 +75,9 @@ class OsuFusion(nn.Module):
         t: torch.Tensor,
         c: torch.Tensor,
         t_next: Optional[torch.Tensor] = None,
+        cond_scale: float = 7.0,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        pred = self.unet(x, a, self.scheduler.get_condition(t), c)
+        pred = self.unet.forward_with_cond_scale(x, a, self.scheduler.get_condition(t), c, cond_scale=cond_scale)
         x_0 = self.scheduler.predict_start_from_noise(x, t, pred)
 
         # dynamic thresholding
@@ -100,9 +101,10 @@ class OsuFusion(nn.Module):
         t: torch.Tensor,
         c: torch.Tensor,
         t_next: Optional[torch.Tensor] = None,
+        cond_scale: float = 7.0,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         b = x.shape[0]
-        model_mean, _, model_log_variance = self.p_mean_variance(x, a, t, c, t_next=t_next)
+        model_mean, _, model_log_variance = self.p_mean_variance(x, a, t, c, t_next=t_next, cond_scale=cond_scale)
         noise = torch.randn_like(x)
         is_last_sampling_step = t_next == 0.0
         nonzero_mask = (1 - is_last_sampling_step.float()).reshape(b, *((1,) * (len(x.shape) - 1)))
@@ -115,6 +117,7 @@ class OsuFusion(nn.Module):
         a: torch.Tensor,
         c: torch.Tensor,
         x: Optional[torch.Tensor] = None,
+        cond_scale: float = 7.0,
     ) -> torch.Tensor:
         a, _slice = self.pad_data(a)
 
@@ -127,7 +130,7 @@ class OsuFusion(nn.Module):
         self.scheduler.timesteps = self.sampling_steps
         timesteps = self.scheduler.get_sampling_timesteps(b, device=device)
         for t, t_next in tqdm(timesteps, desc="sampling loop time step"):
-            x = self.p_sample(x, a, t, c, t_next=t_next)
+            x = self.p_sample(x, a, t, c, t_next=t_next, cond_scale=cond_scale)
         self.scheduler.timesteps = self.timesteps
 
         return x[_slice]
