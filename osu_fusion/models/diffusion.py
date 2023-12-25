@@ -29,7 +29,7 @@ class OsuFusion(nn.Module):
         attn_use_global_context_attention: bool = True,
         attn_sdpa: bool = True,
         attn_use_rotary_emb: bool = True,
-        cond_drop_prob: float = 0.1,
+        cond_drop_prob: float = 0.25,
         timesteps: int = 1000,
         sampling_steps: int = 35,
         dynamic_thresholding_percentile: float = 0.95,
