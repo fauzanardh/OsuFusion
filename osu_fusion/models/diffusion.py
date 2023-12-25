@@ -32,7 +32,6 @@ class OsuFusion(nn.Module):
         cond_drop_prob: float = 0.1,
         timesteps: int = 1000,
         sampling_steps: int = 35,
-        min_snr_gamma: int = 5,
         dynamic_thresholding_percentile: float = 0.95,
     ) -> None:
         super().__init__()
@@ -60,7 +59,6 @@ class OsuFusion(nn.Module):
         self.sampling_steps = sampling_steps
         self.cond_drop_prob = cond_drop_prob
         self.depth = len(dim_h_mult)
-        self.min_snr_gamma = min_snr_gamma
         self.dynamic_thresholding_percentile = dynamic_thresholding_percentile
 
     def pad_data(self: "OsuFusion", x: torch.Tensor) -> Tuple[torch.Tensor, Tuple[int, int]]:
@@ -148,7 +146,7 @@ class OsuFusion(nn.Module):
 
         noise = torch.randn_like(x_padded)
 
-        x_noisy, log_snr, _, _ = self.scheduler.q_sample(x_padded, t, noise=noise)
+        x_noisy, _, _, _ = self.scheduler.q_sample(x_padded, t, noise=noise)
         noise_cond = self.scheduler.get_condition(t)
 
         pred = self.unet(x_noisy, a_padded, noise_cond, c, self.cond_drop_prob)[slice_]
@@ -156,10 +154,4 @@ class OsuFusion(nn.Module):
 
         losses = F.mse_loss(pred, target, reduction="none")
         losses = reduce(losses, "b ... -> b", "mean")
-
-        snr = log_snr.exp()
-        clamped_snr = snr.clone().clamp_(max=self.min_snr_gamma)
-        loss_weight = clamped_snr / snr
-
-        losses = losses * loss_weight
         return losses.mean()
