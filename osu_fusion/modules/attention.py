@@ -7,37 +7,9 @@ from einops import rearrange, repeat
 from packaging import version
 from torch.nn import functional as F  # noqa: N812
 
+from osu_fusion.modules.utils import apply_rotary_pos_emb
+
 _config = namedtuple("Config", ["enable_flash", "enable_math", "enable_mem_efficient"])
-
-
-def rotate_half(x: torch.Tensor) -> torch.Tensor:
-    x = rearrange(x, "... (d r) -> ... d r", r=2)
-    x1, x2 = x.unbind(dim=-1)
-    x = torch.stack((-x2, x1), dim=-1)
-    return rearrange(x, "... d r -> ... (d r)")
-
-
-def apply_rotary_pos_emb(
-    freqs: torch.Tensor,
-    t: torch.Tensor,
-    start_index: int = 0,
-    scale: float = 1.0,
-    seq_dim: int = -2,
-) -> torch.Tensor:
-    if t.ndim == 3:
-        seq_len = t.shape[seq_dim]
-        freqs = freqs[-seq_len:].to(t)
-
-    rot_dim = freqs.shape[-1]
-    end_index = start_index + rot_dim
-
-    assert (
-        rot_dim <= t.shape[-1]
-    ), f"Features dim {t.shape[-1]} must be larger than the positional encoding dim {rot_dim}"
-
-    t_left, t, t_right = t[..., :start_index], t[..., start_index:end_index], t[..., end_index:]
-    t = (t * freqs.cos() * scale) + (rotate_half(t) * freqs.sin() * scale)
-    return torch.cat((t_left, t, t_right), dim=-1)
 
 
 class RotaryPositionEmbedding(nn.Module):
@@ -218,12 +190,11 @@ class MultiHeadAttention(nn.Module):
         inner_dim = dim_head * heads
 
         self.rotary_emb = RotaryPositionEmbedding(dim_head) if use_rotary_emb else None
+        self.to_qkv = nn.Linear(dim, inner_dim * 3)
+        self.null_kv = nn.Parameter(torch.randn(2, inner_dim))
         if is_cross_attention:
             assert dim_context is not None, "context_dim must be provided for cross attention"
-            self.to_q = nn.Linear(dim, inner_dim)
-            self.to_kv = nn.Linear(dim_context, inner_dim * 2)
-        else:
-            self.to_qkv = nn.Linear(dim, inner_dim * 3)
+            self.to_context = nn.Linear(dim_context, inner_dim * 2)
         self.attention = Attention(dropout=dropout, sdpa=sdpa)
         self.to_out = nn.Linear(inner_dim, dim)
 
@@ -232,14 +203,19 @@ class MultiHeadAttention(nn.Module):
         x: torch.Tensor,
         context: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        q, k, v = self.to_qkv(x).chunk(3, dim=-1)
+        q = rearrange(q, "b n (h d) -> b h n d", h=self.heads)
+
+        nk, nv = (repeat(t, "d -> b 1 d", b=q.shape[0]) for t in (self.null_kv.unbind(dim=0)))
+        k, v = torch.cat((nk, k), dim=1), torch.cat((nv, v), dim=1)
+
         if self.is_cross_attention:
             assert context is not None, "context must be provided for cross attention"
-            q = self.to_q(x)
-            k, v = self.to_kv(context).chunk(2, dim=-1)
-        else:
-            q, k, v = self.to_qkv(x).chunk(3, dim=-1)
+            ck, cv = self.to_context(context).chunk(2, dim=-1)
+            k, v = torch.cat((ck, k), dim=1), torch.cat((cv, v), dim=1)
 
-        q, k, v = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q, k, v))
+        k, v = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (k, v))
+
         if self.rotary_emb is not None:
             q, k = self.rotary_emb.rotate_queries_and_keys(q, k)
 

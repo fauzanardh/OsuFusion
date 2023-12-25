@@ -1,13 +1,15 @@
 import math
 from functools import partial
-from typing import Tuple
+from typing import Dict, List, Tuple
 
 import torch
 import torch.nn as nn
 from einops import rearrange
+from einops.layers.torch import Rearrange
 
 from osu_fusion.modules.residual import ResidualBlockV2
 from osu_fusion.modules.transformer import Transformer
+from osu_fusion.modules.utils import prob_mask_like
 
 
 def zero_init_(module: nn.Module) -> None:
@@ -40,6 +42,7 @@ class UNet(nn.Module):
         dim_cond: int,
         dim_h_mult: Tuple[int] = (1, 2, 4, 8),
         dim_learned_sinu: int = 16,
+        num_time_tokens: int = 2,
         res_strides: Tuple[int] = (2, 2, 2, 2),
         res_num_layers: int = 4,
         attn_dim_head: int = 32,
@@ -58,12 +61,18 @@ class UNet(nn.Module):
         self.final_conv = nn.Conv1d(dim_h, dim_out, 1)
         zero_init_(self.final_conv)
 
-        self.time_embedding = nn.Sequential(
+        self.to_time_hiddens = nn.Sequential(
             LearnedSinusoidalPositionalEmbedding(dim_learned_sinu),
             nn.Linear(dim_learned_sinu + 1, self.dim_emb),
             nn.SiLU(),
-            nn.Linear(self.dim_emb, self.dim_emb),
         )
+        self.to_time_cond = nn.Linear(self.dim_emb, self.dim_emb)
+        self.to_time_tokens = nn.Sequential(
+            nn.Linear(self.dim_emb, dim_cond * num_time_tokens),
+            Rearrange("b (r d) -> b r d", r=num_time_tokens),
+        )
+        self.null_cond = nn.Parameter(torch.randn(1, dim_cond))
+        self.cond_norm = nn.LayerNorm(dim_cond)
 
         # Downsample
         dims_h = tuple((dim_h * mult) for mult in dim_h_mult)
@@ -192,31 +201,57 @@ class UNet(nn.Module):
             )
         self.up_layers = nn.ModuleList(up_layers)
 
-    def forward(self: "UNet", x: torch.Tensor, a: torch.Tensor, t: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+    def forward_with_cond_scale(self: "UNet", *args: List, cond_scale: float = 1.0, **kwargs: Dict) -> torch.Tensor:
+        logits = self(*args, **kwargs)
+
+        if cond_scale == 1.0:
+            return logits
+
+        null_logits = self(*args, **kwargs, cond_drop_prob=1.0)
+        return null_logits + (logits - null_logits) * cond_scale
+
+    def forward(
+        self: "UNet",
+        x: torch.Tensor,
+        a: torch.Tensor,
+        t: torch.Tensor,
+        c: torch.Tensor,
+        cond_drop_prob: float = 0.5,
+    ) -> torch.Tensor:
+        c = rearrange(c, "b d -> b 1 d")
         x = torch.cat([x, a], dim=1)
         x = self.pre_conv(x)
 
-        t_emb = self.time_embedding(t)
+        time_hiddens = self.to_time_hiddens(t)
+        time_tokens = self.to_time_tokens(time_hiddens)
+        t = self.to_time_cond(time_hiddens)
+
+        cond_mask = prob_mask_like((x.shape[0],), 1.0 - cond_drop_prob, device=x.device)
+        cond_mask = rearrange(cond_mask, "b -> b 1 1")
+        c = torch.where(cond_mask, c, self.null_cond)
+
+        c = torch.cat([time_tokens, c], dim=1)
+        c = self.cond_norm(c)
 
         skip_connections = []
         for down_init, down_blocks, down_transformer, downsample in self.down_layers:
-            x = down_init(x, t_emb, c)
+            x = down_init(x, t, c)
             for down_resnet in down_blocks:
-                x = down_resnet(x, t_emb)
+                x = down_resnet(x, t)
                 skip_connections.append(x)
             x = down_transformer(x, c)
             skip_connections.append(x)
             x = downsample(x)
 
-        x = self.middle_resnet1(x, t_emb)
+        x = self.middle_resnet1(x, t)
         x = self.middle_transformer(x, c)
-        x = self.middle_resnet2(x, t_emb)
+        x = self.middle_resnet2(x, t)
 
         for upsample, up_init, up_blocks, up_transformer in self.up_layers:
             x = upsample(x)
-            x = up_init(torch.cat([x, skip_connections.pop()], dim=1), t_emb, c)
+            x = up_init(torch.cat([x, skip_connections.pop()], dim=1), t, c)
             for up_resnet in up_blocks:
-                x = up_resnet(torch.cat([x, skip_connections.pop()], dim=1), t_emb)
+                x = up_resnet(torch.cat([x, skip_connections.pop()], dim=1), t)
             x = up_transformer(x, c)
 
         return self.final_conv(x)
