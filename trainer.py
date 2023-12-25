@@ -149,7 +149,7 @@ def main() -> None:
     args.add_argument("--project-dir", type=Path)
     args.add_argument("--dataset-dir", type=Path)
     args.add_argument("--mixed-precision", type=str, default="bf16", choices=["no", "fp16", "bf16"])
-    args.add_argument("--model-dim", type=int, default=256)
+    args.add_argument("--model-dim", type=int, default=128)
     args.add_argument("--lr", type=float, default=1e-5)
     args.add_argument("--total-steps", type=int, default=500000)
     args.add_argument("--save-every", type=int, default=1000)
