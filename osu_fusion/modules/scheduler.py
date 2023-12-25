@@ -26,7 +26,7 @@ def log_snr_to_alpha_sigma(log_snr: torch.Tensor) -> torch.Tensor:
 class GaussianDiffusionContinuousTimes(nn.Module):
     def __init__(
         self: "GaussianDiffusionContinuousTimes",
-        noise_schedule: str = "cosine",
+        noise_schedule: str = "linear",
         timesteps: int = 1000,
     ) -> None:
         super().__init__()
