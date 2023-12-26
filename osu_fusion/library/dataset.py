@@ -6,6 +6,8 @@ import numpy as np
 import torch
 from torch.utils.data import IterableDataset
 
+from osu_fusion.library.osu.from_beatmap import AUDIO_DIM, CONTEXT_DIM, TOTAL_DIM
+
 MFCC_MAX_VALUE = 300
 MFCC_MIN_VALUE = -600
 
@@ -88,8 +90,21 @@ class StreamPerSample(IterableDataset):
         random.shuffle(self.dataset)
 
 
+class DummyDataset(StreamPerSample):
+    MIN_LENGTH = 1024
+    MAX_LENGTH = 4096
+
+    def sample_stream(self: StreamPerSample, _: Path) -> Generator[torch.Tensor, None, None]:
+        length = random.randint(self.MIN_LENGTH, self.MAX_LENGTH)
+        x = torch.randn((TOTAL_DIM, length))
+        a = torch.randn((AUDIO_DIM, length))
+        c = torch.randn((CONTEXT_DIM))
+
+        yield x, a, c
+
+
 class FullSequenceDataset(StreamPerSample):
-    MAX_LENGTH = 131072
+    MAX_LENGTH = 65536
 
     def sample_stream(self: StreamPerSample, map_file: Path) -> Generator[torch.Tensor, None, None]:
         x, a, c = load_tensor(map_file)
