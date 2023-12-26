@@ -59,7 +59,7 @@ class UNet(nn.Module):
 
         self.pre_conv = nn.Conv1d(dim_in, dim_h, 7, padding=3)
         self.final_conv = nn.Conv1d(dim_h, dim_out, 1)
-        # zero_init_(self.final_conv)
+        zero_init_(self.final_conv)
 
         self.get_timesteps_embedding = partial(get_timesteps_embedding, dim=dim_h)
         self.to_time_hiddens = nn.Sequential(
