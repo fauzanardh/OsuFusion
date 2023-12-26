@@ -60,9 +60,8 @@ def train_step(
 ) -> float:
     x, a, c, orig_len = batch
     with accelerator.autocast():
-        t = model.scheduler.sample_random_times(x.shape[0], x.device)
         try:
-            loss = model(x, a, t, c, orig_len)
+            loss = model(x, a, c, orig_len)
         except AssertionError:
             return None
     accelerator.backward(loss)
