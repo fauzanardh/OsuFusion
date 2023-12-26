@@ -2,14 +2,13 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
-from einops import rearrange, reduce
+from diffusers import DDPMScheduler
+from einops import reduce, repeat
 from torch.nn import functional as F  # noqa: N812
 from tqdm.auto import tqdm
 
 from osu_fusion.library.osu.from_beatmap import AUDIO_DIM, CONTEXT_DIM, TOTAL_DIM
-from osu_fusion.modules.scheduler import GaussianDiffusionContinuousTimes
 from osu_fusion.modules.unet import UNet
-from osu_fusion.modules.utils import right_pad_dims_to
 
 MINIMUM_LENGTH = 1024
 
@@ -19,7 +18,6 @@ class OsuFusion(nn.Module):
         self: "OsuFusion",
         dim_h: int,
         dim_h_mult: Tuple[int] = (1, 2, 4, 8),
-        dim_learned_sinu: int = 16,
         res_strides: Tuple[int] = (2, 2, 2, 2),
         res_num_layers: int = 4,
         attn_dim_head: int = 32,
@@ -30,8 +28,8 @@ class OsuFusion(nn.Module):
         attn_sdpa: bool = True,
         attn_use_rotary_emb: bool = True,
         cond_drop_prob: float = 0.25,
-        timesteps: int = 1000,
-        sampling_steps: int = 35,
+        train_timesteps: int = 1000,
+        sampling_timesteps: int = 35,
         dynamic_thresholding_percentile: float = 0.95,
     ) -> None:
         super().__init__()
@@ -42,7 +40,6 @@ class OsuFusion(nn.Module):
             dim_h,
             CONTEXT_DIM,
             dim_h_mult=dim_h_mult,
-            dim_learned_sinu=dim_learned_sinu,
             res_strides=res_strides,
             res_num_layers=res_num_layers,
             attn_dim_head=attn_dim_head,
@@ -54,9 +51,14 @@ class OsuFusion(nn.Module):
             attn_use_rotary_emb=attn_use_rotary_emb,
         )
 
-        self.scheduler = GaussianDiffusionContinuousTimes(timesteps=timesteps)
-        self.timesteps = timesteps
-        self.sampling_steps = sampling_steps
+        self.scheduler = DDPMScheduler(
+            num_train_timesteps=train_timesteps,
+            beta_schedule="scaled_linear",
+            thresholding=True,
+            dynamic_thresholding_ratio=dynamic_thresholding_percentile,
+        )
+        self.train_timesteps = train_timesteps
+        self.sampling_timesteps = sampling_timesteps
         self.cond_drop_prob = cond_drop_prob
         self.depth = len(dim_h_mult)
         self.dynamic_thresholding_percentile = dynamic_thresholding_percentile
@@ -67,49 +69,6 @@ class OsuFusion(nn.Module):
         pad_size = target_length - x.shape[-1]
         x = F.pad(x, (0, pad_size))
         return x, (..., slice(0, original_length))
-
-    def p_mean_variance(
-        self: "OsuFusion",
-        x: torch.Tensor,
-        a: torch.Tensor,
-        t: torch.Tensor,
-        c: torch.Tensor,
-        t_next: Optional[torch.Tensor] = None,
-        cond_scale: float = 7.0,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        pred = self.unet.forward_with_cond_scale(x, a, self.scheduler.get_condition(t), c, cond_scale=cond_scale)
-        x_0 = self.scheduler.predict_start_from_noise(x, t, pred)
-
-        # dynamic thresholding
-        s = torch.quantile(
-            rearrange(x_0, "b ... -> b (...)").abs(),
-            q=self.dynamic_thresholding_percentile,
-            dim=-1,
-        )
-        s.clamp_(min=1.0)
-        s = right_pad_dims_to(x_0, s)
-        x_0 = x_0.clamp(-s, s) / s
-
-        mean_and_variance = self.scheduler.q_posterior(x_0, x, t, t_next=t_next)
-        return mean_and_variance
-
-    @torch.no_grad()
-    def p_sample(
-        self: "OsuFusion",
-        x: torch.Tensor,
-        a: torch.Tensor,
-        t: torch.Tensor,
-        c: torch.Tensor,
-        t_next: Optional[torch.Tensor] = None,
-        cond_scale: float = 7.0,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        b = x.shape[0]
-        model_mean, _, model_log_variance = self.p_mean_variance(x, a, t, c, t_next=t_next, cond_scale=cond_scale)
-        noise = torch.randn_like(x)
-        is_last_sampling_step = t_next == 0.0
-        nonzero_mask = (1 - is_last_sampling_step.float()).reshape(b, *((1,) * (len(x.shape) - 1)))
-        pred = model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise
-        return pred
 
     @torch.no_grad()
     def sample(
@@ -127,11 +86,11 @@ class OsuFusion(nn.Module):
         else:
             x, _ = self.pad_data(x)
 
-        self.scheduler.timesteps = self.sampling_steps
-        timesteps = self.scheduler.get_sampling_timesteps(b, device=device)
-        for t, t_next in tqdm(timesteps, desc="sampling loop time step"):
-            x = self.p_sample(x, a, t, c, t_next=t_next, cond_scale=cond_scale)
-        self.scheduler.timesteps = self.timesteps
+        self.scheduler.set_timesteps(self.sampling_timesteps)
+        for t in tqdm(self.scheduler.timesteps, desc="sampling loop time step"):
+            t_batched = repeat(t, "... -> b ...", b=b).to(device)
+            pred = self.unet.forward_with_cond_scale(x, a, t_batched, c, cond_scale=cond_scale)
+            x = self.scheduler.step(pred, t, x).prev_sample
 
         return x[_slice]
 
@@ -139,7 +98,6 @@ class OsuFusion(nn.Module):
         self: "OsuFusion",
         x: torch.Tensor,
         a: torch.Tensor,
-        t: torch.Tensor,
         c: torch.Tensor,
     ) -> torch.Tensor:
         x_padded, slice_ = self.pad_data(x)
@@ -148,11 +106,11 @@ class OsuFusion(nn.Module):
         assert x_padded.shape[-1] == a_padded.shape[-1], "x and a must have the same number of sequence length"
 
         noise = torch.randn_like(x_padded)
+        timesteps = torch.randint(0, self.scheduler.config.num_train_timesteps, (x_padded.shape[0],)).cuda()
+        timesteps = timesteps.long()
+        x_noisy = self.scheduler.add_noise(x_padded, noise, timesteps)
 
-        x_noisy, _, _, _ = self.scheduler.q_sample(x_padded, t, noise=noise)
-        noise_cond = self.scheduler.get_condition(t)
-
-        pred = self.unet(x_noisy, a_padded, noise_cond, c, self.cond_drop_prob)[slice_]
+        pred = self.unet(x_noisy, a_padded, timesteps, c, self.cond_drop_prob)[slice_]
         target = noise[slice_]
 
         losses = F.mse_loss(pred, target, reduction="none")

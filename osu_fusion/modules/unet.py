@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 from einops.layers.torch import Rearrange
+from torch.nn import functional as F  # noqa: N812
 
 from osu_fusion.modules.residual import ResidualBlockV2
 from osu_fusion.modules.transformer import Transformer
@@ -18,19 +19,19 @@ def zero_init_(module: nn.Module) -> None:
         nn.init.zeros_(module.bias)
 
 
-class LearnedSinusoidalPositionalEmbedding(nn.Module):
-    def __init__(self: "LearnedSinusoidalPositionalEmbedding", dim: int) -> None:
-        super().__init__()
-        assert dim % 2 == 0, "Dim must be divisible by 2"
-        half_dim = dim // 2
-        self.weights = nn.Parameter(torch.randn(half_dim))
+def get_timesteps_embedding(timesteps: torch.Tensor, dim: int, max_period: int = 10000) -> torch.Tensor:
+    half_dim = dim // 2
+    exponent = -math.log(max_period) * torch.arange(start=0, end=half_dim, dtype=torch.float32, device=timesteps.device)
+    exponent = exponent / (half_dim - 1)
 
-    def forward(self: "LearnedSinusoidalPositionalEmbedding", x: torch.Tensor) -> torch.Tensor:
-        x = rearrange(x, "b -> b 1")
-        freqs = x * rearrange(self.weights, "d -> 1 d") * 2 * math.pi
-        fourier = torch.cat([freqs.sin(), freqs.cos()], dim=-1)
-        fourier = torch.cat([x, fourier], dim=-1)
-        return fourier
+    embedding = torch.exp(exponent)
+    embedding = timesteps[:, None] * embedding[None, :]
+    embedding = torch.cat([embedding.cos(), embedding.sin()], dim=-1)
+
+    if dim % 2 == 1:
+        embedding = F.pad(embedding, (0, 1, 0, 0))
+
+    return embedding
 
 
 class UNet(nn.Module):
@@ -41,7 +42,6 @@ class UNet(nn.Module):
         dim_h: int,
         dim_cond: int,
         dim_h_mult: Tuple[int] = (1, 2, 4, 8),
-        dim_learned_sinu: int = 16,
         num_time_tokens: int = 2,
         res_strides: Tuple[int] = (2, 2, 2, 2),
         res_num_layers: int = 4,
@@ -59,11 +59,11 @@ class UNet(nn.Module):
 
         self.pre_conv = nn.Conv1d(dim_in, dim_h, 7, padding=3)
         self.final_conv = nn.Conv1d(dim_h, dim_out, 1)
-        zero_init_(self.final_conv)
+        # zero_init_(self.final_conv)
 
+        self.get_timesteps_embedding = partial(get_timesteps_embedding, dim=dim_h)
         self.to_time_hiddens = nn.Sequential(
-            LearnedSinusoidalPositionalEmbedding(dim_learned_sinu),
-            nn.Linear(dim_learned_sinu + 1, self.dim_emb),
+            nn.Linear(dim_h, self.dim_emb),
             nn.SiLU(),
         )
         self.to_time_cond = nn.Linear(self.dim_emb, self.dim_emb)
@@ -219,6 +219,7 @@ class UNet(nn.Module):
         cond_drop_prob: float = 0.5,
     ) -> torch.Tensor:
         c = rearrange(c, "b d -> b 1 d")
+        t = self.get_timesteps_embedding(t)
         x = torch.cat([x, a], dim=1)
         x = self.pre_conv(x)
 
