@@ -96,6 +96,7 @@ def train(args: ArgumentParser) -> None:
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_size,
+        num_workers=args.num_workers,
         pin_memory=True,
         collate_fn=collate_fn,
     )
@@ -177,6 +178,7 @@ def main() -> None:
     args.add_argument("--model-dim", type=int, default=128)
     args.add_argument("--lr", type=float, default=1e-5)
     args.add_argument("--batch-size", type=int, default=16)
+    args.add_argument("--num-workers", type=int, default=2)
     args.add_argument("--total-steps", type=int, default=500000)
     args.add_argument("--save-every", type=int, default=1000)
     args.add_argument("--max-num-checkpoints", type=int, default=5)
