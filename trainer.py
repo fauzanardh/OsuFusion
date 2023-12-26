@@ -2,12 +2,13 @@ import os  # noqa: F401
 import random
 from argparse import ArgumentParser
 from pathlib import Path
-from typing import Tuple
+from typing import List, Tuple
 
 import torch
 import wandb
 from accelerate import Accelerator
 from accelerate.utils import ProjectConfiguration
+from torch.nn import functional as F  # noqa: N812
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.data import DataLoader
@@ -26,6 +27,30 @@ def delete_old_checkpoints(project_dir: Path, max_num_checkpoints: int) -> None:
         checkpoint.rmdir()
 
 
+def collate_fn(
+    batch: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    out_x = []
+    out_a = []
+    out_c = []
+    orig_len = []
+
+    max_length = max([x.shape[1] for x, _, _ in batch])
+    for x, a, c in batch:
+        orig_len.append(x.shape[1])
+        x = F.pad(x, (0, max_length - x.shape[1]), mode="constant", value=-1.0)
+        a = F.pad(a, (0, max_length - a.shape[1]), mode="constant", value=-1.0)
+        out_x.append(x)
+        out_a.append(a)
+        out_c.append(c)
+
+    out_x = torch.stack(out_x)
+    out_a = torch.stack(out_a)
+    out_c = torch.stack(out_c)
+    orig_len = torch.tensor(orig_len)
+    return out_x, out_a, out_c, orig_len
+
+
 def train_step(
     accelerator: Accelerator,
     model: OsuFusion,
@@ -33,11 +58,11 @@ def train_step(
     scheduler: OneCycleLR,
     batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
 ) -> float:
-    x, a, c = batch
+    x, a, c, orig_len = batch
     with accelerator.autocast():
         t = model.scheduler.sample_random_times(x.shape[0], x.device)
         try:
-            loss = model(x, a, t, c)
+            loss = model(x, a, t, c, orig_len)
         except AssertionError:
             return None
     accelerator.backward(loss)
@@ -71,8 +96,9 @@ def train(args: ArgumentParser) -> None:
     dataset = FullSequenceDataset(dataset=all_maps)
     dataloader = DataLoader(
         dataset,
-        batch_size=1,
+        batch_size=args.batch_size,
         pin_memory=True,
+        collate_fn=collate_fn,
     )
 
     model, optimizer, scheduler, dataloader = accelerator.prepare(
@@ -151,6 +177,7 @@ def main() -> None:
     args.add_argument("--mixed-precision", type=str, default="bf16", choices=["no", "fp16", "bf16"])
     args.add_argument("--model-dim", type=int, default=128)
     args.add_argument("--lr", type=float, default=1e-5)
+    args.add_argument("--batch-size", type=int, default=16)
     args.add_argument("--total-steps", type=int, default=500000)
     args.add_argument("--save-every", type=int, default=1000)
     args.add_argument("--max-num-checkpoints", type=int, default=5)
