@@ -97,9 +97,10 @@ class Block(nn.Module):
         dim_in: int,
         dim_out: int,
         norm: bool = True,
+        norm_groups: int = 8,
     ) -> None:
         super().__init__()
-        self.norm = nn.GroupNorm(1, dim_in) if norm else nn.Identity()
+        self.norm = nn.GroupNorm(norm_groups, dim_in) if norm else nn.Identity()
         self.activation = nn.SiLU()
         self.res_conv = nn.Conv1d(dim_in, dim_out, 7, padding=3)
 
