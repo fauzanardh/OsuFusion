@@ -19,19 +19,30 @@ def zero_init_(module: nn.Module) -> None:
         nn.init.zeros_(module.bias)
 
 
-def get_timesteps_embedding(timesteps: torch.Tensor, dim: int, max_period: int = 10000) -> torch.Tensor:
-    half_dim = dim // 2
-    exponent = -math.log(max_period) * torch.arange(start=0, end=half_dim, dtype=torch.float32, device=timesteps.device)
-    exponent = exponent / (half_dim - 1)
+class SinusoidalPositionEmbedding(nn.Module):
+    def __init__(self: "SinusoidalPositionEmbedding", dim: int, max_period: int = 10000) -> None:
+        super().__init__()
+        self.dim = dim
+        self.max_period = max_period
 
-    embedding = torch.exp(exponent)
-    embedding = timesteps[:, None] * embedding[None, :]
-    embedding = torch.cat([embedding.cos(), embedding.sin()], dim=-1)
+    def forward(self: "SinusoidalPositionEmbedding", timesteps: torch.Tensor) -> torch.Tensor:
+        half_dim = self.dim // 2
+        exponent = -math.log(self.max_period) * torch.arange(
+            start=0,
+            end=half_dim,
+            dtype=torch.float32,
+            device=timesteps.device,
+        )
+        exponent = exponent / (half_dim - 1)
 
-    if dim % 2 == 1:
-        embedding = F.pad(embedding, (0, 1, 0, 0))
+        embedding = torch.exp(exponent)
+        embedding = rearrange(timesteps, "i -> i 1") * rearrange(embedding, "j -> 1 j")
+        embedding = torch.cat([embedding.cos(), embedding.sin()], dim=-1)
 
-    return embedding
+        if self.dim % 2 == 1:
+            embedding = F.pad(embedding, (0, 1, 0, 0))
+
+        return embedding
 
 
 class UNet(nn.Module):
@@ -61,7 +72,7 @@ class UNet(nn.Module):
         self.final_conv = nn.Conv1d(dim_h, dim_out, 1)
         zero_init_(self.final_conv)
 
-        self.get_timesteps_embedding = partial(get_timesteps_embedding, dim=dim_h)
+        self.get_timesteps_embedding = SinusoidalPositionEmbedding(dim_h)
         self.to_time_hiddens = nn.Sequential(
             nn.Linear(dim_h, self.dim_emb),
             nn.SiLU(),
