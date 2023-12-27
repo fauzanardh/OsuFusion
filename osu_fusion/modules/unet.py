@@ -216,7 +216,7 @@ class UNet(nn.Module):
         a: torch.Tensor,
         t: torch.Tensor,
         c: torch.Tensor,
-        cond_drop_prob: float = 0.5,
+        cond_drop_prob: float = 0.0,
     ) -> torch.Tensor:
         c = rearrange(c, "b d -> b 1 d")
         x = torch.cat([x, a], dim=1)
