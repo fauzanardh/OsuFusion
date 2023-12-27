@@ -71,7 +71,7 @@ class UNet(nn.Module):
             nn.Linear(self.dim_emb, dim_cond * num_time_tokens),
             Rearrange("b (r d) -> b r d", r=num_time_tokens),
         )
-        self.null_cond = nn.Parameter(torch.randn(1, dim_cond))
+        self.null_cond = nn.Parameter(torch.zeros(1, dim_cond).uniform_(-1.0, 1.0))
         self.cond_norm = nn.LayerNorm(dim_cond)
 
         # Downsample
@@ -229,9 +229,7 @@ class UNet(nn.Module):
         cond_mask = prob_mask_like((x.shape[0],), 1.0 - cond_drop_prob, device=x.device)
         cond_mask = rearrange(cond_mask, "b -> b 1 1")
         c = torch.where(cond_mask, c, self.null_cond)
-
         c = torch.cat([time_tokens, c], dim=1)
-        c = self.cond_norm(c)
 
         skip_connections = []
         for down_init, down_blocks, down_transformer, downsample in self.down_layers:
