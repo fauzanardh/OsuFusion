@@ -30,7 +30,7 @@ class OsuFusion(nn.Module):
         cond_drop_prob: float = 0.25,
         train_timesteps: int = 1000,
         sampling_timesteps: int = 35,
-        dynamic_thresholding_percentile: float = 0.95,
+        dynamic_thresholding_percentile: float = 0.995,
     ) -> None:
         super().__init__()
 
