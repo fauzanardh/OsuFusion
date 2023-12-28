@@ -99,7 +99,7 @@ class OsuFusion(nn.Module):
         x: torch.Tensor,
         a: torch.Tensor,
         c: torch.Tensor,
-        orig_len: torch.Tensor,
+        orig_len: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         x_padded, slice_ = self.pad_data(x)
         a_padded, _ = self.pad_data(a)
@@ -115,8 +115,9 @@ class OsuFusion(nn.Module):
         target = noise[slice_]
 
         losses = F.mse_loss(pred, target, reduction="none")
-        for i, orig in enumerate(orig_len):
-            losses[i, orig:] = 0.0
+        if orig_len is not None:
+            for i, orig in enumerate(orig_len):
+                losses[i, orig:] = 0.0
 
         losses = reduce(losses, "b ... -> b", "mean")
         return losses.mean()
