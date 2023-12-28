@@ -111,7 +111,8 @@ class OsuFusion(nn.Module):
         timesteps = timesteps.long()
         x_noisy = self.scheduler.add_noise(x_padded, noise, timesteps)
 
-        pred = self.unet(x_noisy, a_padded, timesteps, c, self.cond_drop_prob)[slice_]
+        t = timesteps / self.scheduler.config.num_train_timesteps
+        pred = self.unet(x_noisy, a_padded, t, c, self.cond_drop_prob)[slice_]
         target = noise[slice_]
 
         losses = F.mse_loss(pred, target, reduction="none")
