@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import List, Tuple
 
 import torch
-import wandb
 from accelerate import Accelerator
 from accelerate.utils import ProjectConfiguration
 from torch.nn import functional as F  # noqa: N812
@@ -73,13 +72,20 @@ def train_step(
 
 def train(args: ArgumentParser) -> None:
     print("Initializing...")
+    # Add your own API key here or set it as an environment variable
+    # os.environ["WANDB_API_KEY"] = ""
     accelerator = Accelerator(
         mixed_precision=args.mixed_precision,
         project_config=ProjectConfiguration(
             project_dir=args.project_dir,
             automatic_checkpoint_naming=True,
         ),
+        log_with="wandb",
     )
+    accelerator.init_trackers(
+        project_name="OsuFusion",
+    )
+
     model = OsuFusion(args.model_dim)
     optimizer = AdamW(model.parameters(), lr=args.lr)
     scheduler = OneCycleLR(
@@ -109,17 +115,10 @@ def train(args: ArgumentParser) -> None:
     )
     model.train()
 
-    # Add your own API key here or set it as an environment variable
-    # os.environ["WANDB_API_KEY"] = ""
-    wandb.init(
-        project="OsuFusion",
-        settings=wandb.Settings(start_method="thread"),
-    )
-
     print("Training...")
     iter_dataloader = iter(dataloader)
     losses = []  # Keep track of the last `args.save_every` losses
-    with tqdm(total=args.total_steps, smoothing=1.0) as pbar:
+    with tqdm(total=args.total_steps, smoothing=0.0, disable=not accelerator.is_local_main_process) as pbar:
         for step in range(args.total_steps):
             batch = None
             while batch is None:
@@ -150,7 +149,7 @@ def train(args: ArgumentParser) -> None:
             pbar.update()
 
             if accelerator.is_main_process:
-                wandb.log(
+                accelerator.log(
                     {
                         "loss": loss,
                         "lr": scheduler.get_last_lr()[0],
@@ -163,7 +162,7 @@ def train(args: ArgumentParser) -> None:
                 accelerator.save_model(model, args.project_dir / f"checkpoint-{step + 1}")
 
                 if accelerator.is_main_process:
-                    wandb.log({"save_loss": avg_loss}, step=step + 1)
+                    accelerator.log({"save_loss": avg_loss}, step=step + 1)
                     delete_old_checkpoints(args.project_dir, args.max_num_checkpoints)
 
     accelerator.wait_for_everyone()
