@@ -88,7 +88,8 @@ class OsuFusion(nn.Module):
 
         self.scheduler.set_timesteps(self.sampling_timesteps)
         for t in tqdm(self.scheduler.timesteps, desc="sampling loop time step"):
-            t_batched = repeat(t, "... -> b ...", b=b).to(device)
+            t_batched = repeat(t, "... -> b ...", b=b).float().to(device)
+            t_batched /= self.scheduler.config.num_train_timesteps
             pred = self.unet.forward_with_cond_scale(x, a, t_batched, c, cond_scale=cond_scale)
             x = self.scheduler.step(pred, t, x).prev_sample
 
