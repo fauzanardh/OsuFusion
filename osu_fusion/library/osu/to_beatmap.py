@@ -92,7 +92,7 @@ def to_slider_decoder(processed_cursor_signals: npt.NDArray, slider_signal: npt.
         control_points = []
         full_slider = processed_cursor_signals.T[a : b + 1]
         slider_segments = full_slider[: np.ceil(full_slider.shape[0] / slides).astype(int)]
-        for _bezier in fit_bezier(slider_segments, max_err=50):
+        for _bezier in fit_bezier(slider_segments, max_err=100):
             _bezier_np = np.array(_bezier).round().astype(int)
             control_points.extend(_bezier_np)
             length += bezier.Curve.from_nodes(_bezier_np.T).length
