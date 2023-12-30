@@ -1,6 +1,6 @@
 import math
 from functools import partial
-from typing import Dict, List, Tuple
+from typing import Tuple
 
 import torch
 import torch.nn as nn
@@ -9,7 +9,6 @@ from einops.layers.torch import Rearrange
 
 from osu_fusion.modules.residual import ResidualBlockV2
 from osu_fusion.modules.transformer import Transformer
-from osu_fusion.modules.utils import prob_mask_like
 
 
 def zero_init_(module: nn.Module) -> None:
@@ -70,7 +69,6 @@ class UNet(nn.Module):
             nn.Linear(self.dim_emb, dim_cond * num_time_tokens),
             Rearrange("b (r d) -> b r d", r=num_time_tokens),
         )
-        self.null_cond = nn.Parameter(torch.randn(1, dim_cond))
         self.cond_norm = nn.LayerNorm(dim_cond)
 
         # Downsample
@@ -200,22 +198,12 @@ class UNet(nn.Module):
             )
         self.up_layers = nn.ModuleList(up_layers)
 
-    def forward_with_cond_scale(self: "UNet", *args: List, cond_scale: float = 1.0, **kwargs: Dict) -> torch.Tensor:
-        logits = self(*args, **kwargs)
-
-        if cond_scale == 1.0:
-            return logits
-
-        null_logits = self(*args, **kwargs, cond_drop_prob=1.0)
-        return null_logits + (logits - null_logits) * cond_scale
-
     def forward(
         self: "UNet",
         x: torch.Tensor,
         a: torch.Tensor,
         t: torch.Tensor,
         c: torch.Tensor,
-        cond_drop_prob: float = 0.0,
     ) -> torch.Tensor:
         c = rearrange(c, "b d -> b 1 d")
         x = torch.cat([x, a], dim=1)
@@ -224,10 +212,6 @@ class UNet(nn.Module):
         time_hiddens = self.to_time_hiddens(t)
         time_tokens = self.to_time_tokens(time_hiddens)
         t = self.to_time_cond(time_hiddens)
-
-        cond_mask = prob_mask_like((x.shape[0],), 1.0 - cond_drop_prob, device=x.device)
-        cond_mask = rearrange(cond_mask, "b -> b 1 1")
-        c = torch.where(cond_mask, c, self.null_cond)
 
         c = torch.cat([time_tokens, c], dim=1)
         c = self.cond_norm(c)

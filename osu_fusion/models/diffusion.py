@@ -27,7 +27,6 @@ class OsuFusion(nn.Module):
         attn_use_global_context_attention: bool = True,
         attn_sdpa: bool = True,
         attn_use_rotary_emb: bool = True,
-        cond_drop_prob: float = 0.25,
         train_timesteps: int = 1000,
         sampling_timesteps: int = 35,
         dynamic_thresholding_percentile: float = 0.995,
@@ -59,7 +58,6 @@ class OsuFusion(nn.Module):
         )
         self.train_timesteps = train_timesteps
         self.sampling_timesteps = sampling_timesteps
-        self.cond_drop_prob = cond_drop_prob
         self.depth = len(dim_h_mult)
         self.dynamic_thresholding_percentile = dynamic_thresholding_percentile
 
@@ -90,7 +88,7 @@ class OsuFusion(nn.Module):
         for t in tqdm(self.scheduler.timesteps, desc="sampling loop time step"):
             t_batched = repeat(t, "... -> b ...", b=b).float().to(device)
             t_batched /= self.scheduler.config.num_train_timesteps
-            pred = self.unet.forward_with_cond_scale(x, a, t_batched, c, cond_scale=cond_scale)
+            pred = self.unet(x, a, t_batched, c, cond_scale=cond_scale)
             x = self.scheduler.step(pred, t, x).prev_sample
 
         return x[_slice]
@@ -113,7 +111,7 @@ class OsuFusion(nn.Module):
         x_noisy = self.scheduler.add_noise(x_padded, noise, timesteps)
 
         t = timesteps / self.scheduler.config.num_train_timesteps
-        pred = self.unet(x_noisy, a_padded, t, c, self.cond_drop_prob)[slice_]
+        pred = self.unet(x_noisy, a_padded, t, c)[slice_]
         target = noise[slice_]
 
         losses = F.mse_loss(pred, target, reduction="none")
