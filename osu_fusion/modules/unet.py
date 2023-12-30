@@ -29,7 +29,6 @@ class LearnedSinusoidalPosEmb(nn.Module):
         x = rearrange(x, "b -> b 1")
         freqs = x * rearrange(self.weights, "d -> 1 d") * 2 * math.pi
         fouriered = torch.cat([freqs.cos(), freqs.sin()], dim=-1)
-        fouriered = torch.cat([x, fouriered], dim=-1)
         return fouriered
 
 
@@ -63,7 +62,7 @@ class UNet(nn.Module):
 
         self.to_time_hiddens = nn.Sequential(
             LearnedSinusoidalPosEmb(dim_learned_pos_emb),
-            nn.Linear(dim_learned_pos_emb + 1, self.dim_emb),
+            nn.Linear(dim_learned_pos_emb, self.dim_emb),
             nn.SiLU(),
         )
         self.to_time_cond = nn.Linear(self.dim_emb, self.dim_emb)
