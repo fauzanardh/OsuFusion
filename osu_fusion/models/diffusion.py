@@ -74,7 +74,6 @@ class OsuFusion(nn.Module):
         a: torch.Tensor,
         c: torch.Tensor,
         x: Optional[torch.Tensor] = None,
-        cond_scale: float = 7.0,
     ) -> torch.Tensor:
         a, _slice = self.pad_data(a)
 
@@ -88,7 +87,7 @@ class OsuFusion(nn.Module):
         for t in tqdm(self.scheduler.timesteps, desc="sampling loop time step"):
             t_batched = repeat(t, "... -> b ...", b=b).float().to(device)
             t_batched /= self.scheduler.config.num_train_timesteps
-            pred = self.unet(x, a, t_batched, c, cond_scale=cond_scale)
+            pred = self.unet(x, a, t_batched, c)
             x = self.scheduler.step(pred, t, x).prev_sample
 
         return x[_slice]
