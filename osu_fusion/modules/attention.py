@@ -68,17 +68,14 @@ class RotaryPositionEmbedding(nn.Module):
         seq_dim: int = -2,
     ) -> torch.Tensor:
         device, dtype, q_seq_len, k_seq_len = q.device, q.dtype, q.shape[seq_dim], k.shape[seq_dim]
+        assert q_seq_len == k_seq_len, "sequence lengths of queries and keys must match"
 
-        q_seq = self.get_seq_pos(q_seq_len, device, dtype)
-        q_freqs = self(q_seq, seq_len=q_seq_len)
-        q_scale = self.get_scale(q_seq, seq_len=q_seq_len).to(dtype)
+        seq = self.get_seq_pos(q_seq_len, device, dtype)
+        freqs = self(seq, seq_len=q_seq_len)
+        scale = self.get_scale(seq, seq_len=q_seq_len).to(dtype)
 
-        k_seq = self.get_seq_pos(k_seq_len, device, dtype)
-        k_freqs = self(k_seq, seq_len=k_seq_len)
-        k_scale = self.get_scale(k_seq, seq_len=k_seq_len).to(dtype)
-
-        rotated_q = apply_rotary_pos_emb(q_freqs, q, scale=q_scale, seq_dim=seq_dim)
-        rotated_k = apply_rotary_pos_emb(k_freqs, k, scale=k_scale**-1, seq_dim=seq_dim)
+        rotated_q = apply_rotary_pos_emb(freqs, q, scale=scale, seq_dim=seq_dim)
+        rotated_k = apply_rotary_pos_emb(freqs, k, scale=scale**-1, seq_dim=seq_dim)
 
         rotated_q = rotated_q.type(q.dtype)
         rotated_k = rotated_k.type(k.dtype)
@@ -189,13 +186,14 @@ class MultiHeadAttention(nn.Module):
 
         inner_dim = dim_head * heads
 
-        self.rotary_emb = RotaryPositionEmbedding(dim_head) if use_rotary_emb else None
         if is_cross_attention:
             assert dim_context is not None, "context_dim must be provided for cross attention"
             self.to_q = nn.Linear(dim, inner_dim)
             self.to_kv = nn.Linear(dim_context, inner_dim * 2)
+            self.rotary_emb = None
         else:
             self.to_qkv = nn.Linear(dim, inner_dim * 3)
+            self.rotary_emb = RotaryPositionEmbedding(dim_head) if use_rotary_emb else None
         self.attention = Attention(dropout=dropout, sdpa=sdpa)
         self.to_out = nn.Linear(inner_dim, dim)
 
