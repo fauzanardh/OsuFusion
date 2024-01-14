@@ -119,7 +119,7 @@ class SubsequenceDataset(StreamPerSample):
     def __init__(self: "SubsequenceDataset", **kwargs: Dict) -> None:
         super().__init__(**kwargs)
 
-        self.sequence_length = kwargs.pop("sequence_length")
+        self.sequence_length = kwargs.pop("sequence_length", 8192)
         self.subsequence_density = kwargs.pop("subsequence_density", 2.0)
         super().__init__(**kwargs)
 

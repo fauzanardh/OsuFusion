@@ -13,7 +13,7 @@ from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-from osu_fusion.library.dataset import FullSequenceDataset
+from osu_fusion.library.dataset import SubsequenceDataset
 from osu_fusion.models.diffusion import OsuFusion
 
 
@@ -98,13 +98,12 @@ def train(args: ArgumentParser) -> None:
     print("Loading dataset...")
     all_maps = list(args.dataset_dir.rglob("*.map.npz"))
     random.shuffle(all_maps)
-    dataset = FullSequenceDataset(dataset=all_maps)
+    dataset = SubsequenceDataset(dataset=all_maps)
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         pin_memory=True,
-        collate_fn=collate_fn,
     )
 
     model, optimizer, scheduler, dataloader = accelerator.prepare(

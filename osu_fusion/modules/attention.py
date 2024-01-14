@@ -18,7 +18,7 @@ class RotaryPositionEmbedding(nn.Module):
         dim: int,
         theta: int = 10000,
         interpolation_factor: float = 1.0,
-        scale_base: int = 16384,
+        scale_base: int = 8192,
     ) -> None:
         super().__init__()
         freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
