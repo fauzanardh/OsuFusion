@@ -76,7 +76,6 @@ def train(args: ArgumentParser) -> None:
     # os.environ["WANDB_API_KEY"] = ""
     accelerator = Accelerator(
         mixed_precision=args.mixed_precision,
-        gradient_checkpointing=args.gradient_checkpointing,
         project_config=ProjectConfiguration(
             project_dir=args.project_dir,
             automatic_checkpoint_naming=True,
@@ -88,6 +87,7 @@ def train(args: ArgumentParser) -> None:
     )
 
     model = OsuFusion(args.model_dim)
+    model.unet.set_gradient_checkpointing(args.gradient_checkpointing)
     optimizer = AdamW(model.parameters(), lr=args.lr)
     scheduler = OneCycleLR(
         optimizer,

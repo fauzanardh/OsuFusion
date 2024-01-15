@@ -152,7 +152,9 @@ class ResidualBlockV2(nn.Module):
         self.gca = GlobalContext(dim_in, dim_out) if use_gca else Always(1)
         self.res_conv = nn.Conv1d(dim_in, dim_out, 1) if dim_in != dim_out else nn.Identity()
 
-    def forward(
+        self.gradient_checkpointing = False
+
+    def forward_body(
         self: "ResidualBlockV2",
         x: torch.Tensor,
         time_emb: torch.Tensor,
@@ -173,3 +175,14 @@ class ResidualBlockV2(nn.Module):
         h = h * self.gca(x)
 
         return h + self.res_conv(x)
+
+    def forward(
+        self: "ResidualBlockV2",
+        x: torch.Tensor,
+        time_emb: torch.Tensor,
+        context: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if self.training and self.gradient_checkpointing:
+            return torch.utils.checkpoint.checkpoint(self.forward_body, x, time_emb, context, use_reentrant=True)
+        else:
+            return self.forward_body(x, time_emb, context)

@@ -198,6 +198,15 @@ class UNet(nn.Module):
             )
         self.up_layers = nn.ModuleList(up_layers)
 
+        self.gradient_checkpointing = False
+
+    def set_gradient_checkpointing(self: "UNet", value: bool) -> None:
+        self.gradient_checkpointing = value
+        for name, module in self.named_modules():
+            if hasattr(module, "gradient_checkpointing"):
+                module.gradient_checkpointing = value
+                print(f"Set gradient checkpointing to {value} for {name}")
+
     def forward(
         self: "UNet",
         x: torch.Tensor,
