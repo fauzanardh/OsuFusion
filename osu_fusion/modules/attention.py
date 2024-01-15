@@ -145,7 +145,6 @@ class Attention(nn.Module):
                 k,
                 v,
                 dropout_p=self.dropout if self.training else 0.0,
-                scale=q.shape[-1] ** -0.5,
             )
 
         return out.to(dtype) if config.enable_flash else out
@@ -155,12 +154,16 @@ class Attention(nn.Module):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
+        scale: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        if scale is None:
+            scale = q.shape[-1] ** -0.5
+        q = q * scale
+
         if self.sdpa:
             return self.sdpa_attn(q, k, v)
 
-        scale = q.shape[-1] ** -0.5
-        sim = torch.einsum("b h i d, b h j d -> b h i j", q, k) * scale
+        sim = torch.einsum("b h i d, b h j d -> b h i j", q, k)
 
         attn = sim.softmax(dim=-1)
         attn = F.dropout(attn, p=self.dropout, training=self.training)
@@ -183,6 +186,7 @@ class MultiHeadAttention(nn.Module):
     ) -> None:
         super().__init__()
         self.heads = heads
+        self.scale = dim_head**-0.5
         self.is_cross_attention = is_cross_attention
 
         inner_dim = dim_head * heads
@@ -215,7 +219,7 @@ class MultiHeadAttention(nn.Module):
         if self.rotary_emb is not None:
             q, k = self.rotary_emb.rotate_queries_and_keys(q, k)
 
-        out = self.attention(q, k, v)
+        out = self.attention(q, k, v, scale=self.scale)
         out = rearrange(out, "b h n d -> b (h d) n")
 
         out = self.to_out(out)
