@@ -103,6 +103,7 @@ def train(args: ArgumentParser) -> None:
         dataset,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        persistent_workers=True,
         pin_memory=True,
     )
 
