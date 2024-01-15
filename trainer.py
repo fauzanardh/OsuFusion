@@ -243,8 +243,8 @@ def main() -> None:
     args.add_argument("--max-num-checkpoints", type=int, default=5)
     args.add_argument("--pct-start", type=float, default=0.002)
     args.add_argument("--sample-every", type=int, default=1000)
-    args.add_argument("--sample_audio", type=Path, default=None)
-    args.add_argument("--sample_audio_bpm", type=float, default=180.0)
+    args.add_argument("--sample-audio", type=Path, default=None)
+    args.add_argument("--sample-audio-bpm", type=float, default=180.0)
     args = args.parse_args()
 
     train(args)
