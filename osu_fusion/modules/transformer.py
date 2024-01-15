@@ -1,8 +1,17 @@
 import torch
 import torch.nn as nn
-from einops import rearrange
+import torch.nn.functional as F  # noqa: N812
 
 from osu_fusion.modules.attention import MultiHeadAttention
+
+
+class RMSNorm(nn.Module):
+    def __init__(self: "RMSNorm", dim: int) -> None:
+        super().__init__()
+        self.g = nn.Parameter(torch.ones(1, dim, 1))
+
+    def forward(self: "RMSNorm", x: torch.Tensor) -> torch.Tensor:
+        return F.normalize(x, dim=1) * self.g * (x.shape[1] ** 0.5)
 
 
 class FeedForward(nn.Sequential):
@@ -13,11 +22,11 @@ class FeedForward(nn.Sequential):
     ) -> None:
         inner_dim = dim * dim_mult
         super().__init__(
-            nn.LayerNorm(dim),
-            nn.Linear(dim, inner_dim, bias=False),
+            nn.GroupNorm(1, dim),
+            nn.Conv1d(dim, inner_dim, 1, bias=False),
             nn.GELU(),
-            nn.LayerNorm(inner_dim),
-            nn.Linear(inner_dim, dim, bias=False),
+            nn.GroupNorm(1, inner_dim),
+            nn.Conv1d(inner_dim, dim, 1, bias=False),
         )
 
 
@@ -52,9 +61,9 @@ class TransformerBlock(nn.Module):
             is_cross_attention=True,
             use_rotary_emb=use_rotary_emb,
         )
-        self.norm1 = nn.LayerNorm(dim)
-        self.norm2 = nn.LayerNorm(dim)
-        self.norm3 = nn.LayerNorm(dim)
+        self.norm1 = RMSNorm(dim)
+        self.norm2 = RMSNorm(dim)
+        self.norm3 = RMSNorm(dim)
 
         self.gradient_checkpointing = False
 
@@ -100,8 +109,6 @@ class Transformer(nn.Module):
         )
 
     def forward(self: "Transformer", x: torch.Tensor, context: torch.Tensor) -> torch.Tensor:
-        x = rearrange(x, "b d n -> b n d")
         for layer in self.layers:
             x = layer(x, context)
-        x = rearrange(x, "b n d -> b d n")
         return x

@@ -69,7 +69,7 @@ class UNet(nn.Module):
             nn.Linear(self.dim_emb, dim_cond * num_time_tokens),
             Rearrange("b (r d) -> b r d", r=num_time_tokens),
         )
-        self.cond_norm = nn.LayerNorm(dim_cond)
+        self.cond_norm = nn.GroupNorm(1, dim_cond)
 
         # Downsample
         dims_h = tuple((dim_h * mult) for mult in dim_h_mult)
@@ -214,7 +214,6 @@ class UNet(nn.Module):
         t: torch.Tensor,
         c: torch.Tensor,
     ) -> torch.Tensor:
-        c = rearrange(c, "b d -> b 1 d")
         x = torch.cat([x, a], dim=1)
         x = self.pre_conv(x)
 
@@ -222,7 +221,9 @@ class UNet(nn.Module):
         time_tokens = self.to_time_tokens(time_hiddens)
         t = self.to_time_cond(time_hiddens)
 
-        c = torch.cat([time_tokens, c], dim=1)
+        time_tokens = rearrange(time_tokens, "b n d -> b d n")
+        c = rearrange(c, "b d -> b d 1")
+        c = torch.cat([time_tokens, c], dim=-1)
         c = self.cond_norm(c)
 
         skip_connections = []

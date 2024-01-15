@@ -145,6 +145,7 @@ class Attention(nn.Module):
                 k,
                 v,
                 dropout_p=self.dropout if self.training else 0.0,
+                scale=q.shape[-1] ** -0.5,
             )
 
         return out.to(dtype) if config.enable_flash else out
@@ -188,14 +189,14 @@ class MultiHeadAttention(nn.Module):
 
         if is_cross_attention:
             assert dim_context is not None, "context_dim must be provided for cross attention"
-            self.to_q = nn.Linear(dim, inner_dim)
-            self.to_kv = nn.Linear(dim_context, inner_dim * 2)
+            self.to_q = nn.Conv1d(dim, inner_dim, 1, bias=False)
+            self.to_kv = nn.Conv1d(dim_context, inner_dim * 2, 1, bias=False)
             self.rotary_emb = None
         else:
-            self.to_qkv = nn.Linear(dim, inner_dim * 3)
+            self.to_qkv = nn.Conv1d(dim, inner_dim * 3, 1, bias=False)
             self.rotary_emb = RotaryPositionEmbedding(dim_head) if use_rotary_emb else None
         self.attention = Attention(dropout=dropout, sdpa=sdpa)
-        self.to_out = nn.Linear(inner_dim, dim)
+        self.to_out = nn.Conv1d(inner_dim, dim, 1)
 
     def forward(
         self: "MultiHeadAttention",
@@ -205,17 +206,17 @@ class MultiHeadAttention(nn.Module):
         if self.is_cross_attention:
             assert context is not None, "context must be provided for cross attention"
             q = self.to_q(x)
-            k, v = self.to_kv(context).chunk(2, dim=-1)
+            k, v = self.to_kv(context).chunk(2, dim=-2)
         else:
-            q, k, v = self.to_qkv(x).chunk(3, dim=-1)
+            q, k, v = self.to_qkv(x).chunk(3, dim=-2)
 
-        q, k, v = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q, k, v))
+        q, k, v = (rearrange(t, "b (h d) n -> b h n d", h=self.heads) for t in (q, k, v))
 
         if self.rotary_emb is not None:
             q, k = self.rotary_emb.rotate_queries_and_keys(q, k)
 
         out = self.attention(q, k, v)
-        out = rearrange(out, "b h n d -> b n (h d)")
+        out = rearrange(out, "b h n d -> b (h d) n")
 
         out = self.to_out(out)
         return out

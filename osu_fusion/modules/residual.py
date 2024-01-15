@@ -15,27 +15,6 @@ class Always:
         return self.value
 
 
-class SqueezeExcite(nn.Module):
-    def __init__(self: "SqueezeExcite", dim: int, reduction_factor: int = 4, dim_minimum: int = 8) -> None:
-        super().__init__()
-        hidden_dim = max(dim // reduction_factor, dim_minimum)
-        self.layers = nn.Sequential(
-            nn.Conv1d(dim, hidden_dim, 1),
-            nn.SiLU(),
-            nn.Conv1d(hidden_dim, dim, 1),
-            nn.Sigmoid(),
-        )
-
-    def forward(self: "SqueezeExcite", x: torch.Tensor) -> torch.Tensor:
-        seq, device = x.shape[-2], x.device
-
-        cum_sum = x.cumsum(dim=-2)
-        denominator = torch.arange(1, seq + 1, device=device).float()
-        mean = cum_sum / rearrange(denominator, "n -> n 1")
-
-        return x * self.layers(mean)
-
-
 class GlobalContext(nn.Module):
     """Attention-esque squeeze-excite module"""
 
@@ -57,40 +36,6 @@ class GlobalContext(nn.Module):
         return self.layers(out)
 
 
-class ResidualBlock(nn.Module):
-    def __init__(
-        self: "ResidualBlock",
-        dim_in: int,
-        dim_out: int,
-        dim_emb: int,
-        dilation: int,
-        kernel_size: int = 7,
-        squeeze_excite: bool = True,
-    ) -> None:
-        super().__init__()
-
-        self.emb = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(dim_emb, dim_in),
-        )
-        self.layers = nn.Sequential(
-            nn.Conv1d(dim_in, dim_out, kernel_size, dilation=dilation),
-            nn.ReLU(),
-            nn.Conv1d(dim_out, dim_out, 1),
-            nn.ReLU(),
-            SqueezeExcite(dim_out) if squeeze_excite else nn.Identity(),
-        )
-        self.res_conv = nn.Conv1d(dim_in, dim_out, 1) if dim_in != dim_out else nn.Identity()
-
-    def forward(self: "ResidualBlock", x: torch.Tensor, time_emb: torch.Tensor) -> torch.Tensor:
-        h = x
-
-        time_emb = self.emb(time_emb).unsqueeze(-1)
-        h = self.layers(h + time_emb)
-
-        return h + self.res_conv(x)
-
-
 class Block(nn.Module):
     def __init__(
         self: "Block",
@@ -102,7 +47,7 @@ class Block(nn.Module):
         super().__init__()
         self.norm = nn.GroupNorm(norm_groups, dim_in) if norm else nn.Identity()
         self.activation = nn.SiLU()
-        self.res_conv = nn.Conv1d(dim_in, dim_out, 7, padding=3)
+        self.res_conv = nn.Conv1d(dim_in, dim_out, 3, padding=1)
 
     def forward(self: "Block", x: torch.Tensor, scale_shift: Optional[torch.Tensor] = None) -> torch.Tensor:
         x = self.norm(x)
@@ -167,9 +112,7 @@ class ResidualBlockV2(nn.Module):
         h = self.block1(x)
 
         if hasattr(self, "cross_attention") and context is not None:
-            h = rearrange(h, "b d n -> b n d")
             h = self.cross_attention(h, context) + h
-            h = rearrange(h, "b n d -> b d n")
 
         h = self.block2(h, scale_shift=scale_shift)
         h = h * self.gca(x)
