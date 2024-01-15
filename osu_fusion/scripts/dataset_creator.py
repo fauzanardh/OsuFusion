@@ -8,7 +8,7 @@ from typing import Dict
 import numpy as np
 import numpy.typing as npt
 
-if os.environ["CREATE_DATASET"] == "1":
+if "CREATE_DATASET" in os.environ:
     import librosa
     from audioread.ffdec import FFmpegAudioFile
     from rosu_pp_py import Beatmap as RosuBeatmap
