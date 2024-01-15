@@ -4,9 +4,12 @@ from argparse import ArgumentParser
 from pathlib import Path
 from typing import List, Tuple
 
+import numpy as np
 import torch
+import wandb
 from accelerate import Accelerator
 from accelerate.utils import ProjectConfiguration
+from matplotlib import pyplot as plt
 from torch.nn import functional as F  # noqa: N812
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import OneCycleLR
@@ -14,7 +17,9 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 from osu_fusion.library.dataset import SubsequenceDataset
+from osu_fusion.library.osu.from_beatmap import TOTAL_DIM
 from osu_fusion.models.diffusion import OsuFusion
+from osu_fusion.scripts.dataset_creator import load_audio, normalize_context
 
 
 def delete_old_checkpoints(project_dir: Path, max_num_checkpoints: int) -> None:
@@ -70,7 +75,45 @@ def train_step(
     return loss
 
 
-def train(args: ArgumentParser) -> None:
+def sample_step(
+    accelerator: Accelerator,
+    model: OsuFusion,
+    audio_path: Path,
+    audio_bpm: float,
+    step: int,
+) -> torch.Tensor:
+    a = load_audio(audio_path)
+    c = normalize_context(np.array([5.0, 4.0, 9.5, 9.5, 8.0, audio_bpm], dtype=np.float32))
+
+    a = torch.from_numpy(a).unsqueeze(0).to(accelerator.device)
+    c = torch.from_numpy(c).unsqueeze(0).to(accelerator.device)
+
+    b, _, n = a.shape
+
+    current_rng_state = torch.get_rng_state()
+    torch.manual_seed(0)
+    x = torch.randn((b, TOTAL_DIM, n), device=accelerator.device)
+    torch.set_rng_state(current_rng_state)
+
+    model.eval()
+    with torch.no_grad() and accelerator.autocast():
+        generated = model.sample(a, c, x)
+    model.train()
+
+    w, h = generated.shape[-1] // 150, 7
+    fig, axs = plt.subplots(
+        h,
+        1,
+        figsize=(w, h * 8),
+        sharex=True,
+    )
+    for feature, ax in zip(generated[0].cpu(), axs):
+        ax.plot(feature)
+
+    accelerator.log({"generated": wandb.Image(fig)}, step=step)
+
+
+def train(args: ArgumentParser) -> None:  # noqa: C901
     print("Initializing...")
     # Add your own API key here or set it as an environment variable
     # os.environ["WANDB_API_KEY"] = ""
@@ -166,6 +209,21 @@ def train(args: ArgumentParser) -> None:
                     accelerator.log({"save_loss": avg_loss}, step=step + 1)
                     delete_old_checkpoints(args.project_dir, args.max_num_checkpoints)
 
+            if (
+                (step + 1) % args.sample_every == 0
+                and accelerator.is_main_process
+                and args.sample_audio is not None
+                and args.sample_audio.exists()
+            ):
+                print("Sampling...")
+                sample_step(
+                    accelerator,
+                    model,
+                    args.sample_audio,
+                    args.sample_audio_bpm,
+                    step=step + 1,
+                )
+
     accelerator.wait_for_everyone()
     accelerator.save_model(model, args.project_dir / "checkpoint-final")
 
@@ -184,6 +242,9 @@ def main() -> None:
     args.add_argument("--save-every", type=int, default=1000)
     args.add_argument("--max-num-checkpoints", type=int, default=5)
     args.add_argument("--pct-start", type=float, default=0.002)
+    args.add_argument("--sample-every", type=int, default=1000)
+    args.add_argument("--sample_audio", type=Path, default=None)
+    args.add_argument("--sample_audio_bpm", type=float, default=180.0)
     args = args.parse_args()
 
     train(args)
