@@ -71,7 +71,7 @@ class UNet(nn.Module):
             Rearrange("b (r d) -> b r d", r=num_time_tokens),
         )
         self.null_cond = nn.Parameter(torch.randn(1, dim_cond))
-        self.cond_norm = nn.GroupNorm(1, dim_cond)
+        self.cond_norm = nn.LayerNorm(dim_cond)
 
         # Downsample
         dims_h = tuple((dim_h * mult) for mult in dim_h_mult)
@@ -233,14 +233,12 @@ class UNet(nn.Module):
         time_tokens = self.to_time_tokens(time_hiddens)
         t = self.to_time_cond(time_hiddens)
 
-        time_tokens = rearrange(time_tokens, "b n d -> b d n")
-
-        c = rearrange(c, "b d -> b d 1")
+        c = rearrange(c, "b d -> b 1 d")
         cond_mask = prob_mask_like((x.shape[0],), 1.0 - cond_drop_prob, device=x.device)
         cond_mask = rearrange(cond_mask, "b -> b 1 1")
         c = torch.where(cond_mask, c, self.null_cond)
 
-        c = torch.cat([time_tokens, c], dim=-1)
+        c = torch.cat([time_tokens, c], dim=1)
         c = self.cond_norm(c)
 
         skip_connections = []

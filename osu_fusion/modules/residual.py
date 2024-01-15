@@ -112,7 +112,9 @@ class ResidualBlockV2(nn.Module):
         h = self.block1(x)
 
         if hasattr(self, "cross_attention") and context is not None:
+            h = rearrange(h, "b d n -> b n d")
             h = self.cross_attention(h, context) + h
+            h = rearrange(h, "b n d -> b d n")
 
         h = self.block2(h, scale_shift=scale_shift)
         h = h * self.gca(x)
