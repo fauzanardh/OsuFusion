@@ -1,15 +1,18 @@
+import os
 import time
 import warnings
 from multiprocessing import Lock
 from pathlib import Path
 from typing import Dict
 
-import librosa
 import numpy as np
 import numpy.typing as npt
-from audioread.ffdec import FFmpegAudioFile
-from rosu_pp_py import Beatmap as RosuBeatmap
-from rosu_pp_py import Calculator as RosuCalculator
+
+if os.environ["CREATE_DATASET"] == "1":
+    import librosa
+    from audioread.ffdec import FFmpegAudioFile
+    from rosu_pp_py import Beatmap as RosuBeatmap
+    from rosu_pp_py import Calculator as RosuCalculator
 
 from osu_fusion.library.osu.beatmap import Beatmap
 from osu_fusion.library.osu.from_beatmap import AUDIO_DIM, from_beatmap

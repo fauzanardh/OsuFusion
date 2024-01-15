@@ -1,3 +1,4 @@
+import os
 import random
 from argparse import ArgumentParser
 from multiprocessing import Pool
@@ -6,7 +7,8 @@ from typing import List
 
 from tqdm.auto import tqdm
 
-from osu_fusion.scripts.dataset_creator import prepare_map
+os.environ["CREATE_DATASET"] = "1"
+from osu_fusion.scripts.dataset_creator import prepare_map  # noqa: E402
 
 
 def run(
