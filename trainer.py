@@ -76,6 +76,7 @@ def train(args: ArgumentParser) -> None:
     # os.environ["WANDB_API_KEY"] = ""
     accelerator = Accelerator(
         mixed_precision=args.mixed_precision,
+        gradient_checkpointing=args.gradient_checkpointing,
         project_config=ProjectConfiguration(
             project_dir=args.project_dir,
             automatic_checkpoint_naming=True,
@@ -174,6 +175,7 @@ def main() -> None:
     args.add_argument("--project-dir", type=Path)
     args.add_argument("--dataset-dir", type=Path)
     args.add_argument("--mixed-precision", type=str, default="bf16", choices=["no", "fp16", "bf16"])
+    args.add_argument("--gradient-checkpointing", action="store_true")
     args.add_argument("--model-dim", type=int, default=128)
     args.add_argument("--lr", type=float, default=1e-5)
     args.add_argument("--batch-size", type=int, default=16)
