@@ -68,14 +68,17 @@ class RotaryPositionEmbedding(nn.Module):
         seq_dim: int = -2,
     ) -> torch.Tensor:
         device, dtype, q_seq_len, k_seq_len = q.device, q.dtype, q.shape[seq_dim], k.shape[seq_dim]
-        assert q_seq_len == k_seq_len, "sequence lengths of queries and keys must match"
 
-        seq = self.get_seq_pos(q_seq_len, device, dtype)
-        freqs = self(seq, seq_len=q_seq_len)
-        scale = self.get_scale(seq, seq_len=q_seq_len).to(dtype)
+        q_seq = self.get_seq_pos(q_seq_len, device, dtype)
+        q_freqs = self(q_seq, seq_len=q_seq_len)
+        q_scale = self.get_scale(q_seq, seq_len=q_seq_len).to(dtype)
 
-        rotated_q = apply_rotary_pos_emb(freqs, q, scale=scale, seq_dim=seq_dim)
-        rotated_k = apply_rotary_pos_emb(freqs, k, scale=scale**-1, seq_dim=seq_dim)
+        k_seq = self.get_seq_pos(k_seq_len, device, dtype)
+        k_freqs = self(k_seq, seq_len=k_seq_len)
+        k_scale = self.get_scale(k_seq, seq_len=k_seq_len).to(dtype)
+
+        rotated_q = apply_rotary_pos_emb(q_freqs, q, scale=q_scale, seq_dim=seq_dim)
+        rotated_k = apply_rotary_pos_emb(k_freqs, k, scale=k_scale**-1, seq_dim=seq_dim)
 
         rotated_q = rotated_q.type(q.dtype)
         rotated_k = rotated_k.type(k.dtype)
@@ -191,6 +194,7 @@ class MultiHeadAttention(nn.Module):
 
         inner_dim = dim_head * heads
 
+        self.null_kv = nn.Parameter(torch.randn(2, inner_dim))
         if is_cross_attention:
             assert dim_context is not None, "context_dim must be provided for cross attention"
             self.to_q = nn.Conv1d(dim, inner_dim, 1, bias=False)
@@ -213,6 +217,9 @@ class MultiHeadAttention(nn.Module):
             k, v = self.to_kv(context).chunk(2, dim=-2)
         else:
             q, k, v = self.to_qkv(x).chunk(3, dim=-2)
+
+        nk, nv = (repeat(t, "d -> b d 1", b=k.shape[0]) for t in self.null_kv.unbind(dim=0))
+        k, v = torch.cat((nk, k), dim=-1), torch.cat((nv, v), dim=-1)
 
         q, k, v = (rearrange(t, "b (h d) n -> b h n d", h=self.heads) for t in (q, k, v))
 

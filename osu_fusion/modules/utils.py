@@ -9,6 +9,16 @@ def right_pad_dims_to(x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
     return t.view(*t.shape, *((1,) * padding_dims))
 
 
+# Classifier-free Guidance stuff
+def prob_mask_like(shape: torch.Size, prob: float, device: torch.device) -> torch.Tensor:
+    if prob == 0.0:
+        return torch.zeros(shape, device=device, dtype=torch.bool)
+    elif prob == 1.0:
+        return torch.ones(shape, device=device, dtype=torch.bool)
+    else:
+        return torch.zeros(shape, device=device).uniform_(0.0, 1.0) < prob
+
+
 # Rotary Position Embedding stuff
 def rotate_half(x: torch.Tensor) -> torch.Tensor:
     x = rearrange(x, "... (d r) -> ... d r", r=2)
