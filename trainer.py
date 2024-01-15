@@ -57,10 +57,10 @@ def train_step(
     scheduler: OneCycleLR,
     batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
 ) -> float:
-    x, a, c, orig_len = batch
+    x, a, c = batch
     with accelerator.autocast():
         try:
-            loss = model(x, a, c, orig_len)
+            loss = model(x, a, c)
         except AssertionError:
             return None
     accelerator.backward(loss)
