@@ -25,8 +25,9 @@ HOP_LENGTH = int(SR * FRAME_RATE / 1000)
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-_calculator = RosuCalculator(mode=0)
-_global_lock: Dict[str, Lock] = {}
+if "CREATE_DATASET" in os.environ:
+    _calculator = RosuCalculator(mode=0)
+    _global_lock: Dict[str, Lock] = {}
 
 
 def load_audio(audio_file: Path) -> npt.NDArray:
