@@ -5,12 +5,12 @@ from multiprocessing import Lock
 from pathlib import Path
 from typing import Dict
 
+import librosa
 import numpy as np
 import numpy.typing as npt
+from audioread.ffdec import FFmpegAudioFile
 
 if "CREATE_DATASET" in os.environ:
-    import librosa
-    from audioread.ffdec import FFmpegAudioFile
     from rosu_pp_py import Beatmap as RosuBeatmap
     from rosu_pp_py import Calculator as RosuCalculator
 
