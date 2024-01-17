@@ -54,14 +54,13 @@ class TransformerBlock(nn.Module):
         )
         self.norm1 = nn.LayerNorm(dim)
         self.norm2 = nn.LayerNorm(dim)
-        self.norm3 = nn.LayerNorm(dim)
 
         self.gradient_checkpointing = False
 
     def forward_body(self: "TransformerBlock", x: torch.Tensor, context: torch.Tensor) -> torch.Tensor:
         x = x + self.self_attention(self.norm1(x))
         x = x + self.cross_attention(self.norm2(x), context)
-        x = x + self.feed_forward(self.norm3(x))
+        x = x + self.feed_forward(x)
         return x
 
     def forward(self: "TransformerBlock", x: torch.Tensor, context: torch.Tensor) -> torch.Tensor:
