@@ -16,7 +16,7 @@ from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-from osu_fusion.library.dataset import SubsequenceDataset
+from osu_fusion.library.dataset import SubsequenceDataset, normalize_mfcc, sanitize_input
 from osu_fusion.library.osu.from_beatmap import TOTAL_DIM
 from osu_fusion.models.diffusion import OsuFusion
 from osu_fusion.scripts.dataset_creator import load_audio, normalize_context
@@ -69,6 +69,8 @@ def train_step(
         except AssertionError:
             return None
     accelerator.backward(loss)
+    if accelerator.sync_gradients:
+        accelerator.clip_grad_norm_(model.parameters(), 1.0)
     optimizer.step()
     optimizer.zero_grad(set_to_none=True)
     scheduler.step()
@@ -87,6 +89,9 @@ def sample_step(
 
     a = torch.from_numpy(a).unsqueeze(0).to(accelerator.device)
     c = torch.from_numpy(c).unsqueeze(0).to(accelerator.device)
+
+    a = sanitize_input(normalize_mfcc(a))
+    c = sanitize_input(c)
 
     b, _, n = a.shape
 
@@ -111,6 +116,7 @@ def sample_step(
         ax.plot(feature)
 
     accelerator.log({"generated": wandb.Image(fig)}, step=step)
+    plt.close(fig)
 
 
 def train(args: ArgumentParser) -> None:  # noqa: C901

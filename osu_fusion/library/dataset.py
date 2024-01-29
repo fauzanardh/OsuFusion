@@ -35,18 +35,7 @@ def load_tensor(map_file: Path) -> torch.Tensor:
     a = sanitize_input(normalize_mfcc(a))
     c = sanitize_input(c)
 
-    # Check if x a and c values are within the range of -1 to 1 and there are no NaN values
-    if (
-        x.max() > 1
-        or x.min() < -1
-        or torch.isnan(x).any()
-        or a.max() > 1
-        or a.min() < -1
-        or torch.isnan(a).any()
-        or c.max() > 1
-        or c.min() < -1
-        or torch.isnan(c).any()
-    ):
+    if torch.isnan(x).any() or torch.isnan(a).any() or torch.isnan(c).any():
         msg = "Invalid values in map file"
         raise ValueError(msg)
 

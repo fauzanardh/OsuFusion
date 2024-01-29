@@ -60,9 +60,9 @@ class Block(nn.Module):
         return self.res_conv(x)
 
 
-class ResidualBlockV2(nn.Module):
+class ResidualBlock(nn.Module):
     def __init__(
-        self: "ResidualBlockV2",
+        self: "ResidualBlock",
         dim_in: int,
         dim_out: int,
         dim_emb: int,
@@ -100,7 +100,7 @@ class ResidualBlockV2(nn.Module):
         self.gradient_checkpointing = False
 
     def forward_body(
-        self: "ResidualBlockV2",
+        self: "ResidualBlock",
         x: torch.Tensor,
         time_emb: torch.Tensor,
         context: Optional[torch.Tensor] = None,
@@ -112,9 +112,7 @@ class ResidualBlockV2(nn.Module):
         h = self.block1(x)
 
         if hasattr(self, "cross_attention") and context is not None:
-            h = rearrange(h, "b d n -> b n d")
             h = self.cross_attention(h, context) + h
-            h = rearrange(h, "b n d -> b d n")
 
         h = self.block2(h, scale_shift=scale_shift)
         h = h * self.gca(x)
@@ -122,7 +120,7 @@ class ResidualBlockV2(nn.Module):
         return h + self.res_conv(x)
 
     def forward(
-        self: "ResidualBlockV2",
+        self: "ResidualBlock",
         x: torch.Tensor,
         time_emb: torch.Tensor,
         context: Optional[torch.Tensor] = None,
