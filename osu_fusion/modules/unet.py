@@ -17,19 +17,18 @@ def zero_init_(module: nn.Module) -> None:
         nn.init.zeros_(module.bias)
 
 
-class SinusoidalPosEmb(nn.Module):
-    def __init__(self: "SinusoidalPosEmb", dim: int, theta: int = 10000) -> None:
+class LearnedSinusoidalPosEmb(nn.Module):
+    def __init__(self: "LearnedSinusoidalPosEmb", dim: int) -> None:
         super().__init__()
-        self.dim = dim
-        self.theta = theta
+        assert (dim % 2) == 0
+        half_dim = dim // 2
+        self.weights = nn.Parameter(torch.randn(half_dim))
 
-    def forward(self: "SinusoidalPosEmb", x: torch.Tensor) -> torch.Tensor:
-        half_dim = self.dim // 2
-        emb = math.log(self.theta) / (half_dim - 1)
-        emb = torch.exp(torch.arange(half_dim, device=x.device) * -emb)
-        emb = rearrange(x, "b -> b 1") * rearrange(emb, "d -> 1 d")
-        emb = torch.cat([emb.sin(), emb.cos()], dim=-1)
-        return emb
+    def forward(self: "LearnedSinusoidalPosEmb", x: torch.Tensor) -> torch.Tensor:
+        x = rearrange(x, "b -> b 1")
+        freqs = x * rearrange(self.weights, "d -> 1 d") * 2 * math.pi
+        fouriered = torch.cat([freqs.cos(), freqs.sin()], dim=-1)
+        return fouriered
 
 
 class Upsample(nn.Sequential):
@@ -54,7 +53,7 @@ class UNet(nn.Module):
         dim_h: int,
         dim_cond: int,
         dim_h_mult: Tuple[int] = (1, 2, 4, 8),
-        num_time_tokens: int = 2,
+        dim_learned_pos_emb: int = 16,
         resnet_depths: Tuple[int] = (2, 2, 2, 2),
         attn_dim_head: int = 32,
         attn_heads: int = 8,
@@ -84,8 +83,8 @@ class UNet(nn.Module):
         zero_init_(self.final_conv)
 
         self.time_mlp = nn.Sequential(
-            SinusoidalPosEmb(self.dim_emb),
-            nn.Linear(self.dim_emb, self.dim_emb),
+            LearnedSinusoidalPosEmb(dim_learned_pos_emb),
+            nn.Linear(dim_learned_pos_emb, self.dim_emb),
             nn.SiLU(),
             nn.Linear(self.dim_emb, self.dim_emb),
         )
