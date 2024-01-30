@@ -3,7 +3,7 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-from einops import rearrange, repeat
+from einops import rearrange
 from packaging import version
 from torch.nn import functional as F  # noqa: N812
 
@@ -17,90 +17,40 @@ class RotaryPositionEmbedding(nn.Module):
         self: "RotaryPositionEmbedding",
         dim: int,
         theta: int = 10000,
-        interpolation_factor: float = 1.0,
-        scale_base: int = 8192,
     ) -> None:
         super().__init__()
-        freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
-        self.register_buffer("freqs", freqs, persistent=False)
-        self.interpolation_factor = interpolation_factor
+        inv_freq = 1.0 / (theta ** (torch.arange(0, dim, 2).float() / dim))
+        self.register_buffer("inv_freq", inv_freq)
 
-        self.scale_base = scale_base
-        scale = (torch.arange(0, dim, 2) + 0.4 * dim) / (1.4 * dim)
-        self.register_buffer("scale", scale, persistent=False)
+        self._seq_len_cached = None
+        self._cos_cached = None
+        self._sin_cached = None
 
-        self.register_buffer("cached_freqs", None, persistent=False)
-        self.register_buffer("cached_scale", None, persistent=False)
+    def _update_cos_sin_tables(self: "RotaryPositionEmbedding", x: torch.Tensor) -> torch.Tensor:
+        seq_len = x.shape[-2]
+        if seq_len != self._seq_len_cached or self._cos_cached.device != x.device or self._cos_cached.dtype != x.dtype:
+            self._seq_len_cached = seq_len
+            t = torch.arange(
+                x.shape[-2],
+                dtype=torch.float32,
+                device=x.device,
+            )
+            freqs = torch.einsum("i , j -> i j", t, self.inv_freq.to(x.dtype))
+            emb = torch.cat((freqs, freqs), dim=-1)
 
-    def get_seq_pos(
-        self: "RotaryPositionEmbedding",
-        seq_len: int,
-        device: torch.device,
-        dtype: torch.dtype,
-        offset: int = 0,
-    ) -> torch.Tensor:
-        return (torch.arange(seq_len, device=device, dtype=dtype) + offset) / self.interpolation_factor
+            self._cos_cached = emb.cos()[None, None, :, :]
+            self._sin_cached = emb.sin()[None, None, :, :]
 
-    def get_scale(
-        self: "RotaryPositionEmbedding",
-        t: torch.Tensor,
-        seq_len: Optional[int] = None,
-        offset: int = 0,
-    ) -> torch.Tensor:
-        should_cache = seq_len is not None
+        return self._cos_cached, self._sin_cached
 
-        if should_cache and self.cached_scale is not None and (offset + seq_len) <= self.cached_scale.shape[0]:
-            return self.cached_scale[offset : (offset + seq_len)]
+    def forward(self: "RotaryPositionEmbedding", q: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
+        self._cos_cached, self._sin_cached = self._update_cos_sin_tables(q)
 
-        power = (t - t.shape[-1] // 2) / self.scale_base
-        scale = self.scale ** rearrange(power, "n -> n 1")
-        scale = torch.cat((scale, scale), dim=-1)
-
-        if should_cache:
-            self.register_buffer("cached_scale", scale, persistent=False)
-
-        return scale
-
-    def rotate_queries_and_keys(
-        self: "RotaryPositionEmbedding",
-        q: torch.Tensor,
-        k: torch.Tensor,
-        seq_dim: int = -2,
-    ) -> torch.Tensor:
-        device, dtype, seq_len = q.device, q.dtype, q.shape[seq_dim]
-
-        seq = self.get_seq_pos(seq_len, device, dtype)
-        freqs = self(seq, seq_len=seq_len)
-        scale = self.get_scale(seq, seq_len=seq_len).to(dtype)
-
-        rotated_q = apply_rotary_pos_emb(freqs, q, scale=scale, seq_dim=seq_dim)
-        rotated_k = apply_rotary_pos_emb(freqs, k, scale=scale**-1, seq_dim=seq_dim)
-
-        rotated_q = rotated_q.type(q.dtype)
-        rotated_k = rotated_k.type(k.dtype)
-
-        return rotated_q, rotated_k
-
-    def forward(
-        self: "RotaryPositionEmbedding",
-        t: torch.Tensor,
-        seq_len: Optional[int] = None,
-        offset: int = 0,
-    ) -> torch.Tensor:
-        should_cache = seq_len is not None
-
-        if should_cache and self.cached_freqs is not None and (offset + seq_len) <= self.cached_freqs.shape[0]:
-            return self.cached_freqs[offset : (offset + seq_len)]
-
-        freqs = self.freqs
-
-        freqs = torch.einsum("..., f -> ... f", t.type(freqs.dtype), freqs)
-        freqs = repeat(freqs, "... n -> ... (n r)", r=2)
-
-        if should_cache:
-            self.register_buffer("cached_freqs", freqs, persistent=False)
-
-        return freqs
+        return apply_rotary_pos_emb(q, self._cos_cached, self._sin_cached), apply_rotary_pos_emb(
+            k,
+            self._cos_cached,
+            self._sin_cached,
+        )
 
 
 class Attention(nn.Module):
@@ -238,7 +188,7 @@ class MultiHeadAttention(nn.Module):
 
         q, k, v = (rearrange(t, "b (h d) n -> b h n d", h=self.heads) for t in (q, k, v))
         if self.rotary_emb is not None:
-            q, k = self.rotary_emb.rotate_queries_and_keys(q, k)
+            q, k = self.rotary_emb(q, k)
 
         q, k, v = (t.contiguous() for t in (q, k, v))
 
