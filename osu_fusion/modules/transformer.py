@@ -9,14 +9,15 @@ class FeedForward(nn.Sequential):
         self: "FeedForward",
         dim: int,
         dim_mult: int = 2,
+        dropout: float = 0.1,
     ) -> None:
         inner_dim = dim * dim_mult
         super().__init__(
-            nn.GroupNorm(1, dim),
-            nn.Conv1d(dim, inner_dim, 1, bias=False),
+            nn.Conv1d(dim, inner_dim, 1),
+            nn.Conv1d(inner_dim, inner_dim, 3, padding=1, bias=True, groups=inner_dim),
             nn.GELU(),
-            nn.GroupNorm(1, inner_dim),
-            nn.Conv1d(inner_dim, dim, 1, bias=False),
+            nn.Conv1d(inner_dim, dim, 1),
+            nn.Dropout(dropout),
         )
 
 
@@ -40,7 +41,7 @@ class TransformerBlock(nn.Module):
             linear=True,
             use_rotary_emb=use_rotary_emb,
         )
-        self.feed_forward = FeedForward(dim)
+        self.feed_forward = FeedForward(dim, dropout=dropout)
         self.cross_attention = MultiHeadAttention(
             dim,
             dim_context=dim_context,
