@@ -30,6 +30,7 @@ class TransformerBlock(nn.Module):
         heads: int = 8,
         dropout: float = 0.1,
         sdpa: bool = True,
+        linear: bool = False,
         use_rotary_emb: bool = True,
     ) -> None:
         super().__init__()
@@ -38,7 +39,7 @@ class TransformerBlock(nn.Module):
             dim_head=dim_head,
             heads=heads,
             dropout=dropout,
-            linear=True,
+            linear=linear,
             use_rotary_emb=use_rotary_emb,
         )
         self.feed_forward = FeedForward(dim, dropout=dropout)
@@ -80,6 +81,7 @@ class Transformer(nn.Module):
         depth: int = 4,
         dropout: float = 0.1,
         sdpa: bool = True,
+        linear: bool = False,
         use_rotary_emb: bool = True,
     ) -> None:
         super().__init__()
@@ -92,6 +94,7 @@ class Transformer(nn.Module):
                     heads=heads,
                     dropout=dropout,
                     sdpa=sdpa,
+                    linear=linear,
                     use_rotary_emb=use_rotary_emb,
                 )
                 for _ in range(depth)

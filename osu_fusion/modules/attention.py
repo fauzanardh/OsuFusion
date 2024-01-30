@@ -17,10 +17,13 @@ class RotaryPositionEmbedding(nn.Module):
         self: "RotaryPositionEmbedding",
         dim: int,
         theta: int = 10000,
+        scale_base: int = 8192,
     ) -> None:
         super().__init__()
+        self.scale_base = scale_base
+
         inv_freq = 1.0 / (theta ** (torch.arange(0, dim, 2).float() / dim))
-        self.register_buffer("inv_freq", inv_freq)
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
 
         self._seq_len_cached = None
         self._cos_cached = None
@@ -31,12 +34,13 @@ class RotaryPositionEmbedding(nn.Module):
         if seq_len != self._seq_len_cached or self._cos_cached.device != x.device or self._cos_cached.dtype != x.dtype:
             self._seq_len_cached = seq_len
             t = torch.arange(
-                x.shape[-2],
+                seq_len,
                 dtype=torch.float32,
                 device=x.device,
             )
+            t *= self.scale_base / seq_len
             freqs = torch.einsum("i , j -> i j", t, self.inv_freq.to(x.dtype))
-            emb = torch.cat((freqs, freqs), dim=-1)
+            emb = torch.cat([freqs, freqs], dim=-1)
 
             self._cos_cached = emb.cos()[None, None, :, :]
             self._sin_cached = emb.sin()[None, None, :, :]
@@ -46,10 +50,9 @@ class RotaryPositionEmbedding(nn.Module):
     def forward(self: "RotaryPositionEmbedding", q: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
         self._cos_cached, self._sin_cached = self._update_cos_sin_tables(q)
 
-        return apply_rotary_pos_emb(q, self._cos_cached, self._sin_cached), apply_rotary_pos_emb(
-            k,
-            self._cos_cached,
-            self._sin_cached,
+        return (
+            apply_rotary_pos_emb(q, self._cos_cached, self._sin_cached),
+            apply_rotary_pos_emb(k, self._cos_cached, self._sin_cached),
         )
 
 

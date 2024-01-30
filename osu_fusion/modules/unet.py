@@ -133,7 +133,8 @@ class UNet(nn.Module):
                             heads=attn_heads,
                             depth=attn_depth,
                             dropout=attn_dropout,
-                            sdpa=attn_sdpa,
+                            sdpa=False,
+                            linear=True,
                             use_rotary_emb=attn_use_rotary_emb,
                         ),
                         Downsample(layer_dim_out, layer_dim_out)
@@ -145,7 +146,7 @@ class UNet(nn.Module):
         self.down_layers = nn.ModuleList(down_layers)
 
         # Middle
-        self.middle_resnet1 = ResidualBlock(
+        self.middle_resnet1 = resnet_block_attn(
             dims_h[-1],
             dims_h[-1],
             self.dim_emb,
@@ -161,7 +162,7 @@ class UNet(nn.Module):
             sdpa=attn_sdpa,
             use_rotary_emb=attn_use_rotary_emb,
         )
-        self.middle_resnet2 = ResidualBlock(
+        self.middle_resnet2 = resnet_block_attn(
             dims_h[-1],
             dims_h[-1],
             self.dim_emb,
@@ -205,7 +206,8 @@ class UNet(nn.Module):
                             heads=attn_heads,
                             depth=attn_depth,
                             dropout=attn_dropout,
-                            sdpa=attn_sdpa,
+                            sdpa=False,
+                            linear=True,
                             use_rotary_emb=attn_use_rotary_emb,
                         ),
                         Upsample(layer_dim_out, layer_dim_out)
@@ -264,9 +266,9 @@ class UNet(nn.Module):
             skip_connections.append(x)
             x = downsample(x)
 
-        x = self.middle_resnet1(x, t)
+        x = self.middle_resnet1(x, t, c)
         x = self.middle_transformer(x, c)
-        x = self.middle_resnet2(x, t)
+        x = self.middle_resnet2(x, t, c)
 
         for init_up_block, up_blocks, up_transformer, upsample in self.up_layers:
             x = torch.cat([x, skip_connections.pop()], dim=1)
