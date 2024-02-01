@@ -67,7 +67,18 @@ class UNet(nn.Module):
         self.dim_emb = dim_h * 4
         self.dim_cond = dim_cond * 4
 
-        self.pre_conv = nn.Conv1d(dim_in, dim_h, 7, padding=3)
+        self.init_conv = nn.Conv1d(dim_in, dim_h, 7, padding=3)
+        self.final_resnet = ResidualBlock(
+            dim_h * 2,
+            dim_h,
+            self.dim_emb,
+            dim_context=self.dim_cond,
+            attn_dim_head=attn_dim_head,
+            attn_heads=attn_heads,
+            attn_dropout=attn_dropout,
+            attn_sdpa=attn_sdpa,
+            attn_use_rotary_emb=attn_use_rotary_emb,
+        )
         self.final_conv = nn.Conv1d(dim_h, dim_out, 1)
         zero_init_(self.final_conv)
 
@@ -127,7 +138,6 @@ class UNet(nn.Module):
                         ),
                         Transformer(
                             layer_dim_out,
-                            self.dim_cond,
                             dim_head=attn_dim_head,
                             heads=attn_heads,
                             depth=attn_depth,
@@ -158,7 +168,6 @@ class UNet(nn.Module):
         )
         self.middle_transformer = Transformer(
             dims_h[-1],
-            self.dim_cond,
             dim_head=attn_dim_head,
             heads=attn_heads,
             depth=attn_depth,
@@ -221,7 +230,6 @@ class UNet(nn.Module):
                         ),
                         Transformer(
                             layer_dim_out,
-                            self.dim_cond,
                             dim_head=attn_dim_head,
                             heads=attn_heads,
                             depth=attn_depth,
@@ -265,7 +273,8 @@ class UNet(nn.Module):
         cond_drop_prob: float = 0.0,
     ) -> torch.Tensor:
         x = torch.cat([x, a], dim=1)
-        x = self.pre_conv(x)
+        x = self.init_conv(x)
+        r = x.clone()
         t = self.time_mlp(t)
 
         cond_mask = prob_mask_like((x.shape[0],), 1.0 - cond_drop_prob, device=x.device)
@@ -294,5 +303,8 @@ class UNet(nn.Module):
                 x = up_resnet(x, t, c)
                 x = up_transformer_block(x)
             x = upsample(x)
+
+        x = torch.cat([x, r], dim=1)
+        x = self.final_resnet(x, t, c)
 
         return self.final_conv(x)

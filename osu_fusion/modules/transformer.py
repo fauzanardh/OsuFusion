@@ -25,7 +25,6 @@ class TransformerBlock(nn.Module):
     def __init__(
         self: "TransformerBlock",
         dim: int,
-        dim_context: int,
         dim_head: int = 32,
         heads: int = 8,
         dropout: float = 0.1,
@@ -39,6 +38,7 @@ class TransformerBlock(nn.Module):
             dim_head=dim_head,
             heads=heads,
             dropout=dropout,
+            sdpa=sdpa,
             linear=linear,
             use_rotary_emb=use_rotary_emb,
         )
@@ -64,7 +64,6 @@ class Transformer(nn.Module):
     def __init__(
         self: "Transformer",
         dim: int,
-        dim_context: int,
         dim_head: int = 32,
         heads: int = 8,
         depth: int = 4,
@@ -78,7 +77,6 @@ class Transformer(nn.Module):
             [
                 TransformerBlock(
                     dim,
-                    dim_context,
                     dim_head=dim_head,
                     heads=heads,
                     dropout=dropout,
@@ -90,7 +88,7 @@ class Transformer(nn.Module):
             ],
         )
 
-    def forward(self: "Transformer", x: torch.Tensor, context: torch.Tensor) -> torch.Tensor:
+    def forward(self: "Transformer", x: torch.Tensor) -> torch.Tensor:
         for layer in self.layers:
-            x = layer(x, context)
+            x = layer(x)
         return x
