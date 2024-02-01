@@ -43,32 +43,21 @@ class TransformerBlock(nn.Module):
             use_rotary_emb=use_rotary_emb,
         )
         self.feed_forward = FeedForward(dim, dropout=dropout)
-        self.cross_attention = MultiHeadAttention(
-            dim,
-            dim_context=dim_context,
-            dim_head=dim_head,
-            heads=heads,
-            dropout=dropout,
-            sdpa=sdpa,
-            is_cross_attention=True,
-            use_rotary_emb=use_rotary_emb,
-        )
         self.norm1 = nn.GroupNorm(1, dim)
         self.norm2 = nn.GroupNorm(1, dim)
 
         self.gradient_checkpointing = False
 
-    def forward_body(self: "TransformerBlock", x: torch.Tensor, context: torch.Tensor) -> torch.Tensor:
+    def forward_body(self: "TransformerBlock", x: torch.Tensor) -> torch.Tensor:
         x = x + self.self_attention(self.norm1(x))
-        x = x + self.cross_attention(self.norm2(x), context)
         x = x + self.feed_forward(x)
         return x
 
-    def forward(self: "TransformerBlock", x: torch.Tensor, context: torch.Tensor) -> torch.Tensor:
+    def forward(self: "TransformerBlock", x: torch.Tensor) -> torch.Tensor:
         if self.training and self.gradient_checkpointing:
-            return torch.utils.checkpoint.checkpoint(self.forward_body, x, context, use_reentrant=True)
+            return torch.utils.checkpoint.checkpoint(self.forward_body, x, use_reentrant=True)
         else:
-            return self.forward_body(x, context)
+            return self.forward_body(x)
 
 
 class Transformer(nn.Module):

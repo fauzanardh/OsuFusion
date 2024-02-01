@@ -1,5 +1,4 @@
 import math
-from functools import partial
 from typing import Dict, List, Tuple
 
 import torch
@@ -61,22 +60,12 @@ class UNet(nn.Module):
         attn_depths: Tuple[int] = (4, 4, 4, 4),
         attn_dropout: float = 0.25,
         attn_sdpa: bool = True,
-        attn_use_global_context_attention: bool = True,
         attn_use_rotary_emb: bool = True,
     ) -> None:
         super().__init__()
         self.dim_h = dim_h
         self.dim_emb = dim_h * 4
-
-        resnet_block_attn = partial(
-            ResidualBlock,
-            dim_context=dim_cond,
-            attn_dim_head=attn_dim_head,
-            attn_heads=attn_heads,
-            attn_dropout=attn_dropout,
-            attn_sdpa=attn_sdpa,
-            attn_use_rotary_emb=attn_use_rotary_emb,
-        )
+        self.dim_cond = dim_cond * 4
 
         self.pre_conv = nn.Conv1d(dim_in, dim_h, 7, padding=3)
         self.final_conv = nn.Conv1d(dim_h, dim_out, 1)
@@ -87,6 +76,11 @@ class UNet(nn.Module):
             nn.Linear(self.dim_emb, self.dim_emb),
             nn.SiLU(),
             nn.Linear(self.dim_emb, self.dim_emb),
+        )
+        self.cond_mlp = nn.Sequential(
+            nn.Linear(dim_cond, self.dim_cond),
+            nn.SiLU(),
+            nn.Linear(self.dim_cond, self.dim_cond),
         )
         self.null_cond = nn.Parameter(torch.randn(dim_cond))
 
@@ -104,10 +98,16 @@ class UNet(nn.Module):
             down_layers.append(
                 nn.ModuleList(
                     [
-                        resnet_block_attn(
+                        ResidualBlock(
                             layer_dim_in,
                             layer_dim_out,
                             self.dim_emb,
+                            dim_context=self.dim_cond,
+                            attn_dim_head=attn_dim_head,
+                            attn_heads=attn_heads,
+                            attn_dropout=attn_dropout,
+                            attn_sdpa=attn_sdpa,
+                            attn_use_rotary_emb=attn_use_rotary_emb,
                         ),
                         nn.ModuleList(
                             [
@@ -115,14 +115,19 @@ class UNet(nn.Module):
                                     layer_dim_out,
                                     layer_dim_out,
                                     self.dim_emb,
-                                    use_gca=attn_use_global_context_attention,
+                                    dim_context=self.dim_cond,
+                                    attn_dim_head=attn_dim_head,
+                                    attn_heads=attn_heads,
+                                    attn_dropout=attn_dropout,
+                                    attn_sdpa=attn_sdpa,
+                                    attn_use_rotary_emb=attn_use_rotary_emb,
                                 )
                                 for _ in range(resnet_depth)
                             ],
                         ),
                         Transformer(
                             layer_dim_out,
-                            dim_cond,
+                            self.dim_cond,
                             dim_head=attn_dim_head,
                             heads=attn_heads,
                             depth=attn_depth,
@@ -140,15 +145,20 @@ class UNet(nn.Module):
         self.down_layers = nn.ModuleList(down_layers)
 
         # Middle
-        self.middle_resnet1 = resnet_block_attn(
+        self.middle_resnet1 = ResidualBlock(
             dims_h[-1],
             dims_h[-1],
             self.dim_emb,
-            use_gca=attn_use_global_context_attention,
+            dim_context=self.dim_cond,
+            attn_dim_head=attn_dim_head,
+            attn_heads=attn_heads,
+            attn_dropout=attn_dropout,
+            attn_sdpa=attn_sdpa,
+            attn_use_rotary_emb=attn_use_rotary_emb,
         )
         self.middle_transformer = Transformer(
             dims_h[-1],
-            dim_cond,
+            self.dim_cond,
             dim_head=attn_dim_head,
             heads=attn_heads,
             depth=attn_depth,
@@ -156,11 +166,16 @@ class UNet(nn.Module):
             sdpa=attn_sdpa,
             use_rotary_emb=attn_use_rotary_emb,
         )
-        self.middle_resnet2 = resnet_block_attn(
+        self.middle_resnet2 = ResidualBlock(
             dims_h[-1],
             dims_h[-1],
             self.dim_emb,
-            use_gca=attn_use_global_context_attention,
+            dim_context=self.dim_cond,
+            attn_dim_head=attn_dim_head,
+            attn_heads=attn_heads,
+            attn_dropout=attn_dropout,
+            attn_sdpa=attn_sdpa,
+            attn_use_rotary_emb=attn_use_rotary_emb,
         )
 
         # Upsample
@@ -177,10 +192,16 @@ class UNet(nn.Module):
             up_layers.append(
                 nn.ModuleList(
                     [
-                        resnet_block_attn(
+                        ResidualBlock(
                             layer_dim_in * 2,
                             layer_dim_out,
                             self.dim_emb,
+                            dim_context=self.dim_cond,
+                            attn_dim_head=attn_dim_head,
+                            attn_heads=attn_heads,
+                            attn_dropout=attn_dropout,
+                            attn_sdpa=attn_sdpa,
+                            attn_use_rotary_emb=attn_use_rotary_emb,
                         ),
                         nn.ModuleList(
                             [
@@ -188,14 +209,19 @@ class UNet(nn.Module):
                                     layer_dim_out,
                                     layer_dim_out,
                                     self.dim_emb,
-                                    use_gca=attn_use_global_context_attention,
+                                    dim_context=self.dim_cond,
+                                    attn_dim_head=attn_dim_head,
+                                    attn_heads=attn_heads,
+                                    attn_dropout=attn_dropout,
+                                    attn_sdpa=attn_sdpa,
+                                    attn_use_rotary_emb=attn_use_rotary_emb,
                                 )
                                 for _ in range(resnet_depth)
                             ],
                         ),
                         Transformer(
                             layer_dim_out,
-                            dim_cond,
+                            self.dim_cond,
                             dim_head=attn_dim_head,
                             heads=attn_heads,
                             depth=attn_depth,
@@ -240,34 +266,33 @@ class UNet(nn.Module):
     ) -> torch.Tensor:
         x = torch.cat([x, a], dim=1)
         x = self.pre_conv(x)
-
         t = self.time_mlp(t)
 
         cond_mask = prob_mask_like((x.shape[0],), 1.0 - cond_drop_prob, device=x.device)
         cond_mask = rearrange(cond_mask, "b -> b 1")
         null_conds = repeat(self.null_cond, "d -> b d", b=x.shape[0])
         c = torch.where(cond_mask, c, null_conds)
-        c = rearrange(c, "b d -> b d 1")
+        c = self.cond_mlp(c)
 
         skip_connections = []
         for init_down_block, down_blocks, down_transformer, downsample in self.down_layers:
             x = init_down_block(x, t, c)
             for down_resnet, down_transformer_block in zip(down_blocks, down_transformer.layers):
-                x = down_resnet(x, t)
-                x = down_transformer_block(x, c)
+                x = down_resnet(x, t, c)
+                x = down_transformer_block(x)
             skip_connections.append(x)
             x = downsample(x)
 
         x = self.middle_resnet1(x, t, c)
-        x = self.middle_transformer(x, c)
+        x = self.middle_transformer(x)
         x = self.middle_resnet2(x, t, c)
 
         for init_up_block, up_blocks, up_transformer, upsample in self.up_layers:
             x = torch.cat([x, skip_connections.pop()], dim=1)
             x = init_up_block(x, t, c)
             for up_resnet, up_transformer_block in zip(up_blocks, up_transformer.layers):
-                x = up_resnet(x, t)
-                x = up_transformer_block(x, c)
+                x = up_resnet(x, t, c)
+                x = up_transformer_block(x)
             x = upsample(x)
 
         return self.final_conv(x)

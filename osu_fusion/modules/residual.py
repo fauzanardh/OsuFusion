@@ -76,9 +76,10 @@ class ResidualBlock(nn.Module):
     ) -> None:
         super().__init__()
 
+        mlp_input_dim = dim_emb if dim_context is None else dim_emb + dim_context
         self.time_mlp = nn.Sequential(
             nn.SiLU(),
-            nn.Linear(dim_emb, dim_out * 2),
+            nn.Linear(mlp_input_dim, dim_out * 2),
         )
         if dim_context is not None:
             self.cross_attention = MultiHeadAttention(
@@ -94,7 +95,6 @@ class ResidualBlock(nn.Module):
         self.block1 = Block(dim_in, dim_out)
         self.block2 = Block(dim_out, dim_out)
 
-        self.gca = GlobalContext(dim_in, dim_out) if use_gca else Always(1)
         self.res_conv = nn.Conv1d(dim_in, dim_out, 1) if dim_in != dim_out else nn.Identity()
 
         self.gradient_checkpointing = False
@@ -105,17 +105,16 @@ class ResidualBlock(nn.Module):
         time_emb: torch.Tensor,
         context: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        time_emb = self.time_mlp(time_emb)
-        time_emb = rearrange(time_emb, "b n -> b n 1")
-        scale_shift = time_emb.chunk(2, dim=1)
+        if context is not None:
+            cond_emb = torch.cat([time_emb, context], dim=-1)
+            cond_emb = self.time_mlp(cond_emb)
+        else:
+            cond_emb = self.time_mlp(time_emb)
+        cond_emb = rearrange(cond_emb, "b d -> b d 1")
+        scale_shift = cond_emb.chunk(2, dim=1)
 
         h = self.block1(x)
-
-        if hasattr(self, "cross_attention") and context is not None:
-            h = self.cross_attention(h, context) + h
-
         h = self.block2(h, scale_shift=scale_shift)
-        h = h * self.gca(x)
 
         return h + self.res_conv(x)
 
