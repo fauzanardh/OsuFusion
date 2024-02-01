@@ -17,18 +17,20 @@ def zero_init_(module: nn.Module) -> None:
         nn.init.zeros_(module.bias)
 
 
-class LearnedSinusoidalPosEmb(nn.Module):
-    def __init__(self: "LearnedSinusoidalPosEmb", dim: int) -> None:
+class SinusoidalPositionEmbedding(nn.Module):
+    def __init__(self: "SinusoidalPositionEmbedding", dim: int, theta: int = 10000) -> None:
         super().__init__()
-        assert (dim % 2) == 0
-        half_dim = dim // 2
-        self.weights = nn.Parameter(torch.randn(half_dim))
+        self.dim = dim
+        self.theta = theta
 
-    def forward(self: "LearnedSinusoidalPosEmb", x: torch.Tensor) -> torch.Tensor:
-        x = rearrange(x, "b -> b 1")
-        freqs = x * rearrange(self.weights, "d -> 1 d") * 2 * math.pi
-        fouriered = torch.cat([freqs.cos(), freqs.sin()], dim=-1)
-        return fouriered
+    def forward(self: "SinusoidalPositionEmbedding", x: torch.Tensor) -> torch.Tensor:
+        device = x.device
+        half_dim = self.dim // 2
+        emb = math.log(self.theta) / (half_dim - 1)
+        emb = torch.exp(torch.arange(half_dim, device=device) * -emb)
+        emb = x[:, None] * emb[None, :]
+        emb = torch.cat([emb.sin(), emb.cos()], dim=-1)
+        return emb
 
 
 class Upsample(nn.Sequential):
@@ -53,12 +55,11 @@ class UNet(nn.Module):
         dim_h: int,
         dim_cond: int,
         dim_h_mult: Tuple[int] = (1, 2, 4, 8),
-        dim_learned_pos_emb: int = 16,
         resnet_depths: Tuple[int] = (2, 2, 2, 2),
         attn_dim_head: int = 32,
         attn_heads: int = 8,
         attn_depths: Tuple[int] = (4, 4, 4, 4),
-        attn_dropout: float = 0.0,
+        attn_dropout: float = 0.25,
         attn_sdpa: bool = True,
         attn_use_global_context_attention: bool = True,
         attn_use_rotary_emb: bool = True,
@@ -66,11 +67,10 @@ class UNet(nn.Module):
         super().__init__()
         self.dim_h = dim_h
         self.dim_emb = dim_h * 4
-        self.dim_cond = dim_cond * 4
 
         resnet_block_attn = partial(
             ResidualBlock,
-            dim_context=self.dim_cond,
+            dim_context=dim_cond,
             attn_dim_head=attn_dim_head,
             attn_heads=attn_heads,
             attn_dropout=attn_dropout,
@@ -83,18 +83,12 @@ class UNet(nn.Module):
         zero_init_(self.final_conv)
 
         self.time_mlp = nn.Sequential(
-            LearnedSinusoidalPosEmb(dim_learned_pos_emb),
-            nn.Linear(dim_learned_pos_emb, self.dim_emb),
+            SinusoidalPositionEmbedding(self.dim_emb),
+            nn.Linear(self.dim_emb, self.dim_emb),
             nn.SiLU(),
             nn.Linear(self.dim_emb, self.dim_emb),
         )
-        self.context_mlp = nn.Sequential(
-            nn.Linear(dim_cond, self.dim_cond),
-            nn.SiLU(),
-            nn.Linear(self.dim_cond, self.dim_cond),
-        )
         self.null_cond = nn.Parameter(torch.randn(dim_cond))
-        self.cond_norm = nn.GroupNorm(1, self.dim_cond)
 
         # Downsample
         dims_h = tuple((dim_h * mult) for mult in dim_h_mult)
@@ -128,7 +122,7 @@ class UNet(nn.Module):
                         ),
                         Transformer(
                             layer_dim_out,
-                            self.dim_cond,
+                            dim_cond,
                             dim_head=attn_dim_head,
                             heads=attn_heads,
                             depth=attn_depth,
@@ -154,7 +148,7 @@ class UNet(nn.Module):
         )
         self.middle_transformer = Transformer(
             dims_h[-1],
-            self.dim_cond,
+            dim_cond,
             dim_head=attn_dim_head,
             heads=attn_heads,
             depth=attn_depth,
@@ -201,7 +195,7 @@ class UNet(nn.Module):
                         ),
                         Transformer(
                             layer_dim_out,
-                            self.dim_cond,
+                            dim_cond,
                             dim_head=attn_dim_head,
                             heads=attn_heads,
                             depth=attn_depth,
@@ -253,16 +247,14 @@ class UNet(nn.Module):
         cond_mask = rearrange(cond_mask, "b -> b 1")
         null_conds = repeat(self.null_cond, "d -> b d", b=x.shape[0])
         c = torch.where(cond_mask, c, null_conds)
-        c = self.context_mlp(c)
         c = rearrange(c, "b d -> b d 1")
-        c = self.cond_norm(c)
 
         skip_connections = []
         for init_down_block, down_blocks, down_transformer, downsample in self.down_layers:
             x = init_down_block(x, t, c)
-            for down_resnet in down_blocks:
+            for down_resnet, down_transformer_block in zip(down_blocks, down_transformer.layers):
                 x = down_resnet(x, t)
-            x = down_transformer(x, c)
+                x = down_transformer_block(x, c)
             skip_connections.append(x)
             x = downsample(x)
 
@@ -273,9 +265,9 @@ class UNet(nn.Module):
         for init_up_block, up_blocks, up_transformer, upsample in self.up_layers:
             x = torch.cat([x, skip_connections.pop()], dim=1)
             x = init_up_block(x, t, c)
-            for up_resnet in up_blocks:
+            for up_resnet, up_transformer_block in zip(up_blocks, up_transformer.layers):
                 x = up_resnet(x, t)
-            x = up_transformer(x, c)
+                x = up_transformer_block(x, c)
             x = upsample(x)
 
         return self.final_conv(x)

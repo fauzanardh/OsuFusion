@@ -22,7 +22,7 @@ class OsuFusion(nn.Module):
         attn_dim_head: int = 32,
         attn_heads: int = 8,
         attn_depths: Tuple[int] = (4, 4, 4, 4),
-        attn_dropout: float = 0.0,
+        attn_dropout: float = 0.25,
         attn_sdpa: bool = True,
         attn_use_rotary_emb: bool = True,
         cond_drop_prob: float = 0.25,

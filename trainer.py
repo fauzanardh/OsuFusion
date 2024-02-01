@@ -102,7 +102,7 @@ def sample_step(
 
     model.eval()
     with torch.no_grad() and accelerator.autocast():
-        generated = model.sample(a, c, x)
+        generated = model.sample(a, c, x, cond_scale=1.0)
     model.train()
 
     w, h = generated.shape[-1] // 150, 7
