@@ -68,12 +68,6 @@ class UNet(nn.Module):
         self.dim_cond = dim_cond * 4
 
         self.init_conv = nn.Conv1d(dim_in, dim_h, 7, padding=3)
-        self.final_resnet = ResidualBlock(
-            dim_h * 2,
-            dim_h,
-            self.dim_emb,
-            dim_context=self.dim_cond,
-        )
         self.final_conv = nn.Conv1d(dim_h, dim_out, 1)
         zero_init_(self.final_conv)
 
@@ -239,7 +233,6 @@ class UNet(nn.Module):
     ) -> torch.Tensor:
         x = torch.cat([x, a], dim=1)
         x = self.init_conv(x)
-        r = x.clone()
         t = self.time_mlp(t)
 
         cond_mask = prob_mask_like((x.shape[0],), 1.0 - cond_drop_prob, device=x.device)
@@ -268,8 +261,5 @@ class UNet(nn.Module):
                 x = up_resnet(x, t, c)
             x = up_transformer(x)
             x = upsample(x)
-
-        x = torch.cat([x, r], dim=1)
-        x = self.final_resnet(x, t, c)
 
         return self.final_conv(x)
