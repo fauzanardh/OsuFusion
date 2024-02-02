@@ -1,5 +1,4 @@
 from collections import namedtuple
-from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -94,6 +93,7 @@ class Attention(nn.Module):
                 v = v.half()
             scale = q.shape[-2] ** -0.5
             q, k, v = (rearrange(t, "b h d n -> b n h d") for t in (q, k, v))
+            q, k, v = (t.contiguous() for t in (q, k, v))
             out = F.scaled_dot_product_attention(
                 q,
                 k,
@@ -149,7 +149,6 @@ class MultiHeadAttention(nn.Module):
     def __init__(
         self: "MultiHeadAttention",
         dim: int,
-        dim_context: Optional[int] = None,
         dim_head: int = 32,
         heads: int = 8,
         sdpa: bool = False,
@@ -174,7 +173,6 @@ class MultiHeadAttention(nn.Module):
         if self.rotary_emb is not None:
             q, k = self.rotary_emb(q, k)
 
-        q, k, v = (t.contiguous() for t in (q, k, v))
         out = self.attention(q, k, v)
         out = rearrange(out, "b h d n -> b (h d) n")
 
