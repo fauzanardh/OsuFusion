@@ -93,12 +93,14 @@ class Attention(nn.Module):
                 k = k.half()
                 v = v.half()
             scale = q.shape[-2] ** -0.5
+            q, k, v = (rearrange(t, "b h d n -> b n h d") for t in (q, k, v))
             out = F.scaled_dot_product_attention(
                 q,
                 k,
                 v,
                 scale=scale,
             )
+            out = rearrange(out, "b n h d -> b h d n")
 
         return out.to(dtype) if config.enable_flash else out
 
