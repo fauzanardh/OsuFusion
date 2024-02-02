@@ -53,7 +53,7 @@ class UNet(nn.Module):
         dim_out: int,
         dim_h: int,
         dim_cond: int,
-        dim_h_mult: Tuple[int] = (1, 2, 4, 8),
+        dim_h_mult: Tuple[int] = (1, 2, 2, 4),
         resnet_depths: Tuple[int] = (2, 2, 2, 2),
         attn_dim_head: int = 32,
         attn_heads: int = 8,
