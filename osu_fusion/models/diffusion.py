@@ -79,8 +79,7 @@ class OsuFusion(nn.Module):
 
         self.scheduler.set_timesteps(self.sampling_timesteps)
         for t in tqdm(self.scheduler.timesteps, desc="sampling loop time step"):
-            t_batched = repeat(t, "... -> b ...", b=b).float().to(device)
-            t_batched /= self.scheduler.config.num_train_timesteps
+            t_batched = repeat(t, "... -> b ...", b=b).long().to(device)
             pred = self.unet.forward_with_cond_scale(x, a, t_batched, c, cond_scale=cond_scale)
             x = self.scheduler.step(pred, t, x).prev_sample
 
@@ -99,12 +98,16 @@ class OsuFusion(nn.Module):
         assert x_padded.shape[-1] == a_padded.shape[-1], "x and a must have the same number of sequence length"
 
         noise = torch.randn_like(x_padded)
-        timesteps = torch.randint(0, self.scheduler.config.num_train_timesteps, (x_padded.shape[0],)).cuda()
-        timesteps = timesteps.long()
+        timesteps = torch.randint(
+            0,
+            self.scheduler.config.num_train_timesteps,
+            (x_padded.shape[0],),
+            dtype=torch.int64,
+            device=x_padded.device,
+        )
         x_noisy = self.scheduler.add_noise(x_padded, noise, timesteps)
 
-        t = timesteps.float() / self.scheduler.config.num_train_timesteps
-        pred = self.unet(x_noisy, a_padded, t, c, self.cond_drop_prob)[slice_]
+        pred = self.unet(x_noisy, a_padded, timesteps, c, self.cond_drop_prob)[slice_]
         target = noise[slice_]
 
         losses = F.mse_loss(pred, target, reduction="none")

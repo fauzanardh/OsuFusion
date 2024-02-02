@@ -91,14 +91,14 @@ class Attention(nn.Module):
                 q = q.half()
                 k = k.half()
                 v = v.half()
-            scale = q.shape[-2] ** -0.5
             q, k, v = (rearrange(t, "b h d n -> b n h d") for t in (q, k, v))
             q, k, v = (t.contiguous() for t in (q, k, v))
+            scale = q.shape[-2] ** -0.5
+            q = q * scale
             out = F.scaled_dot_product_attention(
                 q,
                 k,
                 v,
-                scale=scale,
             )
             out = rearrange(out, "b n h d -> b h d n")
 
@@ -126,7 +126,6 @@ class Attention(nn.Module):
         scale = q.shape[-2] ** -0.5
         q = q * scale
         sim = torch.einsum("b h d i, b h d j -> b h i j", q, k)
-        sim = sim - sim.amax(dim=-1, keepdim=True).detach()
         attn = sim.softmax(dim=-1)
         out = torch.einsum("b h i j, b h d j -> b h d i", attn, v)
         return out

@@ -40,14 +40,14 @@ class Block(nn.Module):
         dim_in: int,
         dim_out: int,
         norm: bool = True,
-        norm_groups: int = 8,
     ) -> None:
         super().__init__()
-        self.norm = nn.GroupNorm(norm_groups, dim_in) if norm else nn.Identity()
+        self.proj = nn.Conv1d(dim_in, dim_out, 3, padding=1)
+        self.norm = nn.GroupNorm(1, dim_out) if norm else nn.Identity()
         self.activation = nn.SiLU()
-        self.res_conv = nn.Conv1d(dim_in, dim_out, 3, padding=1)
 
     def forward(self: "Block", x: torch.Tensor, scale_shift: Optional[torch.Tensor] = None) -> torch.Tensor:
+        x = self.proj(x)
         x = self.norm(x)
 
         if scale_shift is not None:
@@ -55,7 +55,7 @@ class Block(nn.Module):
             x = x * (scale + 1) + shift
 
         x = self.activation(x)
-        return self.res_conv(x)
+        return x
 
 
 class ResidualBlock(nn.Module):
@@ -64,12 +64,12 @@ class ResidualBlock(nn.Module):
         dim_in: int,
         dim_out: int,
         dim_emb: int,
-        dim_context: Optional[int] = None,
+        dim_context: int,
     ) -> None:
         super().__init__()
 
         mlp_input_dim = dim_emb if dim_context is None else dim_emb + dim_context
-        self.time_mlp = nn.Sequential(
+        self.mlp = nn.Sequential(
             nn.SiLU(),
             nn.Linear(mlp_input_dim, dim_out * 2),
         )
@@ -84,18 +84,15 @@ class ResidualBlock(nn.Module):
         self: "ResidualBlock",
         x: torch.Tensor,
         time_emb: torch.Tensor,
-        context: Optional[torch.Tensor] = None,
+        context: torch.Tensor,
     ) -> torch.Tensor:
-        if context is not None:
-            cond_emb = torch.cat([time_emb, context], dim=-1)
-            cond_emb = self.time_mlp(cond_emb)
-        else:
-            cond_emb = self.time_mlp(time_emb)
+        cond_emb = torch.cat([time_emb, context], dim=-1)
+        cond_emb = self.mlp(cond_emb)
         cond_emb = rearrange(cond_emb, "b d -> b d 1")
         scale_shift = cond_emb.chunk(2, dim=1)
 
-        h = self.block1(x)
-        h = self.block2(h, scale_shift=scale_shift)
+        h = self.block1(x, scale_shift=scale_shift)
+        h = self.block2(h)
 
         return h + self.res_conv(x)
 
@@ -103,7 +100,7 @@ class ResidualBlock(nn.Module):
         self: "ResidualBlock",
         x: torch.Tensor,
         time_emb: torch.Tensor,
-        context: Optional[torch.Tensor] = None,
+        context: torch.Tensor,
     ) -> torch.Tensor:
         if self.training and self.gradient_checkpointing:
             return torch.utils.checkpoint.checkpoint(self.forward_body, x, time_emb, context, use_reentrant=True)

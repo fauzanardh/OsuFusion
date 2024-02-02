@@ -10,10 +10,12 @@ from osu_fusion.modules.residual import ResidualBlock
 from osu_fusion.modules.utils import prob_mask_like
 
 
-def zero_init_(module: nn.Module) -> None:
+def zero_init(module: nn.Module) -> nn.Module:
     nn.init.zeros_(module.weight)
     if module.bias is not None:
         nn.init.zeros_(module.bias)
+
+    return module
 
 
 class SinusoidalPositionEmbedding(nn.Module):
@@ -46,6 +48,25 @@ class Downsample(nn.Sequential):
         )
 
 
+class Residual(nn.Module):
+    def __init__(self: "Residual", fn: nn.Module) -> None:
+        super().__init__()
+        self.fn = fn
+
+    def forward(self: "Residual", x: torch.Tensor, *args: List, **kwargs: Dict) -> torch.Tensor:
+        return self.fn(x, *args, **kwargs) + x
+
+
+class PreNorm(nn.Module):
+    def __init__(self: "PreNorm", dim: int, fn: nn.Module) -> None:
+        super().__init__()
+        self.norm = nn.GroupNorm(1, dim)
+        self.fn = fn
+
+    def forward(self: "PreNorm", x: torch.Tensor, *args: List, **kwargs: Dict) -> torch.Tensor:
+        return self.fn(self.norm(x), *args, **kwargs)
+
+
 class UNet(nn.Module):
     def __init__(
         self: "UNet",
@@ -66,9 +87,8 @@ class UNet(nn.Module):
         self.dim_cond = dim_cond * 4
 
         self.init_conv = nn.Conv1d(dim_in, dim_h, 7, padding=3)
-        self.final_resnet = ResidualBlock(dim_h * 2, dim_h, self.dim_emb, dim_context=self.dim_cond)
-        self.final_conv = nn.Conv1d(dim_h, dim_out, 1)
-        zero_init_(self.final_conv)
+        self.final_resnet = ResidualBlock(dim_h * 2, dim_h, self.dim_emb, self.dim_cond)
+        self.final_conv = zero_init(nn.Conv1d(dim_h, dim_out, 1))
 
         self.time_mlp = nn.Sequential(
             SinusoidalPositionEmbedding(self.dim_emb),
@@ -99,7 +119,7 @@ class UNet(nn.Module):
                             layer_dim_in,
                             layer_dim_out,
                             self.dim_emb,
-                            dim_context=self.dim_cond,
+                            self.dim_cond,
                         ),
                         nn.ModuleList(
                             [
@@ -107,20 +127,25 @@ class UNet(nn.Module):
                                     layer_dim_out,
                                     layer_dim_out,
                                     self.dim_emb,
-                                    dim_context=self.dim_cond,
+                                    self.dim_cond,
                                 )
                                 for _ in range(num_blocks)
                             ],
                         ),
                         nn.ModuleList(
                             [
-                                MultiHeadAttention(
-                                    layer_dim_out,
-                                    dim_head=attn_dim_head,
-                                    heads=attn_heads,
-                                    sdpa=False,
-                                    linear=True,
-                                    use_rotary_emb=attn_use_rotary_emb,
+                                Residual(
+                                    PreNorm(
+                                        layer_dim_out,
+                                        MultiHeadAttention(
+                                            layer_dim_out,
+                                            dim_head=attn_dim_head,
+                                            heads=attn_heads,
+                                            sdpa=False,
+                                            linear=True,
+                                            use_rotary_emb=attn_use_rotary_emb,
+                                        ),
+                                    ),
                                 )
                                 for _ in range(num_blocks)
                             ],
@@ -136,21 +161,26 @@ class UNet(nn.Module):
             dims_h[-1],
             dims_h[-1],
             self.dim_emb,
-            dim_context=self.dim_cond,
+            self.dim_cond,
         )
-        self.middle_attn = MultiHeadAttention(
-            dims_h[-1],
-            dim_head=attn_dim_head,
-            heads=attn_heads,
-            sdpa=attn_sdpa,
-            linear=False,
-            use_rotary_emb=attn_use_rotary_emb,
+        self.middle_attn = Residual(
+            PreNorm(
+                dims_h[-1],
+                MultiHeadAttention(
+                    dims_h[-1],
+                    dim_head=attn_dim_head,
+                    heads=attn_heads,
+                    sdpa=attn_sdpa,
+                    linear=False,
+                    use_rotary_emb=attn_use_rotary_emb,
+                ),
+            ),
         )
         self.middle_resnet2 = ResidualBlock(
             dims_h[-1],
             dims_h[-1],
             self.dim_emb,
-            dim_context=self.dim_cond,
+            self.dim_cond,
         )
 
         # Upsample
@@ -167,7 +197,7 @@ class UNet(nn.Module):
                             layer_dim_in * 2,
                             layer_dim_out,
                             self.dim_emb,
-                            dim_context=self.dim_cond,
+                            self.dim_cond,
                         ),
                         nn.ModuleList(
                             [
@@ -175,20 +205,25 @@ class UNet(nn.Module):
                                     layer_dim_out,
                                     layer_dim_out,
                                     self.dim_emb,
-                                    dim_context=self.dim_cond,
+                                    self.dim_cond,
                                 )
                                 for _ in range(num_blocks)
                             ],
                         ),
                         nn.ModuleList(
                             [
-                                MultiHeadAttention(
-                                    layer_dim_out,
-                                    dim_head=attn_dim_head,
-                                    heads=attn_heads,
-                                    sdpa=False,
-                                    linear=True,
-                                    use_rotary_emb=attn_use_rotary_emb,
+                                Residual(
+                                    PreNorm(
+                                        layer_dim_out,
+                                        MultiHeadAttention(
+                                            layer_dim_out,
+                                            dim_head=attn_dim_head,
+                                            heads=attn_heads,
+                                            sdpa=False,
+                                            linear=True,
+                                            use_rotary_emb=attn_use_rotary_emb,
+                                        ),
+                                    ),
                                 )
                                 for _ in range(num_blocks)
                             ],
@@ -258,5 +293,4 @@ class UNet(nn.Module):
 
         x = torch.cat([x, r], dim=1)
         x = self.final_resnet(x, t, c)
-
         return self.final_conv(x)
