@@ -18,11 +18,9 @@ class OsuFusion(nn.Module):
         self: "OsuFusion",
         dim_h: int,
         dim_h_mult: Tuple[int] = (1, 2, 2, 4),
-        resnet_depths: Tuple[int] = (2, 2, 2, 2),
+        num_blocks: int = 3,
         attn_dim_head: int = 32,
         attn_heads: int = 8,
-        attn_depths: Tuple[int] = (4, 4, 4, 4),
-        attn_dropout: float = 0.25,
         attn_sdpa: bool = True,
         attn_use_rotary_emb: bool = True,
         cond_drop_prob: float = 0.25,
@@ -38,11 +36,9 @@ class OsuFusion(nn.Module):
             dim_h,
             CONTEXT_DIM,
             dim_h_mult=dim_h_mult,
-            resnet_depths=resnet_depths,
+            num_blocks=num_blocks,
             attn_dim_head=attn_dim_head,
             attn_heads=attn_heads,
-            attn_depths=attn_depths,
-            attn_dropout=attn_dropout,
             attn_sdpa=attn_sdpa,
             attn_use_rotary_emb=attn_use_rotary_emb,
         )
@@ -50,14 +46,13 @@ class OsuFusion(nn.Module):
         self.scheduler = DDPMScheduler(
             num_train_timesteps=train_timesteps,
             beta_schedule="scaled_linear",
-            thresholding=True,
-            dynamic_thresholding_ratio=dynamic_thresholding_percentile,
+            # thresholding=True,
+            # dynamic_thresholding_ratio=dynamic_thresholding_percentile,
         )
         self.train_timesteps = train_timesteps
         self.sampling_timesteps = sampling_timesteps
         self.cond_drop_prob = cond_drop_prob
         self.depth = len(dim_h_mult)
-        self.dynamic_thresholding_percentile = dynamic_thresholding_percentile
 
     def pad_data(self: "OsuFusion", x: torch.Tensor) -> Tuple[torch.Tensor, Tuple[int, int]]:
         original_length = x.shape[-1]

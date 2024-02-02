@@ -5,8 +5,8 @@ import torch
 import torch.nn as nn
 from einops import rearrange, repeat
 
+from osu_fusion.modules.attention import MultiHeadAttention
 from osu_fusion.modules.residual import ResidualBlock
-from osu_fusion.modules.transformer import Transformer
 from osu_fusion.modules.utils import prob_mask_like
 
 
@@ -54,11 +54,9 @@ class UNet(nn.Module):
         dim_h: int,
         dim_cond: int,
         dim_h_mult: Tuple[int] = (1, 2, 2, 4),
-        resnet_depths: Tuple[int] = (2, 2, 2, 2),
+        num_blocks: int = 3,
         attn_dim_head: int = 32,
         attn_heads: int = 8,
-        attn_depths: Tuple[int] = (4, 4, 4, 4),
-        attn_dropout: float = 0.25,
         attn_sdpa: bool = True,
         attn_use_rotary_emb: bool = True,
     ) -> None:
@@ -68,6 +66,7 @@ class UNet(nn.Module):
         self.dim_cond = dim_cond * 4
 
         self.init_conv = nn.Conv1d(dim_in, dim_h, 7, padding=3)
+        self.final_resnet = ResidualBlock(dim_h * 2, dim_h, self.dim_emb, dim_context=self.dim_cond)
         self.final_conv = nn.Conv1d(dim_h, dim_out, 1)
         zero_init_(self.final_conv)
 
@@ -93,8 +92,6 @@ class UNet(nn.Module):
         down_layers = []
         for i in range(n_layers):
             layer_dim_in, layer_dim_out = in_out[i]
-            resnet_depth = resnet_depths[i]
-            attn_depth = attn_depths[i]
             down_layers.append(
                 nn.ModuleList(
                     [
@@ -112,22 +109,24 @@ class UNet(nn.Module):
                                     self.dim_emb,
                                     dim_context=self.dim_cond,
                                 )
-                                for _ in range(resnet_depth)
+                                for _ in range(num_blocks)
                             ],
                         ),
-                        Transformer(
-                            layer_dim_out,
-                            dim_head=attn_dim_head,
-                            heads=attn_heads,
-                            depth=attn_depth,
-                            dropout=attn_dropout,
-                            sdpa=False,
-                            linear=True,
-                            use_rotary_emb=attn_use_rotary_emb,
+                        nn.ModuleList(
+                            [
+                                MultiHeadAttention(
+                                    layer_dim_out,
+                                    dim_context=self.dim_cond,
+                                    dim_head=attn_dim_head,
+                                    heads=attn_heads,
+                                    sdpa=False,
+                                    linear=True,
+                                    use_rotary_emb=attn_use_rotary_emb,
+                                )
+                                for _ in range(num_blocks)
+                            ],
                         ),
-                        Downsample(layer_dim_out, layer_dim_out)
-                        if i < (n_layers - 1)
-                        else nn.Conv1d(layer_dim_out, layer_dim_out, 3, padding=1),
+                        Downsample(layer_dim_out, layer_dim_out) if i < (n_layers - 1) else nn.Identity(),
                     ],
                 ),
             )
@@ -140,13 +139,13 @@ class UNet(nn.Module):
             self.dim_emb,
             dim_context=self.dim_cond,
         )
-        self.middle_transformer = Transformer(
+        self.middle_attn = MultiHeadAttention(
             dims_h[-1],
+            dim_context=self.dim_cond,
             dim_head=attn_dim_head,
             heads=attn_heads,
-            depth=attn_depth,
-            dropout=attn_dropout,
             sdpa=attn_sdpa,
+            linear=False,
             use_rotary_emb=attn_use_rotary_emb,
         )
         self.middle_resnet2 = ResidualBlock(
@@ -157,16 +156,12 @@ class UNet(nn.Module):
         )
 
         # Upsample
-        resnet_depths = tuple(reversed(resnet_depths))
-        attn_depths = tuple(reversed(attn_depths))
         in_out = tuple(reversed(tuple(zip(dims_h[:-1], dims_h[1:]))))
         n_layers = len(in_out)
 
         up_layers = []
         for i in range(n_layers):
             layer_dim_out, layer_dim_in = in_out[i]
-            resnet_depth = resnet_depths[i]
-            attn_depth = attn_depths[i]
             up_layers.append(
                 nn.ModuleList(
                     [
@@ -184,27 +179,28 @@ class UNet(nn.Module):
                                     self.dim_emb,
                                     dim_context=self.dim_cond,
                                 )
-                                for _ in range(resnet_depth)
+                                for _ in range(num_blocks)
                             ],
                         ),
-                        Transformer(
-                            layer_dim_out,
-                            dim_head=attn_dim_head,
-                            heads=attn_heads,
-                            depth=attn_depth,
-                            dropout=attn_dropout,
-                            sdpa=False,
-                            linear=True,
-                            use_rotary_emb=attn_use_rotary_emb,
+                        nn.ModuleList(
+                            [
+                                MultiHeadAttention(
+                                    layer_dim_out,
+                                    dim_context=self.dim_cond,
+                                    dim_head=attn_dim_head,
+                                    heads=attn_heads,
+                                    sdpa=False,
+                                    linear=True,
+                                    use_rotary_emb=attn_use_rotary_emb,
+                                )
+                                for _ in range(num_blocks)
+                            ],
                         ),
-                        Upsample(layer_dim_out, layer_dim_out)
-                        if i < (n_layers - 1)
-                        else nn.Conv1d(layer_dim_out, layer_dim_out, 3, padding=1),
+                        Upsample(layer_dim_out, layer_dim_out) if i < (n_layers - 1) else nn.Identity(),
                     ],
                 ),
             )
         self.up_layers = nn.ModuleList(up_layers)
-
         self.gradient_checkpointing = False
 
     def set_gradient_checkpointing(self: "UNet", value: bool) -> None:
@@ -233,6 +229,7 @@ class UNet(nn.Module):
     ) -> torch.Tensor:
         x = torch.cat([x, a], dim=1)
         x = self.init_conv(x)
+        r = x.clone()
         t = self.time_mlp(t)
 
         cond_mask = prob_mask_like((x.shape[0],), 1.0 - cond_drop_prob, device=x.device)
@@ -242,24 +239,27 @@ class UNet(nn.Module):
         c = self.cond_mlp(c)
 
         skip_connections = []
-        for init_down_block, down_blocks, down_transformer, downsample in self.down_layers:
-            x = init_down_block(x, t, c)
-            for down_resnet in down_blocks:
+        for init_down_resnet, down_resnets, down_attns, downsample in self.down_layers:
+            x = init_down_resnet(x, t, c)
+            for down_resnet, down_attn in zip(down_resnets, down_attns):
                 x = down_resnet(x, t, c)
-            x = down_transformer(x)
+                x = down_attn(x)
             skip_connections.append(x)
             x = downsample(x)
 
         x = self.middle_resnet1(x, t, c)
-        x = self.middle_transformer(x)
+        x = self.middle_attn(x)
         x = self.middle_resnet2(x, t, c)
 
-        for init_up_block, up_blocks, up_transformer, upsample in self.up_layers:
+        for init_up_resnet, up_resnets, up_attns, upsample in self.up_layers:
             x = torch.cat([x, skip_connections.pop()], dim=1)
-            x = init_up_block(x, t, c)
-            for up_resnet in up_blocks:
+            x = init_up_resnet(x, t, c)
+            for up_resnet, up_attn in zip(up_resnets, up_attns):
                 x = up_resnet(x, t, c)
-            x = up_transformer(x)
+                x = up_attn(x)
             x = upsample(x)
+
+        x = torch.cat([x, r], dim=1)
+        x = self.final_resnet(x, t, c)
 
         return self.final_conv(x)
