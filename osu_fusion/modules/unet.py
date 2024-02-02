@@ -67,6 +67,15 @@ class Downsample(nn.Sequential):
         )
 
 
+class Parallel(nn.Module):
+    def __init__(self: "Parallel", *fns: nn.Module) -> None:
+        super().__init__()
+        self.fns = nn.ModuleList(fns)
+
+    def forward(self: "Parallel", x: torch.Tensor, *args: List, **kwargs: Dict) -> List[torch.Tensor]:
+        return sum([fn(x, *args, **kwargs) for fn in self.fns])
+
+
 class Residual(nn.Module):
     def __init__(self: "Residual", fn: nn.Module) -> None:
         super().__init__()
@@ -170,7 +179,12 @@ class UNet(nn.Module):
                                 for _ in range(num_blocks)
                             ],
                         ),
-                        Downsample(layer_dim_out, layer_dim_out) if i < (n_layers - 1) else nn.Identity(),
+                        Downsample(layer_dim_out, layer_dim_out)
+                        if i < (n_layers - 1)
+                        else Parallel(
+                            nn.Conv1d(layer_dim_out, layer_dim_out, 3, padding=1),
+                            nn.Conv1d(layer_dim_out, layer_dim_out, 1),
+                        ),
                     ],
                 ),
             )
@@ -248,7 +262,12 @@ class UNet(nn.Module):
                                 for _ in range(num_blocks)
                             ],
                         ),
-                        Upsample(layer_dim_out, layer_dim_out) if i < (n_layers - 1) else nn.Identity(),
+                        Upsample(layer_dim_out, layer_dim_out)
+                        if i < (n_layers - 1)
+                        else Parallel(
+                            nn.Conv1d(layer_dim_out, layer_dim_out, 3, padding=1),
+                            nn.Conv1d(layer_dim_out, layer_dim_out, 1),
+                        ),
                     ],
                 ),
             )
