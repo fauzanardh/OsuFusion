@@ -116,7 +116,6 @@ class UNet(nn.Module):
                             [
                                 MultiHeadAttention(
                                     layer_dim_out,
-                                    dim_context=self.dim_cond,
                                     dim_head=attn_dim_head,
                                     heads=attn_heads,
                                     sdpa=False,
@@ -141,7 +140,6 @@ class UNet(nn.Module):
         )
         self.middle_attn = MultiHeadAttention(
             dims_h[-1],
-            dim_context=self.dim_cond,
             dim_head=attn_dim_head,
             heads=attn_heads,
             sdpa=attn_sdpa,
@@ -186,7 +184,6 @@ class UNet(nn.Module):
                             [
                                 MultiHeadAttention(
                                     layer_dim_out,
-                                    dim_context=self.dim_cond,
                                     dim_head=attn_dim_head,
                                     heads=attn_heads,
                                     sdpa=False,
