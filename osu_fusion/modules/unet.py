@@ -34,6 +34,25 @@ class SinusoidalPositionEmbedding(nn.Module):
         return emb
 
 
+class CrossEmbedLayer(nn.Module):
+    def __init__(self: "CrossEmbedLayer", dim: int, dim_out: int, kernel_sizes: Tuple[int]) -> None:
+        super().__init__()
+        kernel_sizes = sorted(kernel_sizes)
+        num_scales = len(kernel_sizes)
+
+        dim_scales = [int(dim / (2**i)) for i in range(1, num_scales)]
+        dim_scales = [*dim_scales, dim_out - sum(dim_scales)]
+
+        convs = []
+        for kernel, dim_scale in zip(kernel_sizes, dim_scales):
+            convs.append(nn.Conv1d(dim, dim_scale, kernel, padding=kernel // 2))
+
+        self.convs = nn.ModuleList(convs)
+
+    def forward(self: "CrossEmbedLayer", x: torch.Tensor) -> torch.Tensor:
+        return torch.cat([conv(x) for conv in self.convs], dim=1)
+
+
 class Upsample(nn.Sequential):
     def __init__(self: "Upsample", dim_in: int, dim_out: int) -> None:
         super().__init__(
@@ -76,6 +95,7 @@ class UNet(nn.Module):
         dim_cond: int,
         dim_h_mult: Tuple[int] = (1, 2, 2, 4),
         num_blocks: int = 3,
+        cross_embed_kernel_sizes: Tuple[int] = (3, 7, 15),
         attn_dim_head: int = 32,
         attn_heads: int = 8,
         attn_sdpa: bool = True,
@@ -86,7 +106,7 @@ class UNet(nn.Module):
         self.dim_emb = dim_h * 4
         self.dim_cond = dim_cond * 4
 
-        self.init_conv = nn.Conv1d(dim_in, dim_h, 7, padding=3)
+        self.init_conv = CrossEmbedLayer(dim_in, dim_h, cross_embed_kernel_sizes)
         self.final_resnet = ResidualBlock(dim_h * 2, dim_h, self.dim_emb, self.dim_cond)
         self.final_conv = zero_init(nn.Conv1d(dim_h, dim_out, 1))
 

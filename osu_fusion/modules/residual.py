@@ -68,10 +68,9 @@ class ResidualBlock(nn.Module):
     ) -> None:
         super().__init__()
 
-        mlp_input_dim = dim_emb if dim_context is None else dim_emb + dim_context
         self.mlp = nn.Sequential(
             nn.SiLU(),
-            nn.Linear(mlp_input_dim, dim_out * 2),
+            nn.Linear(dim_emb + dim_context, dim_out * 2),
         )
         self.block1 = Block(dim_in, dim_out)
         self.block2 = Block(dim_out, dim_out)
