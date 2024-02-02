@@ -4,8 +4,6 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
-from osu_fusion.modules.attention import MultiHeadAttention
-
 
 class Always:
     def __init__(self: "Always", value: int) -> None:
@@ -67,12 +65,6 @@ class ResidualBlock(nn.Module):
         dim_out: int,
         dim_emb: int,
         dim_context: Optional[int] = None,
-        attn_dim_head: int = 32,
-        attn_heads: int = 8,
-        attn_dropout: float = 0.1,
-        attn_sdpa: bool = True,
-        attn_use_rotary_emb: bool = True,
-        use_gca: bool = True,
     ) -> None:
         super().__init__()
 
@@ -81,17 +73,6 @@ class ResidualBlock(nn.Module):
             nn.SiLU(),
             nn.Linear(mlp_input_dim, dim_out * 2),
         )
-        if dim_context is not None:
-            self.cross_attention = MultiHeadAttention(
-                dim_out,
-                dim_context=dim_context,
-                dim_head=attn_dim_head,
-                heads=attn_heads,
-                dropout=attn_dropout,
-                sdpa=attn_sdpa,
-                is_cross_attention=True,
-                use_rotary_emb=attn_use_rotary_emb,
-            )
         self.block1 = Block(dim_in, dim_out)
         self.block2 = Block(dim_out, dim_out)
 

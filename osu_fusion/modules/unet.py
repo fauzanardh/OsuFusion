@@ -73,11 +73,6 @@ class UNet(nn.Module):
             dim_h,
             self.dim_emb,
             dim_context=self.dim_cond,
-            attn_dim_head=attn_dim_head,
-            attn_heads=attn_heads,
-            attn_dropout=attn_dropout,
-            attn_sdpa=attn_sdpa,
-            attn_use_rotary_emb=attn_use_rotary_emb,
         )
         self.final_conv = nn.Conv1d(dim_h, dim_out, 1)
         zero_init_(self.final_conv)
@@ -114,11 +109,6 @@ class UNet(nn.Module):
                             layer_dim_out,
                             self.dim_emb,
                             dim_context=self.dim_cond,
-                            attn_dim_head=attn_dim_head,
-                            attn_heads=attn_heads,
-                            attn_dropout=attn_dropout,
-                            attn_sdpa=attn_sdpa,
-                            attn_use_rotary_emb=attn_use_rotary_emb,
                         ),
                         nn.ModuleList(
                             [
@@ -127,11 +117,6 @@ class UNet(nn.Module):
                                     layer_dim_out,
                                     self.dim_emb,
                                     dim_context=self.dim_cond,
-                                    attn_dim_head=attn_dim_head,
-                                    attn_heads=attn_heads,
-                                    attn_dropout=attn_dropout,
-                                    attn_sdpa=attn_sdpa,
-                                    attn_use_rotary_emb=attn_use_rotary_emb,
                                 )
                                 for _ in range(resnet_depth)
                             ],
@@ -160,11 +145,6 @@ class UNet(nn.Module):
             dims_h[-1],
             self.dim_emb,
             dim_context=self.dim_cond,
-            attn_dim_head=attn_dim_head,
-            attn_heads=attn_heads,
-            attn_dropout=attn_dropout,
-            attn_sdpa=attn_sdpa,
-            attn_use_rotary_emb=attn_use_rotary_emb,
         )
         self.middle_transformer = Transformer(
             dims_h[-1],
@@ -180,11 +160,6 @@ class UNet(nn.Module):
             dims_h[-1],
             self.dim_emb,
             dim_context=self.dim_cond,
-            attn_dim_head=attn_dim_head,
-            attn_heads=attn_heads,
-            attn_dropout=attn_dropout,
-            attn_sdpa=attn_sdpa,
-            attn_use_rotary_emb=attn_use_rotary_emb,
         )
 
         # Upsample
@@ -206,11 +181,6 @@ class UNet(nn.Module):
                             layer_dim_out,
                             self.dim_emb,
                             dim_context=self.dim_cond,
-                            attn_dim_head=attn_dim_head,
-                            attn_heads=attn_heads,
-                            attn_dropout=attn_dropout,
-                            attn_sdpa=attn_sdpa,
-                            attn_use_rotary_emb=attn_use_rotary_emb,
                         ),
                         nn.ModuleList(
                             [
@@ -219,11 +189,6 @@ class UNet(nn.Module):
                                     layer_dim_out,
                                     self.dim_emb,
                                     dim_context=self.dim_cond,
-                                    attn_dim_head=attn_dim_head,
-                                    attn_heads=attn_heads,
-                                    attn_dropout=attn_dropout,
-                                    attn_sdpa=attn_sdpa,
-                                    attn_use_rotary_emb=attn_use_rotary_emb,
                                 )
                                 for _ in range(resnet_depth)
                             ],
@@ -286,9 +251,9 @@ class UNet(nn.Module):
         skip_connections = []
         for init_down_block, down_blocks, down_transformer, downsample in self.down_layers:
             x = init_down_block(x, t, c)
-            for down_resnet, down_transformer_block in zip(down_blocks, down_transformer.layers):
+            for down_resnet in down_blocks:
                 x = down_resnet(x, t, c)
-                x = down_transformer_block(x)
+            x = down_transformer(x)
             skip_connections.append(x)
             x = downsample(x)
 
@@ -299,9 +264,9 @@ class UNet(nn.Module):
         for init_up_block, up_blocks, up_transformer, upsample in self.up_layers:
             x = torch.cat([x, skip_connections.pop()], dim=1)
             x = init_up_block(x, t, c)
-            for up_resnet, up_transformer_block in zip(up_blocks, up_transformer.layers):
+            for up_resnet in up_blocks:
                 x = up_resnet(x, t, c)
-                x = up_transformer_block(x)
+            x = up_transformer(x)
             x = upsample(x)
 
         x = torch.cat([x, r], dim=1)
