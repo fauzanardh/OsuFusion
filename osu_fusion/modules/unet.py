@@ -5,8 +5,8 @@ import torch
 import torch.nn as nn
 from einops import rearrange, repeat
 
-from osu_fusion.modules.attention import MultiHeadAttention
 from osu_fusion.modules.residual import ResidualBlock
+from osu_fusion.modules.transformer import TransformerBlock
 from osu_fusion.modules.utils import prob_mask_like
 
 
@@ -163,18 +163,12 @@ class UNet(nn.Module):
                         ),
                         nn.ModuleList(
                             [
-                                Residual(
-                                    PreNorm(
-                                        layer_dim_out,
-                                        MultiHeadAttention(
-                                            layer_dim_out,
-                                            dim_head=attn_dim_head,
-                                            heads=attn_heads,
-                                            sdpa=False,
-                                            linear=True,
-                                            use_rotary_emb=attn_use_rotary_emb,
-                                        ),
-                                    ),
+                                TransformerBlock(
+                                    layer_dim_out,
+                                    dim_head=attn_dim_head,
+                                    heads=attn_heads,
+                                    sdpa=attn_sdpa,
+                                    use_rotary_emb=attn_use_rotary_emb,
                                 )
                                 for _ in range(num_blocks)
                             ],
@@ -197,18 +191,17 @@ class UNet(nn.Module):
             self.dim_emb,
             self.dim_cond,
         )
-        self.middle_attn = Residual(
-            PreNorm(
-                dims_h[-1],
-                MultiHeadAttention(
+        self.middle_transformers = nn.Sequential(
+            *[
+                TransformerBlock(
                     dims_h[-1],
                     dim_head=attn_dim_head,
                     heads=attn_heads,
                     sdpa=attn_sdpa,
-                    linear=False,
                     use_rotary_emb=attn_use_rotary_emb,
-                ),
-            ),
+                )
+                for _ in range(num_blocks)
+            ],
         )
         self.middle_resnet2 = ResidualBlock(
             dims_h[-1],
@@ -246,18 +239,12 @@ class UNet(nn.Module):
                         ),
                         nn.ModuleList(
                             [
-                                Residual(
-                                    PreNorm(
-                                        layer_dim_out,
-                                        MultiHeadAttention(
-                                            layer_dim_out,
-                                            dim_head=attn_dim_head,
-                                            heads=attn_heads,
-                                            sdpa=False,
-                                            linear=True,
-                                            use_rotary_emb=attn_use_rotary_emb,
-                                        ),
-                                    ),
+                                TransformerBlock(
+                                    layer_dim_out,
+                                    dim_head=attn_dim_head,
+                                    heads=attn_heads,
+                                    sdpa=attn_sdpa,
+                                    use_rotary_emb=attn_use_rotary_emb,
                                 )
                                 for _ in range(num_blocks)
                             ],
@@ -310,24 +297,24 @@ class UNet(nn.Module):
         c = self.cond_mlp(c)
 
         skip_connections = []
-        for init_down_resnet, down_resnets, down_attns, downsample in self.down_layers:
+        for init_down_resnet, down_resnets, down_transformers, downsample in self.down_layers:
             x = init_down_resnet(x, t, c)
-            for down_resnet, down_attn in zip(down_resnets, down_attns):
+            for down_resnet, down_transformer in zip(down_resnets, down_transformers):
                 x = down_resnet(x, t, c)
-                x = down_attn(x)
+                x = down_transformer(x)
             skip_connections.append(x)
             x = downsample(x)
 
         x = self.middle_resnet1(x, t, c)
-        x = self.middle_attn(x)
+        x = self.middle_transformers(x)
         x = self.middle_resnet2(x, t, c)
 
-        for init_up_resnet, up_resnets, up_attns, upsample in self.up_layers:
+        for init_up_resnet, up_resnets, up_transformers, upsample in self.up_layers:
             x = torch.cat([x, skip_connections.pop()], dim=1)
             x = init_up_resnet(x, t, c)
-            for up_resnet, up_attn in zip(up_resnets, up_attns):
+            for up_resnet, up_transformer in zip(up_resnets, up_transformers):
                 x = up_resnet(x, t, c)
-                x = up_attn(x)
+                x = up_transformer(x)
             x = upsample(x)
 
         x = torch.cat([x, r], dim=1)
