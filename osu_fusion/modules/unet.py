@@ -103,7 +103,7 @@ class UNet(nn.Module):
         dim_h: int,
         dim_cond: int,
         dim_h_mult: Tuple[int] = (1, 2, 4, 8),
-        num_blocks: int = 3,
+        num_layer_blocks: Tuple[int] = (2, 4, 8, 8),
         cross_embed_kernel_sizes: Tuple[int] = (3, 7, 15),
         attn_dim_head: int = 32,
         attn_heads: int = 8,
@@ -141,6 +141,8 @@ class UNet(nn.Module):
         down_layers = []
         for i in range(n_layers):
             layer_dim_in, layer_dim_out = in_out[i]
+            num_blocks = num_layer_blocks[i]
+            print(num_blocks)
             down_layers.append(
                 nn.ModuleList(
                     [
@@ -212,11 +214,14 @@ class UNet(nn.Module):
 
         # Upsample
         in_out = tuple(reversed(tuple(zip(dims_h[:-1], dims_h[1:]))))
+        num_layer_blocks = tuple(reversed(num_layer_blocks))
         n_layers = len(in_out)
 
         up_layers = []
         for i in range(n_layers):
             layer_dim_out, layer_dim_in = in_out[i]
+            num_blocks = num_layer_blocks[i]
+            print(num_blocks)
             up_layers.append(
                 nn.ModuleList(
                     [
