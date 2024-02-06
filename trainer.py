@@ -233,7 +233,9 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
 
             if (step + 1) % args.save_every == 0:
                 accelerator.wait_for_everyone()
-                accelerator.save_model(model, args.project_dir / f"checkpoint-{step + 1}")
+                save_dir = args.project_dir / f"checkpoint-{step + 1}"
+                accelerator.save_model(model, save_dir)
+                accelerator.save_model(ema, save_dir / "ema")
 
                 if accelerator.is_main_process:
                     accelerator.log({"save_loss": avg_loss}, step=step + 1)
