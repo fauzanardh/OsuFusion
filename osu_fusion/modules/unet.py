@@ -142,7 +142,6 @@ class UNet(nn.Module):
         for i in range(n_layers):
             layer_dim_in, layer_dim_out = in_out[i]
             num_blocks = num_layer_blocks[i]
-            print(num_blocks)
             down_layers.append(
                 nn.ModuleList(
                     [
@@ -221,7 +220,6 @@ class UNet(nn.Module):
         for i in range(n_layers):
             layer_dim_out, layer_dim_in = in_out[i]
             num_blocks = num_layer_blocks[i]
-            print(num_blocks)
             up_layers.append(
                 nn.ModuleList(
                     [
