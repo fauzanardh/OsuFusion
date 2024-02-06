@@ -19,6 +19,7 @@ from tqdm.auto import tqdm
 from osu_fusion.library.dataset import SubsequenceDataset, normalize_mfcc, sanitize_input
 from osu_fusion.library.osu.from_beatmap import TOTAL_DIM
 from osu_fusion.models.diffusion import OsuFusion
+from osu_fusion.modules.ema import EMA
 from osu_fusion.scripts.dataset_creator import load_audio, normalize_context
 
 
@@ -61,6 +62,7 @@ def collate_fn(
 def train_step(
     accelerator: Accelerator,
     model: OsuFusion,
+    ema: EMA,
     optimizer: AdamW,
     scheduler: OneCycleLR,
     batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
@@ -77,12 +79,14 @@ def train_step(
     optimizer.step()
     optimizer.zero_grad(set_to_none=True)
     scheduler.step()
+    ema.update()
     return loss
 
 
 def sample_step(
     accelerator: Accelerator,
     model: OsuFusion,
+    ema: EMA,
     audio_path: Path,
     audio_bpm: float,
     step: int,
@@ -105,21 +109,36 @@ def sample_step(
 
     model.eval()
     with torch.no_grad() and accelerator.autocast():
-        generated = model.sample(a, c, x, cond_scale=1.0)
+        generated_non_ema = model.sample(a, c, x, cond_scale=1.0)
+    non_ema_unet = model.unet
+    model.unet = ema.model
+    with torch.no_grad() and accelerator.autocast():
+        generated_ema = model.sample(a, c, x, cond_scale=1.0)
+    model.unet = non_ema_unet
     model.train()
 
-    w, h = generated.shape[-1] // 150, 7
-    fig, axs = plt.subplots(
+    w, h = generated_non_ema.shape[-1] // 150, 7
+    fig_non_ema, axs = plt.subplots(
         h,
         1,
         figsize=(w, h * 8),
         sharex=True,
     )
-    for feature, ax in zip(generated[0].cpu(), axs):
+    for feature, ax in zip(generated_non_ema[0].cpu(), axs):
         ax.plot(feature)
 
-    accelerator.log({"generated": wandb.Image(fig)}, step=step)
-    plt.close(fig)
+    w, h = generated_ema.shape[-1] // 150, 7
+    fig_ema, axs = plt.subplots(
+        h,
+        1,
+        figsize=(w, h * 8),
+        sharex=True,
+    )
+    for feature, ax in zip(generated_ema[0].cpu(), axs):
+        ax.plot(feature)
+
+    accelerator.log({"generated_non-ema": wandb.Image(fig_non_ema), "generated_ema": wandb.Image(fig_ema)}, step=step)
+    plt.close(fig_non_ema)
 
 
 def train(args: ArgumentParser) -> None:  # noqa: C901
@@ -147,6 +166,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         total_steps=args.total_steps,
         pct_start=args.pct_start,
     )
+    ema = EMA(model.unet)
 
     print("Loading dataset...")
     all_maps = list(args.dataset_dir.rglob("*.map.npz"))
@@ -160,8 +180,9 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         pin_memory=True,
     )
 
-    model, optimizer, scheduler, dataloader = accelerator.prepare(
+    model, ema, optimizer, scheduler, dataloader = accelerator.prepare(
         model,
+        ema,
         optimizer,
         scheduler,
         dataloader,
@@ -180,7 +201,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                 except Exception:
                     iter_dataloader = iter(dataloader)
 
-            loss = train_step(accelerator, model, optimizer, scheduler, batch)
+            loss = train_step(accelerator, model, ema, optimizer, scheduler, batch)
             if loss is None:
                 continue
             if torch.isnan(loss):
@@ -228,6 +249,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                 sample_step(
                     accelerator,
                     model,
+                    ema,
                     args.sample_audio,
                     args.sample_audio_bpm,
                     step=step + 1,
