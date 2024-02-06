@@ -1,5 +1,6 @@
 import os  # noqa: F401
 import random
+import shutil
 from argparse import ArgumentParser
 from pathlib import Path
 from typing import List, Tuple
@@ -27,12 +28,15 @@ def delete_old_checkpoints(project_dir: Path, max_num_checkpoints: int) -> None:
     checkpoints = list(project_dir.rglob("checkpoint-*"))
     checkpoints.sort(key=lambda path: int(path.stem.split("-")[1]))
     for checkpoint in checkpoints[:-max_num_checkpoints]:
-        if checkpoint.is_file():
-            checkpoint.unlink()
-        elif checkpoint.is_dir():
-            for path in checkpoint.iterdir():
-                path.unlink()
-            checkpoint.rmdir()
+        if checkpoint.is_dir():
+            shutil.rmtree(checkpoint)
+
+
+def clear_checkpoints(project_dir: Path) -> None:
+    checkpoints = list(project_dir.rglob("checkpoint-*"))
+    for checkpoint in checkpoints:
+        if checkpoint.is_dir():
+            shutil.rmtree(checkpoint)
 
 
 def collate_fn(
@@ -188,6 +192,9 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         dataloader,
     )
     model.train()
+
+    print("Clearing old checkpoints...")
+    clear_checkpoints(args.project_dir)
 
     print("Training...")
     iter_dataloader = iter(dataloader)
