@@ -1,5 +1,5 @@
 from copy import deepcopy
-from typing import Dict, List, Optional
+from typing import Dict, Generator, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -56,16 +56,13 @@ class EMA(nn.Module):
     def beta(self: "EMA") -> float:
         return (1 - 1 / (self.step + 1)) ** (1 + self.gamma)
 
-    def eval(self: "EMA") -> None:
-        self.ema_model.eval()
-
-    def get_params_iter(self: "EMA", model: nn.Module) -> torch.Tensor:
+    def get_params_iter(self: "EMA", model: nn.Module) -> Generator[Tuple[str, torch.Tensor], None, None]:
         for name, param in model.named_parameters():
             if name not in self.parameter_names:
                 continue
             yield name, param
 
-    def get_buffers_iter(self: "EMA", model: nn.Module) -> torch.Tensor:
+    def get_buffers_iter(self: "EMA", model: nn.Module) -> Generator[Tuple[str, torch.Tensor], None, None]:
         for name, buffer in model.named_buffers():
             if name not in self.buffer_names:
                 continue
