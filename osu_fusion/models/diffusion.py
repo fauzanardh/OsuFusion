@@ -17,8 +17,8 @@ class OsuFusion(nn.Module):
     def __init__(
         self: "OsuFusion",
         dim_h: int,
-        dim_h_mult: Tuple[int] = (1, 2, 4, 8),
-        num_layer_blocks: Tuple[int] = (2, 4, 8, 8),
+        dim_h_mult: Tuple[int] = (1, 2, 3, 4),
+        num_layer_blocks: Tuple[int] = (3, 3, 3, 3),
         cross_embed_kernel_sizes: Tuple[int] = (3, 7, 15),
         attn_dim_head: int = 32,
         attn_heads: int = 8,
@@ -32,8 +32,8 @@ class OsuFusion(nn.Module):
         super().__init__()
 
         self.unet = UNet(
-            TOTAL_DIM + AUDIO_DIM,
             TOTAL_DIM,
+            AUDIO_DIM,
             dim_h,
             CONTEXT_DIM,
             dim_h_mult=dim_h_mult,

@@ -98,12 +98,12 @@ class PreNorm(nn.Module):
 class UNet(nn.Module):
     def __init__(
         self: "UNet",
-        dim_in: int,
-        dim_out: int,
+        dim_in_x: int,
+        dim_in_a: int,
         dim_h: int,
         dim_cond: int,
-        dim_h_mult: Tuple[int] = (1, 2, 4, 8),
-        num_layer_blocks: Tuple[int] = (2, 4, 8, 8),
+        dim_h_mult: Tuple[int] = (1, 2, 3, 4),
+        num_layer_blocks: Tuple[int] = (3, 3, 3, 3),
         cross_embed_kernel_sizes: Tuple[int] = (3, 7, 15),
         attn_dim_head: int = 32,
         attn_heads: int = 8,
@@ -115,9 +115,11 @@ class UNet(nn.Module):
         self.dim_emb = dim_h * 4
         self.dim_cond = dim_cond * 4
 
-        self.init_conv = CrossEmbedLayer(dim_in, dim_h, cross_embed_kernel_sizes)
+        # self.init_conv = CrossEmbedLayer(dim_in, dim_h, cross_embed_kernel_sizes)
+        self.init_conv_x = CrossEmbedLayer(dim_in_x, dim_h, cross_embed_kernel_sizes)
+        self.init_conv_a = CrossEmbedLayer(dim_in_a, dim_h, cross_embed_kernel_sizes)
         self.final_resnet = ResidualBlock(dim_h * 2, dim_h, self.dim_emb, self.dim_cond)
-        self.final_conv = zero_init(nn.Conv1d(dim_h, dim_out, 1))
+        self.final_conv = zero_init(nn.Conv1d(dim_h, dim_in_x, 1))
 
         self.time_mlp = nn.Sequential(
             SinusoidalPositionEmbedding(self.dim_emb),
@@ -288,8 +290,10 @@ class UNet(nn.Module):
         c: torch.Tensor,
         cond_drop_prob: float = 0.0,
     ) -> torch.Tensor:
-        x = torch.cat([x, a], dim=1)
-        x = self.init_conv(x)
+        x = self.init_conv_x(x)
+        a = self.init_conv_a(a)
+        x = x + a
+
         r = x.clone()
         t = self.time_mlp(t)
 
