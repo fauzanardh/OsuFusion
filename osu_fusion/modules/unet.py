@@ -118,6 +118,16 @@ class UNet(nn.Module):
         # self.init_conv = CrossEmbedLayer(dim_in, dim_h, cross_embed_kernel_sizes)
         self.init_conv_x = CrossEmbedLayer(dim_in_x, dim_h, cross_embed_kernel_sizes)
         self.init_conv_a = CrossEmbedLayer(dim_in_a, dim_h, cross_embed_kernel_sizes)
+        self.init_transformer = nn.Sequential(
+            TransformerBlock(
+                dim_h * 2,
+                dim_head=attn_dim_head,
+                heads=attn_heads,
+                sdpa=attn_sdpa,
+                use_rotary_emb=attn_use_rotary_emb,
+            ),
+            nn.Conv1d(dim_h * 2, dim_h, 1),
+        )
         self.final_resnet = ResidualBlock(dim_h * 2, dim_h, self.dim_emb, self.dim_cond)
         self.final_conv = zero_init(nn.Conv1d(dim_h, dim_in_x, 1))
 
@@ -292,7 +302,8 @@ class UNet(nn.Module):
     ) -> torch.Tensor:
         x = self.init_conv_x(x)
         a = self.init_conv_a(a)
-        x = x + a
+        x = torch.cat([x, a], dim=1)
+        x = self.init_transformer(x)
 
         r = x.clone()
         t = self.time_mlp(t)
