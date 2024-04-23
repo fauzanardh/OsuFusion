@@ -113,6 +113,12 @@ class AudioEncoder(nn.Module):
         self.dim_emb = dim_h * 4
 
         self.init_conv = CrossEmbedLayer(dim_in, dim_h, cross_embed_kernel_sizes)
+        self.time_mlp = nn.Sequential(
+            SinusoidalPositionEmbedding(self.dim_emb),
+            nn.Linear(self.dim_emb, self.dim_emb),
+            nn.SiLU(),
+            nn.Linear(self.dim_emb, self.dim_emb),
+        )
 
         dims_h = tuple((dim_h * mult) for mult in dim_h_mult)
         dims_h = (dim_h, *dims_h)
@@ -167,9 +173,13 @@ class AudioEncoder(nn.Module):
         )
         self.middle_resnet2 = ResidualBlock(dims_h[-1], dims_h[-1], self.dim_emb)
 
-    def forward(self: "AudioEncoder", x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+    def forward(self: "AudioEncoder", x: torch.Tensor) -> torch.Tensor:
         x = self.init_conv(x)
 
+        # Fixed time embedding (to reuse the same resnet module)
+        b = x.shape[0]
+        t = torch.zeros(b, dtype=torch.long, device=x.device)
+        t = self.time_mlp(t)
         for init_resnet, resnets, transformers, downsample in self.layers:
             x = init_resnet(x, t)
             for resnet, transformer in zip(resnets, transformers):
@@ -407,7 +417,7 @@ class UNet(nn.Module):
             skip_connections.append(x)
             x = downsample(x)
 
-        a = self.audio_encoder(a, t)
+        a = self.audio_encoder(a)
         x = torch.cat([x, a], dim=1)
 
         x = self.middle_resnet1(x, t, c)
