@@ -95,6 +95,62 @@ class PreNorm(nn.Module):
         return self.fn(self.norm(x), *args, **kwargs)
 
 
+class AudioEncoder(nn.Module):
+    def __init__(
+        self: "AudioEncoder",
+        dim_in: int,
+        dim_h: int,
+        dim_h_mult: Tuple[int] = (1, 2, 3, 4),
+        num_layer_blocks: Tuple[int] = (3, 3, 3, 3),
+        cross_embed_kernel_sizes: Tuple[int] = (3, 7, 15),
+    ) -> None:
+        super().__init__()
+        self.dim_h = dim_h
+        self.dim_emb = dim_h * 4
+
+        self.init_conv = CrossEmbedLayer(dim_in, dim_h, cross_embed_kernel_sizes)
+
+        dims_h = tuple((dim_h * mult) for mult in dim_h_mult)
+        dims_h = (dim_h, *dims_h)
+        in_out = tuple(zip(dims_h[:-1], dims_h[1:]))
+        n_layers = len(in_out)
+
+        layers = []
+        for i in range(n_layers):
+            layer_dim_in, layer_dim_out = in_out[i]
+            num_blocks = num_layer_blocks[i]
+            layers.append(
+                nn.ModuleList(
+                    [
+                        ResidualBlock(layer_dim_in, layer_dim_out, self.dim_emb),
+                        nn.ModuleList(
+                            [ResidualBlock(layer_dim_out, layer_dim_out, self.dim_emb) for _ in range(num_blocks)],
+                        ),
+                        Downsample(layer_dim_out, layer_dim_out)
+                        if i < (n_layers - 1)
+                        else Parallel(
+                            nn.Conv1d(layer_dim_out, layer_dim_out, 3, padding=1),
+                            nn.Conv1d(layer_dim_out, layer_dim_out, 1),
+                        ),
+                    ],
+                ),
+            )
+        self.layers = nn.ModuleList(layers)
+        self.middle_resnet = ResidualBlock(dims_h[-1], dims_h[-1], self.dim_emb)
+
+    def forward(self: "AudioEncoder", x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        x = self.init_conv(x)
+
+        for init_resnet, resnets, downsample in self.layers:
+            x = init_resnet(x, t)
+            for resnet in resnets:
+                x = resnet(x, t)
+            x = downsample(x)
+
+        x = self.middle_resnet(x, t)
+        return x
+
+
 class UNet(nn.Module):
     def __init__(
         self: "UNet",
@@ -115,27 +171,8 @@ class UNet(nn.Module):
         self.dim_emb = dim_h * 4
         self.dim_cond = dim_cond * 4
 
-        self.init_x = nn.Sequential(
-            CrossEmbedLayer(dim_in_x, dim_h, cross_embed_kernel_sizes),
-            TransformerBlock(
-                dim_h,
-                dim_head=attn_dim_head,
-                heads=attn_heads,
-                sdpa=attn_sdpa,
-                use_rotary_emb=attn_use_rotary_emb,
-            ),
-        )
-        self.init_a = nn.Sequential(
-            CrossEmbedLayer(dim_in_a, dim_h, cross_embed_kernel_sizes),
-            TransformerBlock(
-                dim_h,
-                dim_head=attn_dim_head,
-                heads=attn_heads,
-                sdpa=attn_sdpa,
-                use_rotary_emb=attn_use_rotary_emb,
-            ),
-        )
-        self.combiner = nn.Conv1d(dim_h * 2, dim_h, 1)
+        self.init_conv = CrossEmbedLayer(dim_in_x, dim_h, cross_embed_kernel_sizes)
+        self.audio_encoder = AudioEncoder(dim_in_a, dim_h, dim_h_mult, num_layer_blocks, cross_embed_kernel_sizes)
         self.final_resnet = ResidualBlock(dim_h * 2, dim_h, self.dim_emb, self.dim_cond)
         self.final_conv = zero_init(nn.Conv1d(dim_h, dim_in_x, 1))
 
@@ -207,15 +244,15 @@ class UNet(nn.Module):
 
         # Middle
         self.middle_resnet1 = ResidualBlock(
-            dims_h[-1],
-            dims_h[-1],
+            dims_h[-1] * 2,
+            dims_h[-1] * 2,
             self.dim_emb,
             self.dim_cond,
         )
         self.middle_transformers = nn.Sequential(
             *[
                 TransformerBlock(
-                    dims_h[-1],
+                    dims_h[-1] * 2,
                     dim_head=attn_dim_head,
                     heads=attn_heads,
                     sdpa=attn_sdpa,
@@ -225,7 +262,7 @@ class UNet(nn.Module):
             ],
         )
         self.middle_resnet2 = ResidualBlock(
-            dims_h[-1],
+            dims_h[-1] * 2,
             dims_h[-1],
             self.dim_emb,
             self.dim_cond,
@@ -308,9 +345,7 @@ class UNet(nn.Module):
         c: torch.Tensor,
         cond_drop_prob: float = 0.0,
     ) -> torch.Tensor:
-        x = self.init_x(x)
-        a = self.init_a(a)
-        x = self.combiner(torch.cat([x, a], dim=1))
+        x = self.init_conv(x)
 
         r = x.clone()
         t = self.time_mlp(t)
@@ -329,6 +364,9 @@ class UNet(nn.Module):
                 x = down_transformer(x)
             skip_connections.append(x)
             x = downsample(x)
+
+        a = self.audio_encoder(a, t)
+        x = torch.cat([x, a], dim=1)
 
         x = self.middle_resnet1(x, t, c)
         x = self.middle_transformers(x)

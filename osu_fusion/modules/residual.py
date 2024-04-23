@@ -64,13 +64,13 @@ class ResidualBlock(nn.Module):
         dim_in: int,
         dim_out: int,
         dim_emb: int,
-        dim_context: int,
+        dim_context: Optional[int] = None,
     ) -> None:
         super().__init__()
 
         self.mlp = nn.Sequential(
             nn.SiLU(),
-            nn.Linear(dim_emb + dim_context, dim_out * 2),
+            nn.Linear(dim_emb, dim_out * 2) if dim_context is None else nn.Linear(dim_emb + dim_context, dim_out * 2),
         )
         self.block1 = Block(dim_in, dim_out)
         self.block2 = Block(dim_out, dim_out)
@@ -83,9 +83,9 @@ class ResidualBlock(nn.Module):
         self: "ResidualBlock",
         x: torch.Tensor,
         time_emb: torch.Tensor,
-        context: torch.Tensor,
+        context: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        cond_emb = torch.cat([time_emb, context], dim=-1)
+        cond_emb = time_emb if context is None else torch.cat([time_emb, context], dim=-1)
         cond_emb = self.mlp(cond_emb)
         cond_emb = rearrange(cond_emb, "b d -> b d 1")
         scale_shift = cond_emb.chunk(2, dim=1)
@@ -99,7 +99,7 @@ class ResidualBlock(nn.Module):
         self: "ResidualBlock",
         x: torch.Tensor,
         time_emb: torch.Tensor,
-        context: torch.Tensor,
+        context: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if self.training and self.gradient_checkpointing:
             return torch.utils.checkpoint.checkpoint(self.forward_body, x, time_emb, context, use_reentrant=True)
