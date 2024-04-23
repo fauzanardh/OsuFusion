@@ -103,6 +103,10 @@ class AudioEncoder(nn.Module):
         dim_h_mult: Tuple[int] = (1, 2, 3, 4),
         num_layer_blocks: Tuple[int] = (3, 3, 3, 3),
         cross_embed_kernel_sizes: Tuple[int] = (3, 7, 15),
+        attn_dim_head: int = 32,
+        attn_heads: int = 8,
+        attn_sdpa: bool = True,
+        attn_use_rotary_emb: bool = True,
     ) -> None:
         super().__init__()
         self.dim_h = dim_h
@@ -126,6 +130,18 @@ class AudioEncoder(nn.Module):
                         nn.ModuleList(
                             [ResidualBlock(layer_dim_out, layer_dim_out, self.dim_emb) for _ in range(num_blocks)],
                         ),
+                        nn.ModuleList(
+                            [
+                                TransformerBlock(
+                                    layer_dim_out,
+                                    dim_head=attn_dim_head,
+                                    heads=attn_heads,
+                                    sdpa=attn_sdpa,
+                                    use_rotary_emb=attn_use_rotary_emb,
+                                )
+                                for _ in range(num_blocks)
+                            ],
+                        ),
                         Downsample(layer_dim_out, layer_dim_out)
                         if i < (n_layers - 1)
                         else Parallel(
@@ -136,18 +152,34 @@ class AudioEncoder(nn.Module):
                 ),
             )
         self.layers = nn.ModuleList(layers)
-        self.middle_resnet = ResidualBlock(dims_h[-1], dims_h[-1], self.dim_emb)
+        self.middle_resnet1 = ResidualBlock(dims_h[-1], dims_h[-1], self.dim_emb)
+        self.middle_transformers = nn.Sequential(
+            *[
+                TransformerBlock(
+                    dims_h[-1],
+                    dim_head=attn_dim_head,
+                    heads=attn_heads,
+                    sdpa=attn_sdpa,
+                    use_rotary_emb=attn_use_rotary_emb,
+                )
+                for _ in range(num_blocks)
+            ],
+        )
+        self.middle_resnet2 = ResidualBlock(dims_h[-1], dims_h[-1], self.dim_emb)
 
     def forward(self: "AudioEncoder", x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         x = self.init_conv(x)
 
-        for init_resnet, resnets, downsample in self.layers:
+        for init_resnet, resnets, transformers, downsample in self.layers:
             x = init_resnet(x, t)
-            for resnet in resnets:
+            for resnet, transformer in zip(resnets, transformers):
                 x = resnet(x, t)
+                x = transformer(x)
             x = downsample(x)
 
-        x = self.middle_resnet(x, t)
+        x = self.middle_resnet1(x, t)
+        x = self.middle_transformers(x)
+        x = self.middle_resnet2(x, t)
         return x
 
 
@@ -172,7 +204,17 @@ class UNet(nn.Module):
         self.dim_cond = dim_cond * 4
 
         self.init_conv = CrossEmbedLayer(dim_in_x, dim_h, cross_embed_kernel_sizes)
-        self.audio_encoder = AudioEncoder(dim_in_a, dim_h, dim_h_mult, num_layer_blocks, cross_embed_kernel_sizes)
+        self.audio_encoder = AudioEncoder(
+            dim_in_a,
+            dim_h,
+            dim_h_mult,
+            num_layer_blocks,
+            cross_embed_kernel_sizes,
+            attn_dim_head,
+            attn_heads,
+            attn_sdpa,
+            attn_use_rotary_emb,
+        )
         self.final_resnet = ResidualBlock(dim_h * 2, dim_h, self.dim_emb, self.dim_cond)
         self.final_conv = zero_init(nn.Conv1d(dim_h, dim_in_x, 1))
 
@@ -245,14 +287,14 @@ class UNet(nn.Module):
         # Middle
         self.middle_resnet1 = ResidualBlock(
             dims_h[-1] * 2,
-            dims_h[-1] * 2,
+            dims_h[-1],
             self.dim_emb,
             self.dim_cond,
         )
         self.middle_transformers = nn.Sequential(
             *[
                 TransformerBlock(
-                    dims_h[-1] * 2,
+                    dims_h[-1],
                     dim_head=attn_dim_head,
                     heads=attn_heads,
                     sdpa=attn_sdpa,
@@ -262,7 +304,7 @@ class UNet(nn.Module):
             ],
         )
         self.middle_resnet2 = ResidualBlock(
-            dims_h[-1] * 2,
+            dims_h[-1],
             dims_h[-1],
             self.dim_emb,
             self.dim_cond,
