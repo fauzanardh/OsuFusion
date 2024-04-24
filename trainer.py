@@ -236,7 +236,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                 except Exception:
                     iter_dataloader = iter(dataloader)
 
-            loss = train_step(accelerator, model, ema, optimizer, scheduler, batch)
+            loss = train_step(args, accelerator, model, ema, optimizer, scheduler, batch)
             if loss is None:
                 continue
             if torch.isnan(loss):
