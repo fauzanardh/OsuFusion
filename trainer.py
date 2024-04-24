@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 import numpy as np
+import safetensors
 import torch
 import wandb
 from accelerate import Accelerator
@@ -17,7 +18,7 @@ from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-from osu_fusion.library.dataset import SubsequenceDataset, normalize_mfcc, sanitize_input
+from osu_fusion.library.dataset import FullSequenceDataset, SubsequenceDataset, normalize_mfcc, sanitize_input
 from osu_fusion.library.osu.from_beatmap import TOTAL_DIM
 from osu_fusion.models.diffusion import OsuFusion
 from osu_fusion.modules.ema import EMA
@@ -146,6 +147,23 @@ def sample_step(
     plt.close(fig_ema)
 
 
+def load_checkpoint(model: OsuFusion, ema: EMA, checkpoint: Path) -> None:
+    print(f"Loading checkpoint from {checkpoint}...")
+    model_sd = {}
+    with safetensors.safe_open(checkpoint / "model.safetensors", "rb") as f:
+        for key in f.keys():  # noqa: SIM118
+            model_sd[key] = f.get_tensor(key)
+    model.load_state_dict(model_sd)
+    print(f"Loaded model from {checkpoint}")
+
+    ema_sd = {}
+    with safetensors.safe_open(checkpoint / "ema" / "model.safetensors", "rb") as f:
+        for key in f.keys():  # noqa: SIM118
+            ema_sd[key] = f.get_tensor(key)
+    ema.load_state_dict(ema_sd)
+    print(f"Loaded EMA from {checkpoint}")
+
+
 def train(args: ArgumentParser) -> None:  # noqa: C901
     print("Initializing...")
     # Add your own API key here or set it as an environment variable
@@ -173,16 +191,20 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     )
     ema = EMA(model.unet)
 
+    if args.resume is not None:
+        load_checkpoint(model, ema, args.resume)
+
     print("Loading dataset...")
     all_maps = list(args.dataset_dir.rglob("*.map.npz"))
     random.shuffle(all_maps)
-    dataset = SubsequenceDataset(dataset=all_maps)
+    dataset = FullSequenceDataset(dataset=all_maps) if args.full_sequence else SubsequenceDataset(dataset=all_maps)
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         persistent_workers=True,
         pin_memory=True,
+        collate_fn=collate_fn if args.full_sequence else None,
     )
 
     model, ema, optimizer, scheduler, dataloader = accelerator.prepare(
@@ -273,6 +295,8 @@ def main() -> None:
     args = ArgumentParser()
     args.add_argument("--project-dir", type=Path)
     args.add_argument("--dataset-dir", type=Path)
+    args.add_argument("--resume", type=Path, default=None)
+    args.add_argument("--full-sequence", action="store_true")
     args.add_argument("--mixed-precision", type=str, default="bf16", choices=["no", "fp16", "bf16"])
     args.add_argument("--gradient-checkpointing", action="store_true")
     args.add_argument("--model-dim", type=int, default=128)
