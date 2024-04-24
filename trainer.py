@@ -143,6 +143,7 @@ def sample_step(
 
     accelerator.log({"generated_non-ema": wandb.Image(fig_non_ema), "generated_ema": wandb.Image(fig_ema)}, step=step)
     plt.close(fig_non_ema)
+    plt.close(fig_ema)
 
 
 def train(args: ArgumentParser) -> None:  # noqa: C901
