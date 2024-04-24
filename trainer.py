@@ -65,6 +65,7 @@ def collate_fn(
 
 
 def train_step(
+    args: ArgumentParser,
     accelerator: Accelerator,
     model: OsuFusion,
     ema: EMA,
@@ -72,10 +73,14 @@ def train_step(
     scheduler: OneCycleLR,
     batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
 ) -> float:
-    x, a, c = batch
+    orig_len = None
+    if args.full_sequence:
+        x, a, c, orig_len = batch
+    else:
+        x, a, c = batch
     with accelerator.autocast():
         try:
-            loss = model(x, a, c)
+            loss = model(x, a, c, orig_len)
         except AssertionError:
             return None
     accelerator.backward(loss)
