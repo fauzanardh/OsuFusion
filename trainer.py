@@ -150,14 +150,14 @@ def sample_step(
 def load_checkpoint(model: OsuFusion, ema: EMA, checkpoint: Path) -> None:
     print(f"Loading checkpoint from {checkpoint}...")
     model_sd = {}
-    with safetensors.safe_open(checkpoint / "model.safetensors", "rb") as f:
+    with safetensors.safe_open(checkpoint / "model.safetensors", "pt") as f:
         for key in f.keys():  # noqa: SIM118
             model_sd[key] = f.get_tensor(key)
     model.load_state_dict(model_sd)
     print(f"Loaded model from {checkpoint}")
 
     ema_sd = {}
-    with safetensors.safe_open(checkpoint / "ema" / "model.safetensors", "rb") as f:
+    with safetensors.safe_open(checkpoint / "ema" / "model.safetensors", "pt") as f:
         for key in f.keys():  # noqa: SIM118
             ema_sd[key] = f.get_tensor(key)
     ema.load_state_dict(ema_sd)
