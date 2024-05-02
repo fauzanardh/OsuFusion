@@ -192,9 +192,9 @@ class MMDiT(nn.Module):
         dim_in_c: int,
         dim_h: int,
         dim_h_mult: int = 4,
-        depth: int = 24,
+        depth: int = 12,
         cross_embed_kernel_sizes: Tuple[int] = (3, 5, 7),
-        attn_heads: int = 16,
+        attn_heads: int = 6,
         attn_sdpa: bool = True,
         attn_qk_norm: bool = True,
         attn_use_rotary_emb: bool = True,
@@ -213,6 +213,8 @@ class MMDiT(nn.Module):
             nn.Linear(dim_h, dim_h),
         )
 
+        self.mlp_a = FeedForward(dim_h, dim_mult=dim_h_mult)
+        self.feature_extractor_a = nn.Linear(dim_h * 2, dim_h)
         self.mlp_time = nn.Sequential(
             SinusoidalPositionEmbedding(dim_h),
             FeedForward(dim_h, dim_mult=dim_h_mult),
@@ -268,14 +270,19 @@ class MMDiT(nn.Module):
         x = self.init_x(x)
         a = self.init_a(a)
 
-        t = self.mlp_time(t)
-
         cond_mask = prob_mask_like((x.shape[0],), 1.0 - cond_drop_prob, device=x.device)
         cond_mask = rearrange(cond_mask, "b -> b 1")
         null_conds = repeat(self.null_cond, "d -> b d", b=x.shape[0])
         c = self.mlp_cond(c)
         c = torch.where(cond_mask, c, null_conds)
-        c = c + t
+
+        # Statistic audio features pooling
+        mean_features_a = a.mean(dim=1)
+        std_features_a = a.std(dim=1)
+        h_a = torch.cat([mean_features_a, std_features_a], dim=1)
+        h_a = self.feature_extractor_a(h_a)
+
+        c = c + self.mlp_time(t) + self.mlp_a(h_a)
 
         for block in self.blocks:
             x, a = block(x, a, c)
