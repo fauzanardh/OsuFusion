@@ -119,11 +119,11 @@ def sample_step(
     model.eval()
     with torch.no_grad() and accelerator.autocast():
         generated_non_ema = model.sample(a, c, x, cond_scale=1.0)
-    non_ema_unet = model.unet
-    model.unet = ema.model
+    non_ema_mmdit = model.mmdit
+    model.mmdit = ema.model
     with torch.no_grad() and accelerator.autocast():
         generated_ema = model.sample(a, c, x, cond_scale=1.0)
-    model.unet = non_ema_unet
+    model.mmdit = non_ema_mmdit
     model.train()
 
     w, h = generated_non_ema.shape[-1] // 150, 7
@@ -185,7 +185,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     )
 
     model = OsuFusion(args.model_dim)
-    model.unet.set_gradient_checkpointing(args.gradient_checkpointing)
+    model.mmdit.set_gradient_checkpointing(args.gradient_checkpointing)
     optimizer = AdamW(model.parameters(), lr=args.lr)
     scheduler = OneCycleLR(
         optimizer,
@@ -193,7 +193,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         total_steps=args.total_steps,
         pct_start=args.pct_start,
     )
-    ema = EMA(model.unet)
+    ema = EMA(model.mmdit)
 
     if args.resume is not None:
         load_checkpoint(model, ema, args.resume)
