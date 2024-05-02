@@ -36,7 +36,7 @@ class OsuFusion(nn.Module):
         self.mmdit = MMDiT(
             dim_in_x=TOTAL_DIM,
             dim_in_a=AUDIO_DIM,
-            dim_in_c=CONTEXT_DIM,
+            dim_in_c=CONTEXT_DIM - 1,
             dim_h=dim_h,
             dim_h_mult=dim_h_mult,
             depth=depth,
@@ -86,6 +86,8 @@ class OsuFusion(nn.Module):
         orig_len: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         assert x.shape[-1] == a.shape[-1], "x and a must have the same number of sequence length"
+        # Remove the last element of the context tensor (I don't want to include bpm)
+        c = c[:, :-1]
 
         noise = torch.randn_like(x)
         timesteps = torch.randint(
