@@ -73,6 +73,8 @@ class Attention(nn.Module):
         else:
             self.cuda_config = _config(False, True, True)
 
+        self.gradient_checkpointing = False
+
     def sdpa_attn(
         self: "Attention",
         q: torch.Tensor,
@@ -113,7 +115,7 @@ class Attention(nn.Module):
         out = torch.einsum("b h i j, b h j d -> b h i d", attn, v)
         return out
 
-    def forward(
+    def forward_body(
         self: "Attention",
         q: torch.Tensor,
         k: torch.Tensor,
@@ -123,6 +125,17 @@ class Attention(nn.Module):
             return self.sdpa_attn(q, k, v)
         else:
             return self.attn(q, k, v)
+
+    def forward(
+        self: "Attention",
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+    ) -> torch.Tensor:
+        if self.training and self.gradient_checkpointing:
+            return torch.utils.checkpoint.checkpoint(self.forward_body, q, k, v)
+        else:
+            return self.forward_body(q, k, v)
 
 
 class MultiHeadAttention(nn.Module):
