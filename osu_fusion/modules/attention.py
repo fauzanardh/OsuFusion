@@ -29,7 +29,7 @@ class RotaryPositionEmbedding(nn.Module):
         self._sin_cached = None
 
     def _update_cos_sin_tables(self: "RotaryPositionEmbedding", x: torch.Tensor) -> torch.Tensor:
-        seq_len = x.shape[-1]
+        seq_len = x.shape[-2]
         if seq_len != self._seq_len_cached or self._cos_cached.device != x.device or self._cos_cached.dtype != x.dtype:
             self._seq_len_cached = seq_len
             t = torch.arange(
@@ -38,11 +38,11 @@ class RotaryPositionEmbedding(nn.Module):
                 device=x.device,
             )
             t *= self.scale_base / seq_len
-            freqs = torch.einsum("i , j -> i j", self.inv_freq.to(x.dtype), t)
-            emb = torch.cat([freqs, freqs], dim=-2)
+            freqs = torch.einsum("i , j -> i j", t, self.inv_freq.to(x.dtype))
+            emb = torch.cat([freqs, freqs], dim=-1)
 
-            self._cos_cached = emb.cos()[None, None, :, :]
-            self._sin_cached = emb.sin()[None, None, :, :]
+            self._cos_cached = rearrange(emb.cos(), "n d -> 1 1 n d")
+            self._sin_cached = rearrange(emb.sin(), "n d -> 1 1 n d")
 
         return self._cos_cached, self._sin_cached
 
@@ -56,12 +56,10 @@ class RotaryPositionEmbedding(nn.Module):
 
 
 class Attention(nn.Module):
-    def __init__(self: "Attention", sdpa: bool = False, linear: bool = False) -> None:
+    def __init__(self: "Attention", sdpa: bool = False) -> None:
         super().__init__()
         assert not (sdpa and version.parse(torch.__version__) < version.parse("2.0.0")), "sdpa requires torch>=2.0.0"
-        assert not (sdpa and linear), "sdpa can't be used with linear attention"
         self.sdpa = sdpa
-        self.linear = linear
 
         # sdpa configs
         self.cpu_config = _config(True, True, True)
@@ -91,7 +89,6 @@ class Attention(nn.Module):
                 q = q.half()
                 k = k.half()
                 v = v.half()
-            q, k, v = (rearrange(t, "b h d n -> b n h d") for t in (q, k, v))
             q, k, v = (t.contiguous() for t in (q, k, v))
             scale = q.shape[-2] ** -0.5
             q = q * scale
@@ -100,22 +97,8 @@ class Attention(nn.Module):
                 k,
                 v,
             )
-            out = rearrange(out, "b n h d -> b h d n")
 
         return out.to(dtype) if config.enable_flash else out
-
-    def attn_linear(
-        self: "Attention",
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-    ) -> torch.Tensor:
-        scale = q.shape[-1] ** -0.5
-        q = q.softmax(dim=-2) * scale
-        k = k.softmax(dim=-1)
-        context = torch.einsum("b h d n, b h e n -> b h d e", k, v)
-        out = torch.einsum("b h d e, b h d n -> b h e n", context, q)
-        return out
 
     def attn(
         self: "Attention",
@@ -125,9 +108,9 @@ class Attention(nn.Module):
     ) -> torch.Tensor:
         scale = q.shape[-2] ** -0.5
         q = q * scale
-        sim = torch.einsum("b h d i, b h d j -> b h i j", q, k)
+        sim = torch.einsum("b h i d, b h j d -> b h i j", q, k)
         attn = sim.softmax(dim=-1)
-        out = torch.einsum("b h i j, b h d j -> b h d i", attn, v)
+        out = torch.einsum("b h i j, b h j d -> b h i d", attn, v)
         return out
 
     def forward(
@@ -138,8 +121,6 @@ class Attention(nn.Module):
     ) -> torch.Tensor:
         if self.sdpa:
             return self.sdpa_attn(q, k, v)
-        elif self.linear:
-            return self.attn_linear(q, k, v)
         else:
             return self.attn(q, k, v)
 
@@ -158,22 +139,22 @@ class MultiHeadAttention(nn.Module):
         self.heads = heads
 
         inner_dim = dim_head * heads
-        self.to_qkv = nn.Conv1d(dim, inner_dim * 3, 1, bias=False)
+        self.to_qkv = nn.Linear(dim, inner_dim * 3, 1, bias=False)
         self.rotary_emb = RotaryPositionEmbedding(dim_head) if use_rotary_emb else None
-        self.attention = Attention(sdpa=sdpa, linear=linear)
-        self.to_out = nn.Conv1d(inner_dim, dim, 1)
+        self.attention = Attention(sdpa=sdpa)
+        self.to_out = nn.Linear(inner_dim, dim, 1)
 
     def forward(
         self: "MultiHeadAttention",
         x: torch.Tensor,
     ) -> torch.Tensor:
         q, k, v = self.to_qkv(x).chunk(3, dim=-2)
-        q, k, v = (rearrange(t, "b (h d) n -> b h d n", h=self.heads) for t in (q, k, v))
+        q, k, v = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q, k, v))
         if self.rotary_emb is not None:
             q, k = self.rotary_emb(q, k)
 
         out = self.attention(q, k, v)
-        out = rearrange(out, "b h d n -> b (h d) n")
+        out = rearrange(out, "b h n d -> b n (h d)")
 
         out = self.to_out(out)
         return out
