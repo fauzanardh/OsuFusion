@@ -56,8 +56,6 @@ def normalize_context(context: npt.NDArray) -> npt.NDArray:
     context[3] = context[3] / 5 - 1
     # normalized SR to [-1, 1] from [0, 20]
     context[4] = context[4] / 10 - 1
-    # normalized BPM to [-1, 1] from [0, 300]
-    context[5] = context[5] / 150 - 1
 
     return context
 
