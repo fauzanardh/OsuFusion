@@ -139,8 +139,6 @@ class MMDiTBlock(nn.Module):
         self.mlp_a = FeedForward(dim_h, dim_mult=dim_h_mult)
 
         # Cross-Modal Attention (I don't know if the name is correct)
-        self.attn_scale = self.attn_dim_head**-0.5
-        self.rotary_emb = RotaryPositionEmbedding(self.attn_dim_head) if attn_use_rotary_emb else None
         self.attn = MMAttention(
             dim_h,
             attn_heads,
@@ -148,8 +146,6 @@ class MMDiTBlock(nn.Module):
             qk_norm=attn_qk_norm,
             use_rotary_emb=attn_use_rotary_emb,
         )
-
-        self.gradient_checkpointing = False
 
     def forward(self: "MMDiTBlock", x: torch.Tensor, a: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
         # Modulation
