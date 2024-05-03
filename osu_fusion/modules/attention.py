@@ -92,7 +92,7 @@ class Attention(nn.Module):
                 k = k.half()
                 v = v.half()
             q, k, v = (t.contiguous() for t in (q, k, v))
-            scale = q.shape[-2] ** -0.5
+            scale = q.shape[-1] ** -0.5
             q = q * scale
             out = F.scaled_dot_product_attention(
                 q,
@@ -108,7 +108,7 @@ class Attention(nn.Module):
         k: torch.Tensor,
         v: torch.Tensor,
     ) -> torch.Tensor:
-        scale = q.shape[-2] ** -0.5
+        scale = q.shape[-1] ** -0.5
         q = q * scale
         sim = torch.einsum("b h i d, b h j d -> b h i j", q, k)
         attn = sim.softmax(dim=-1)
