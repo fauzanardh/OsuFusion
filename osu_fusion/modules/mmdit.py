@@ -194,7 +194,7 @@ class MMDiT(nn.Module):
         dim_h_mult: int = 4,
         depth: int = 12,
         cross_embed_kernel_sizes: Tuple[int] = (3, 5, 7),
-        attn_heads: int = 6,
+        attn_heads: int = 8,
         attn_sdpa: bool = True,
         attn_qk_norm: bool = True,
         attn_use_rotary_emb: bool = True,
@@ -240,8 +240,6 @@ class MMDiT(nn.Module):
         )
 
         self.final_layer = FinalLayer(dim_h, dim_in_x)
-
-        self.gradient_checkpointing = False
 
     def set_gradient_checkpointing(self: "MMDiT", value: bool) -> None:
         self.gradient_checkpointing = value
