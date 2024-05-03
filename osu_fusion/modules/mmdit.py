@@ -107,15 +107,12 @@ class MMDiTBlock(nn.Module):
         self: "MMDiTBlock",
         dim_h: int,
         dim_h_mult: int = 4,
-        attn_heads: int = 16,
+        attn_heads: int = 6,
         attn_sdpa: bool = True,
         attn_qk_norm: bool = True,
         attn_use_rotary_emb: bool = True,
     ) -> None:
         super().__init__()
-        self.attn_heads = attn_heads
-        self.attn_dim_head = (dim_h * 2) // attn_heads
-
         # Modulation
         self.modulation_x = nn.Sequential(
             nn.SiLU(),
@@ -227,7 +224,7 @@ class MMDiT(nn.Module):
         dim_h_mult: int = 4,
         depth: int = 12,
         cross_embed_kernel_sizes: Tuple[int] = (3, 5, 7),
-        attn_heads: int = 8,
+        attn_heads: int = 6,
         attn_sdpa: bool = True,
         attn_qk_norm: bool = True,
         attn_use_rotary_emb: bool = True,
