@@ -48,6 +48,60 @@ class FeedForward(nn.Sequential):
         )
 
 
+class MMAttention(nn.Module):
+    def __init__(
+        self: "MMAttention",
+        dim: int,
+        heads: int,
+        sdpa: bool = True,
+        qk_norm: bool = True,
+        use_rotary_emb: bool = True,
+    ) -> None:
+        super().__init__()
+        self.heads = heads
+        self.dim_head = (dim * 2) // heads
+
+        self.to_qkv_x = nn.Linear(dim, dim * 3, bias=False)
+        self.to_qkv_a = nn.Linear(dim, dim * 3, bias=False)
+
+        self.q_norm_x = nn.LayerNorm(dim) if qk_norm else nn.Identity()
+        self.k_norm_x = nn.LayerNorm(dim) if qk_norm else nn.Identity()
+        self.q_norm_a = nn.LayerNorm(dim) if qk_norm else nn.Identity()
+        self.k_norm_a = nn.LayerNorm(dim) if qk_norm else nn.Identity()
+
+        self.rotary_emb = RotaryPositionEmbedding(self.dim_head) if use_rotary_emb else None
+        self.attn = Attention(sdpa=sdpa)
+
+        self.gradient_checkpointing = False
+
+    def forward_body(self: "MMAttention", x: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
+        q_x, k_x, v_x = self.to_qkv_x(x).chunk(3, dim=-1)
+        q_x = self.q_norm_x(q_x)
+        k_x = self.k_norm_x(k_x)
+        q_a, k_a, v_a = self.to_qkv_a(a).chunk(3, dim=-1)
+        q_a = self.q_norm_a(q_a)
+        k_a = self.k_norm_a(k_a)
+
+        q = torch.cat([q_x, q_a], dim=-1)
+        k = torch.cat([k_x, k_a], dim=-1)
+        v = torch.cat([v_x, v_a], dim=-1)
+
+        q, k, v = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q, k, v))
+        if self.rotary_emb is not None:
+            q, k = self.rotary_emb(q, k)
+
+        out = self.attn(q, k, v)
+        out = rearrange(out, "b h n d -> b n (h d)")
+
+        return out
+
+    def forward(self: "MMAttention", x: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
+        if self.training and self.gradient_checkpointing:
+            return torch.utils.checkpoint.checkpoint(self.forward_body, x, a, use_reentrant=True)
+        else:
+            return self.forward_body(x, a)
+
+
 class MMDiTBlock(nn.Module):
     def __init__(
         self: "MMDiTBlock",
@@ -74,30 +128,30 @@ class MMDiTBlock(nn.Module):
 
         # OsuData branch
         self.norm1_x = nn.LayerNorm(dim_h, elementwise_affine=False, eps=1e-6)
-        self.to_qkv_x = nn.Linear(dim_h, dim_h * 3, bias=False)
         self.attn_out_x = nn.Linear(dim_h * 2, dim_h, bias=False)
-        self.q_norm_x = nn.LayerNorm(dim_h) if attn_qk_norm else nn.Identity()
-        self.k_norm_x = nn.LayerNorm(dim_h) if attn_qk_norm else nn.Identity()
         self.norm2_x = nn.LayerNorm(dim_h, elementwise_affine=False, eps=1e-6)
         self.mlp_x = FeedForward(dim_h, dim_mult=dim_h_mult)
 
         # Audio branch
         self.norm1_a = nn.LayerNorm(dim_h, elementwise_affine=False, eps=1e-6)
-        self.to_qkv_a = nn.Linear(dim_h, dim_h * 3, bias=False)
         self.attn_out_a = nn.Linear(dim_h * 2, dim_h, bias=False)
-        self.q_norm_a = nn.LayerNorm(dim_h) if attn_qk_norm else nn.Identity()
-        self.k_norm_a = nn.LayerNorm(dim_h) if attn_qk_norm else nn.Identity()
         self.norm2_a = nn.LayerNorm(dim_h, elementwise_affine=False, eps=1e-6)
         self.mlp_a = FeedForward(dim_h, dim_mult=dim_h_mult)
 
         # Cross-Modal Attention (I don't know if the name is correct)
         self.attn_scale = self.attn_dim_head**-0.5
         self.rotary_emb = RotaryPositionEmbedding(self.attn_dim_head) if attn_use_rotary_emb else None
-        self.attn = Attention(sdpa=attn_sdpa)
+        self.attn = MMAttention(
+            dim_h,
+            attn_heads,
+            sdpa=attn_sdpa,
+            qk_norm=attn_qk_norm,
+            use_rotary_emb=attn_use_rotary_emb,
+        )
 
         self.gradient_checkpointing = False
 
-    def forward_body(self: "MMDiTBlock", x: torch.Tensor, a: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+    def forward(self: "MMDiTBlock", x: torch.Tensor, a: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
         # Modulation
         (
             shift_attn_x,
@@ -117,20 +171,9 @@ class MMDiTBlock(nn.Module):
         ) = self.modulation_a(c).chunk(6, dim=1)
 
         # Attention
-        q_x, k_x, v_x = self.to_qkv_x(modulate(self.norm1_x(x), shift_attn_x, scale_attn_x)).chunk(3, dim=-1)
-        q_x = self.q_norm_x(q_x)
-        k_x = self.k_norm_x(k_x)
-        q_a, k_a, v_a = self.to_qkv_a(modulate(self.norm1_a(a), shift_attn_a, scale_attn_a)).chunk(3, dim=-1)
-        q_a = self.q_norm_a(q_a)
-        k_a = self.k_norm_a(k_a)
-        q = torch.cat([q_x, q_a], dim=-1)
-        k = torch.cat([k_x, k_a], dim=-1)
-        v = torch.cat([v_x, v_a], dim=-1)
-        q, k, v = (rearrange(t, "b n (h d) -> b h n d", h=self.attn_heads) for t in (q, k, v))
-        if self.rotary_emb is not None:
-            q, k = self.rotary_emb(q, k)
-        attn_out = self.attn(q, k, v)
-        attn_out = rearrange(attn_out, "b h n d -> b n (h d)")
+        h_x = modulate(self.norm1_x(x), shift_attn_x, scale_attn_x)
+        h_a = modulate(self.norm1_a(a), shift_attn_a, scale_attn_a)
+        attn_out = self.attn(h_x, h_a)
 
         x = x + gate_attn_x.unsqueeze(1) * self.attn_out_x(attn_out)
         a = a + gate_attn_a.unsqueeze(1) * self.attn_out_a(attn_out)
@@ -140,12 +183,6 @@ class MMDiTBlock(nn.Module):
         a = a + gate_mlp_a.unsqueeze(1) * self.mlp_a(modulate(self.norm2_a(a), shift_mlp_a, scale_mlp_a))
 
         return x, a
-
-    def forward(self: "MMDiTBlock", x: torch.Tensor, a: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
-        if self.training and self.gradient_checkpointing:
-            return torch.utils.checkpoint.checkpoint(self.forward_body, x, a, c, use_reentrant=True)
-        else:
-            return self.forward_body(x, a, c)
 
 
 class CrossEmbedLayer(nn.Module):
