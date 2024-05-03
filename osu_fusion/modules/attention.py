@@ -133,7 +133,7 @@ class Attention(nn.Module):
         v: torch.Tensor,
     ) -> torch.Tensor:
         if self.training and self.gradient_checkpointing:
-            return torch.utils.checkpoint.checkpoint(self.forward_body, q, k, v)
+            return torch.utils.checkpoint.checkpoint(self.forward_body, q, k, v, use_reentrant=True)
         else:
             return self.forward_body(q, k, v)
 
