@@ -78,7 +78,7 @@ def train_step(
         x, a, c, orig_len = batch
     else:
         x, a, c = batch
-    with accelerator.autocast():
+    with accelerator.autocast() and accelerator.accumulate(model):
         try:
             loss = model(x, a, c, orig_len)
         except AssertionError:
@@ -306,11 +306,16 @@ def main() -> None:
     args.add_argument("--full-sequence", action="store_true")
     args.add_argument("--mixed-precision", type=str, default="bf16", choices=["no", "fp16", "bf16"])
     args.add_argument("--gradient-checkpointing", action="store_true")
-    args.add_argument("--model-dim", type=int, default=512)
+    args.add_argument("--gradient-accumulation-steps", type=int, default=4)
+    args.add_argument("--model-dim", type=int, default=384)
     args.add_argument("--lr", type=float, default=1e-5)
-    args.add_argument("--batch-size", type=int, default=16)
+    args.add_argument("--batch-size", type=int, default=4)
     args.add_argument("--num-workers", type=int, default=2)
-    args.add_argument("--total-steps", type=int, default=500000)
+    args.add_argument(
+        "--total-steps",
+        type=int,
+        default=1000000,
+    )  # actual total steps = total_steps // gradient_accumulation_steps
     args.add_argument("--save-every", type=int, default=1000)
     args.add_argument("--max-num-checkpoints", type=int, default=5)
     args.add_argument("--pct-start", type=float, default=0.002)
