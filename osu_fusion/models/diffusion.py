@@ -25,7 +25,7 @@ class OsuFusion(nn.Module):
         attn_heads: int = 6,
         attn_sdpa: bool = True,
         attn_qk_norm: bool = True,
-        attn_one_kv: bool = False,
+        attn_one_kv: bool = True,
         attn_use_rotary_emb: bool = True,
         cond_drop_prob: float = 0.25,
         train_timesteps: int = 1000,
