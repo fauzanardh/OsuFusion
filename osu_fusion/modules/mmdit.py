@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
+from torch.nn import functional as F  # noqa: N812
 
 from osu_fusion.modules.attention import Attention, RotaryPositionEmbedding
 from osu_fusion.modules.utils import prob_mask_like
@@ -20,6 +21,10 @@ def zero_init(module: nn.Module) -> nn.Module:
 
 def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+
+
+def l2norm(x: torch.Tensor) -> torch.Tensor:
+    return F.normalize(x, p=2, dim=-1)
 
 
 class SinusoidalPositionEmbedding(nn.Module):
@@ -64,10 +69,11 @@ class CMAttention(nn.Module):
         self.to_qkv_x = nn.Linear(dim, dim * 3, bias=False)
         self.to_qkv_a = nn.Linear(dim, dim * 3, bias=False)
 
-        self.q_norm_x = nn.LayerNorm(dim) if qk_norm else nn.Identity()
-        self.k_norm_x = nn.LayerNorm(dim) if qk_norm else nn.Identity()
-        self.q_norm_a = nn.LayerNorm(dim) if qk_norm else nn.Identity()
-        self.k_norm_a = nn.LayerNorm(dim) if qk_norm else nn.Identity()
+        self.qk_norm = qk_norm
+        self.q_x_norm_scale = nn.Parameter(torch.ones(heads, 1, self.dim_head // 2)) if qk_norm else None
+        self.k_x_norm_scale = nn.Parameter(torch.ones(heads, 1, self.dim_head // 2)) if qk_norm else None
+        self.q_a_norm_scale = nn.Parameter(torch.ones(heads, 1, self.dim_head // 2)) if qk_norm else None
+        self.k_a_norm_scale = nn.Parameter(torch.ones(heads, 1, self.dim_head // 2)) if qk_norm else None
 
         self.rotary_emb = RotaryPositionEmbedding(self.dim_head) if use_rotary_emb else None
         self.attn = Attention(sdpa=sdpa)
@@ -76,17 +82,22 @@ class CMAttention(nn.Module):
 
     def forward_body(self: "CMAttention", x: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
         q_x, k_x, v_x = self.to_qkv_x(x).chunk(3, dim=-1)
-        q_x = self.q_norm_x(q_x)
-        k_x = self.k_norm_x(k_x)
         q_a, k_a, v_a = self.to_qkv_a(a).chunk(3, dim=-1)
-        q_a = self.q_norm_a(q_a)
-        k_a = self.k_norm_a(k_a)
+
+        q_x, k_x, v_x = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q_x, k_x, v_x))
+        q_a, k_a, v_a = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q_a, k_a, v_a))
+
+        if self.qk_norm:
+            q_x, k_x, q_a, k_a = map(l2norm, (q_x, k_x, q_a, k_a))
+            q_x = q_x * self.q_x_norm_scale
+            k_x = k_x * self.k_x_norm_scale
+            q_a = q_a * self.q_a_norm_scale
+            k_a = k_a * self.k_a_norm_scale
 
         q = torch.cat([q_x, q_a], dim=-1)
         k = torch.cat([k_x, k_a], dim=-1)
         v = torch.cat([v_x, v_a], dim=-1)
 
-        q, k, v = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q, k, v))
         if self.rotary_emb is not None:
             q, k = self.rotary_emb(q, k)
 
