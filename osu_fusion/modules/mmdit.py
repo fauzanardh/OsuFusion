@@ -89,9 +89,7 @@ class CMAttention(nn.Module):
         self.rotary_emb = RotaryPositionEmbedding(self.dim_head * 2) if use_rotary_emb else None
         self.attn = Attention(sdpa=sdpa)
 
-        self.gradient_checkpointing = False
-
-    def forward_body(self: "CMAttention", x: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
+    def forward(self: "CMAttention", x: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
         if self.one_kv:
             q_x = self.to_q_x(x)
             q_x = rearrange(q_x, "b n (h d) -> b h n d", h=self.heads)
@@ -126,12 +124,6 @@ class CMAttention(nn.Module):
         out = rearrange(out, "b h n d -> b n (h d)")
 
         return out
-
-    def forward(self: "CMAttention", x: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
-        if self.training and self.gradient_checkpointing:
-            return torch.utils.checkpoint.checkpoint(self.forward_body, x, a, use_reentrant=True)
-        else:
-            return self.forward_body(x, a)
 
 
 class MMDiTBlock(nn.Module):
@@ -178,7 +170,9 @@ class MMDiTBlock(nn.Module):
             use_rotary_emb=attn_use_rotary_emb,
         )
 
-    def forward(self: "MMDiTBlock", x: torch.Tensor, a: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+        self.gradient_checkpointing = False
+
+    def forward_body(self: "MMDiTBlock", x: torch.Tensor, a: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
         # Modulation
         (
             shift_attn_x,
@@ -210,6 +204,12 @@ class MMDiTBlock(nn.Module):
         a = a + gate_mlp_a.unsqueeze(1) * self.mlp_a(modulate(self.norm2_a(a), shift_mlp_a, scale_mlp_a))
 
         return x, a
+
+    def forward(self: "MMDiTBlock", x: torch.Tensor, a: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+        if self.training and self.gradient_checkpointing:
+            return torch.utils.checkpoint.checkpoint(self.forward_body, x, a, c, use_reentrant=True)
+        else:
+            return self.forward_body(x, a, c)
 
 
 class CrossEmbedLayer(nn.Module):
