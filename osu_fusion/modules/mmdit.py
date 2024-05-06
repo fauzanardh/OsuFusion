@@ -48,9 +48,9 @@ class FeedForward(nn.Sequential):
         )
 
 
-class MMAttention(nn.Module):
+class CMAttention(nn.Module):
     def __init__(
-        self: "MMAttention",
+        self: "CMAttention",
         dim: int,
         heads: int,
         sdpa: bool = True,
@@ -74,7 +74,7 @@ class MMAttention(nn.Module):
 
         self.gradient_checkpointing = False
 
-    def forward_body(self: "MMAttention", x: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
+    def forward_body(self: "CMAttention", x: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
         q_x, k_x, v_x = self.to_qkv_x(x).chunk(3, dim=-1)
         q_x = self.q_norm_x(q_x)
         k_x = self.k_norm_x(k_x)
@@ -95,7 +95,7 @@ class MMAttention(nn.Module):
 
         return out
 
-    def forward(self: "MMAttention", x: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
+    def forward(self: "CMAttention", x: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
         if self.training and self.gradient_checkpointing:
             return torch.utils.checkpoint.checkpoint(self.forward_body, x, a, use_reentrant=True)
         else:
@@ -136,7 +136,7 @@ class MMDiTBlock(nn.Module):
         self.mlp_a = FeedForward(dim_h, dim_mult=dim_h_mult)
 
         # Cross-Modal Attention (I don't know if the name is correct)
-        self.attn = MMAttention(
+        self.attn = CMAttention(
             dim_h,
             attn_heads,
             sdpa=attn_sdpa,
