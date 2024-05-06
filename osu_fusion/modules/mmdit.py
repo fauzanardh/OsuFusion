@@ -60,32 +60,53 @@ class CMAttention(nn.Module):
         heads: int,
         sdpa: bool = True,
         qk_norm: bool = True,
+        one_kv: bool = True,
         use_rotary_emb: bool = True,
     ) -> None:
         super().__init__()
         self.heads = heads
-        self.dim_head = (dim * 2) // heads
-
-        self.to_qkv_x = nn.Linear(dim, dim * 3, bias=False)
-        self.to_qkv_a = nn.Linear(dim, dim * 3, bias=False)
-
+        self.dim_head = dim // heads
+        self.one_kv = one_kv
         self.qk_norm = qk_norm
-        self.q_x_norm_scale = nn.Parameter(torch.ones(heads, 1, self.dim_head // 2)) if qk_norm else None
-        self.k_x_norm_scale = nn.Parameter(torch.ones(heads, 1, self.dim_head // 2)) if qk_norm else None
-        self.q_a_norm_scale = nn.Parameter(torch.ones(heads, 1, self.dim_head // 2)) if qk_norm else None
-        self.k_a_norm_scale = nn.Parameter(torch.ones(heads, 1, self.dim_head // 2)) if qk_norm else None
 
-        self.rotary_emb = RotaryPositionEmbedding(self.dim_head) if use_rotary_emb else None
+        self.q_x_norm_scale = nn.Parameter(torch.ones(heads, 1, self.dim_head)) if qk_norm else None
+        self.q_a_norm_scale = nn.Parameter(torch.ones(heads, 1, self.dim_head)) if qk_norm else None
+        if one_kv:
+            self.to_q_x = nn.Linear(dim, dim, bias=False)
+            self.to_kv_x = nn.Linear(dim, self.dim_head * 2, bias=False)
+            self.to_q_a = nn.Linear(dim, dim, bias=False)
+            self.to_kv_a = nn.Linear(dim, self.dim_head * 2, bias=False)
+
+            self.k_x_norm_scale = nn.Parameter(torch.ones(1, 1, self.dim_head)) if qk_norm else None
+            self.k_a_norm_scale = nn.Parameter(torch.ones(1, 1, self.dim_head)) if qk_norm else None
+        else:
+            self.to_qkv_x = nn.Linear(dim, dim * 3, bias=False)
+            self.to_qkv_a = nn.Linear(dim, dim * 3, bias=False)
+
+            self.k_x_norm_scale = nn.Parameter(torch.ones(heads, 1, self.dim_head)) if qk_norm else None
+            self.k_a_norm_scale = nn.Parameter(torch.ones(heads, 1, self.dim_head)) if qk_norm else None
+
+        self.rotary_emb = RotaryPositionEmbedding(self.dim_head * 2) if use_rotary_emb else None
         self.attn = Attention(sdpa=sdpa)
 
         self.gradient_checkpointing = False
 
     def forward_body(self: "CMAttention", x: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
-        q_x, k_x, v_x = self.to_qkv_x(x).chunk(3, dim=-1)
-        q_a, k_a, v_a = self.to_qkv_a(a).chunk(3, dim=-1)
+        if self.one_kv:
+            q_x = self.to_q_x(x)
+            q_x = rearrange(q_x, "b n (h d) -> b h n d", h=self.heads)
+            q_a = self.to_q_a(a)
+            q_a = rearrange(q_a, "b n (h d) -> b h n d", h=self.heads)
 
-        q_x, k_x, v_x = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q_x, k_x, v_x))
-        q_a, k_a, v_a = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q_a, k_a, v_a))
+            k_x, v_x = self.to_kv_x(x).chunk(2, dim=-1)
+            k_x, v_x = (rearrange(t, "b n d -> b 1 n d") for t in (k_x, v_x))
+            k_a, v_a = self.to_kv_a(a).chunk(2, dim=-1)
+            k_a, v_a = (rearrange(t, "b n d -> b 1 n d") for t in (k_a, v_a))
+        else:
+            q_x, k_x, v_x = self.to_qkv_x(x).chunk(3, dim=-1)
+            q_x, k_x, v_x = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q_x, k_x, v_x))
+            q_a, k_a, v_a = self.to_qkv_a(a).chunk(3, dim=-1)
+            q_a, k_a, v_a = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q_a, k_a, v_a))
 
         if self.qk_norm:
             q_x, k_x, q_a, k_a = map(l2norm, (q_x, k_x, q_a, k_a))
@@ -121,6 +142,7 @@ class MMDiTBlock(nn.Module):
         attn_heads: int = 6,
         attn_sdpa: bool = True,
         attn_qk_norm: bool = True,
+        attn_one_kv: bool = True,
         attn_use_rotary_emb: bool = True,
     ) -> None:
         super().__init__()
@@ -152,6 +174,7 @@ class MMDiTBlock(nn.Module):
             attn_heads,
             sdpa=attn_sdpa,
             qk_norm=attn_qk_norm,
+            one_kv=attn_one_kv,
             use_rotary_emb=attn_use_rotary_emb,
         )
 
@@ -238,6 +261,7 @@ class MMDiT(nn.Module):
         attn_heads: int = 6,
         attn_sdpa: bool = True,
         attn_qk_norm: bool = True,
+        attn_one_kv: bool = True,
         attn_use_rotary_emb: bool = True,
     ) -> None:
         super().__init__()
@@ -274,6 +298,7 @@ class MMDiT(nn.Module):
                     attn_heads=attn_heads,
                     attn_sdpa=attn_sdpa,
                     attn_qk_norm=attn_qk_norm,
+                    attn_one_kv=attn_one_kv,
                     attn_use_rotary_emb=attn_use_rotary_emb,
                 )
                 for _ in range(depth)
