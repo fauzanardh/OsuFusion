@@ -56,15 +56,15 @@ class RotaryPositionEmbedding(nn.Module):
 
 
 class Attention(nn.Module):
-    def __init__(self: "Attention", sdpa: bool = False) -> None:
+    def __init__(self: "Attention", causal: bool = True) -> None:
         super().__init__()
-        assert not (sdpa and version.parse(torch.__version__) < version.parse("2.0.0")), "sdpa requires torch>=2.0.0"
-        self.sdpa = sdpa
+        assert not version.parse(torch.__version__) < version.parse("2.0.0"), "sdpa requires torch>=2.0.0"
+        self.causal = causal
 
         # sdpa configs
         self.cpu_config = _config(True, True, True)
 
-        if not torch.cuda.is_available() or not self.sdpa:
+        if not torch.cuda.is_available():
             return
 
         device_properties = torch.cuda.get_device_properties(torch.device("cuda"))
@@ -73,7 +73,7 @@ class Attention(nn.Module):
         else:
             self.cuda_config = _config(False, True, True)
 
-    def sdpa_attn(
+    def forward(
         self: "Attention",
         q: torch.Tensor,
         k: torch.Tensor,
@@ -96,33 +96,10 @@ class Attention(nn.Module):
                 q,
                 k,
                 v,
+                is_causal=self.causal,
             )
 
         return out.to(dtype) if config.enable_flash else out
-
-    def attn(
-        self: "Attention",
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-    ) -> torch.Tensor:
-        scale = q.shape[-1] ** -0.5
-        q = q * scale
-        sim = torch.einsum("b h i d, b h j d -> b h i j", q, k)
-        attn = sim.softmax(dim=-1)
-        out = torch.einsum("b h i j, b h j d -> b h i d", attn, v)
-        return out
-
-    def forward(
-        self: "Attention",
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-    ) -> torch.Tensor:
-        if self.sdpa:
-            return self.sdpa_attn(q, k, v)
-        else:
-            return self.attn(q, k, v)
 
 
 class MultiHeadAttention(nn.Module):
@@ -131,8 +108,7 @@ class MultiHeadAttention(nn.Module):
         dim: int,
         dim_head: int = 32,
         heads: int = 8,
-        sdpa: bool = False,
-        linear: bool = False,
+        causal: bool = True,
         use_rotary_emb: bool = True,
     ) -> None:
         super().__init__()
@@ -141,7 +117,7 @@ class MultiHeadAttention(nn.Module):
         inner_dim = dim_head * heads
         self.to_qkv = nn.Linear(dim, inner_dim * 3, 1, bias=False)
         self.rotary_emb = RotaryPositionEmbedding(dim_head) if use_rotary_emb else None
-        self.attention = Attention(sdpa=sdpa)
+        self.attention = Attention(causal=causal)
         self.to_out = nn.Linear(inner_dim, dim, 1)
 
     def forward(

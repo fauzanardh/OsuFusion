@@ -23,9 +23,9 @@ class OsuFusion(nn.Module):
         depth: int = 12,
         cross_embed_kernel_sizes: Tuple[int] = (3, 7, 15),
         attn_heads: int = 6,
-        attn_sdpa: bool = True,
         attn_qk_norm: bool = True,
         attn_one_kv: bool = True,
+        attn_causal: bool = True,
         attn_use_rotary_emb: bool = True,
         cond_drop_prob: float = 0.25,
         train_timesteps: int = 1000,
@@ -43,9 +43,9 @@ class OsuFusion(nn.Module):
             depth=depth,
             cross_embed_kernel_sizes=cross_embed_kernel_sizes,
             attn_heads=attn_heads,
-            attn_sdpa=attn_sdpa,
             attn_qk_norm=attn_qk_norm,
             attn_one_kv=attn_one_kv,
+            attn_causal=attn_causal,
             attn_use_rotary_emb=attn_use_rotary_emb,
         )
 

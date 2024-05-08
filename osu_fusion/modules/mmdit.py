@@ -59,9 +59,9 @@ class CMAttention(nn.Module):
         self: "CMAttention",
         dim: int,
         heads: int,
-        sdpa: bool = True,
         qk_norm: bool = True,
         one_kv: bool = True,
+        causal: bool = True,
         use_rotary_emb: bool = True,
     ) -> None:
         super().__init__()
@@ -88,7 +88,7 @@ class CMAttention(nn.Module):
             self.k_a_norm_scale = nn.Parameter(torch.ones(heads, 1, self.dim_head)) if qk_norm else None
 
         self.rotary_emb = RotaryPositionEmbedding(self.dim_head * 2) if use_rotary_emb else None
-        self.attn = Attention(sdpa=sdpa)
+        self.attn = Attention(causal=causal)
 
     def forward(self: "CMAttention", x: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
         if self.one_kv:
@@ -133,9 +133,9 @@ class MMDiTBlock(nn.Module):
         dim_h: int,
         dim_h_mult: int = 4,
         attn_heads: int = 6,
-        attn_sdpa: bool = True,
         attn_qk_norm: bool = True,
         attn_one_kv: bool = True,
+        attn_causal: bool = True,
         attn_use_rotary_emb: bool = True,
     ) -> None:
         super().__init__()
@@ -165,9 +165,9 @@ class MMDiTBlock(nn.Module):
         self.attn = CMAttention(
             dim_h,
             attn_heads,
-            sdpa=attn_sdpa,
             qk_norm=attn_qk_norm,
             one_kv=attn_one_kv,
+            causal=attn_causal,
             use_rotary_emb=attn_use_rotary_emb,
         )
 
@@ -260,9 +260,9 @@ class MMDiT(nn.Module):
         depth: int = 12,
         cross_embed_kernel_sizes: Tuple[int] = (3, 5, 7),
         attn_heads: int = 6,
-        attn_sdpa: bool = True,
         attn_qk_norm: bool = True,
         attn_one_kv: bool = True,
+        attn_causal: bool = True,
         attn_use_rotary_emb: bool = True,
     ) -> None:
         super().__init__()
@@ -297,9 +297,9 @@ class MMDiT(nn.Module):
                     dim_h,
                     dim_h_mult=dim_h_mult,
                     attn_heads=attn_heads,
-                    attn_sdpa=attn_sdpa,
                     attn_qk_norm=attn_qk_norm,
                     attn_one_kv=attn_one_kv,
+                    attn_causal=attn_causal,
                     attn_use_rotary_emb=attn_use_rotary_emb,
                 )
                 for _ in range(depth)
