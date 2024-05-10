@@ -3,7 +3,7 @@ from typing import Dict, List, Tuple
 
 import torch
 import torch.nn as nn
-from einops import rearrange, repeat
+from einops import pack, rearrange, repeat, unpack
 from einops.layers.torch import Rearrange
 from torch.nn import functional as F  # noqa: N812
 
@@ -259,6 +259,7 @@ class MMDiT(nn.Module):
         dim_h_mult: int = 4,
         depth: int = 12,
         cross_embed_kernel_sizes: Tuple[int] = (3, 5, 7),
+        num_register_tokens: int = 4,
         attn_heads: int = 6,
         attn_qk_norm: bool = True,
         attn_one_kv: bool = True,
@@ -305,6 +306,8 @@ class MMDiT(nn.Module):
                 for _ in range(depth)
             ],
         )
+        # from 'Vision Transformers Need Registers' paper
+        self.register_tokens = nn.Parameter(torch.randn(num_register_tokens, dim_h))
 
         self.final_layer = FinalLayer(dim_h, dim_in_x)
 
@@ -349,8 +352,12 @@ class MMDiT(nn.Module):
 
         c = c + self.mlp_time(t) + self.mlp_a(h_a)
 
+        r = repeat(self.register_tokens, "n d -> b n d", b=x.shape[0])
+        x, ps_x = pack([x, r], "b * d")
+        a, _ = pack([a, r], "b * d")
         for block in self.blocks:
             x, a = block(x, a, c)
+        x, _ = unpack(x, ps_x, "b * d")
 
         x = self.final_layer(x, c)
         return rearrange(x, "b n d -> b d n")
