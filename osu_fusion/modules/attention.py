@@ -79,16 +79,13 @@ class Attention(nn.Module):
         k: torch.Tensor,
         v: torch.Tensor,
     ) -> torch.Tensor:
-        is_cuda, dtype = q.is_cuda, q.dtype
+        is_cuda, dtype = v.is_cuda, v.dtype
         config = self.cuda_config if is_cuda else self.cpu_config
 
         with torch.backends.cuda.sdp_kernel(**config._asdict()):
-            if config.enable_flash and any(
-                [q.dtype == torch.float64, k.dtype == torch.float64, v.dtype == torch.float64],
-            ):
-                q = q.half()
-                k = k.half()
-                v = v.half()
+            q = q.half()
+            k = k.half()
+            v = v.half()
             q, k, v = (t.contiguous() for t in (q, k, v))
             scale = q.shape[-1] ** -0.5
             q = q * scale
@@ -99,7 +96,7 @@ class Attention(nn.Module):
                 is_causal=self.causal,
             )
 
-        return out.to(dtype) if config.enable_flash else out
+        return out.to(dtype)
 
 
 class MultiHeadAttention(nn.Module):

@@ -282,10 +282,8 @@ class MMDiT(nn.Module):
 
         self.mlp_a = FeedForward(dim_h, dim_mult=dim_h_mult)
         self.feature_extractor_a = nn.Linear(dim_h * 2, dim_h)
-        self.mlp_time = nn.Sequential(
-            SinusoidalPositionEmbedding(dim_h),
-            FeedForward(dim_h, dim_mult=dim_h_mult),
-        )
+        self.pos_emb_time = SinusoidalPositionEmbedding(dim_h)
+        self.mlp_time = FeedForward(dim_h, dim_mult=dim_h_mult)
         self.mlp_cond = nn.Sequential(
             nn.Linear(dim_in_c, dim_h),
             FeedForward(dim_h, dim_mult=dim_h_mult),
@@ -350,6 +348,7 @@ class MMDiT(nn.Module):
         h_a = torch.cat([mean_features_a, std_features_a], dim=1)
         h_a = self.feature_extractor_a(h_a)
 
+        t = self.pos_emb_time(t).to(x.dtype)
         c = c + self.mlp_time(t) + self.mlp_a(h_a)
 
         r = repeat(self.register_tokens, "n d -> b n d", b=x.shape[0])
