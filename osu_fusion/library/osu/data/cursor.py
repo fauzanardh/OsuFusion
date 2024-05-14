@@ -25,7 +25,7 @@ def cursor_signal(beatmap: Beatmap, frame_times: npt.NDArray) -> npt.NDArray:
             if isinstance(current_obj, Spinner):
                 positions.append(current_obj.start_pos())
             elif isinstance(current_obj, Slider):
-                ts = (t - current_obj.t) % (current_obj.slider_duration * 2) / current_obj.slider_duration
+                ts = (t - current_obj.t) % (current_obj.slide_duration * 2) / current_obj.slide_duration
                 if ts < 1:
                     positions.append(current_obj.lerp(ts))
                 else:

@@ -80,7 +80,7 @@ def hit_signals(beatmap: Beatmap, frame_times: npt.NDArray) -> npt.NDArray:
             ),
             extents(
                 [
-                    (hit_object.t, hit_object.t + hit_object.slider_duration)
+                    (hit_object.t, hit_object.t + hit_object.slide_duration)
                     for hit_object in beatmap.hit_objects
                     if isinstance(hit_object, Slider)
                 ],

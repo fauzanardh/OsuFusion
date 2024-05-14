@@ -35,7 +35,7 @@ class Line(Slider):
         return round_and_cast((1 - t) * self.start + t * self.end)
 
     def velocity(self: "Line", t: float) -> npt.NDArray:
-        return round_and_cast((self.end - self.start) / (self.slider_duration / self.slides))
+        return round_and_cast((self.end - self.start) / self.slide_duration)
 
 
 class Perfect(Slider):
@@ -71,7 +71,7 @@ class Perfect(Slider):
     def velocity(self: "Perfect", t: float) -> npt.NDArray:
         theta = self._calculate_theta(t)
         return round_and_cast(
-            self.radius * np.array([-np.sin(theta), np.cos(theta)]) / (self.slider_duration / self.slides),
+            self.radius * np.array([-np.sin(theta), np.cos(theta)]) / self.slide_duration,
         )
 
 
@@ -143,7 +143,7 @@ class Bezier(Slider):
     def velocity(self: "Bezier", t: float) -> npt.NDArray:
         idx, t = self.curve_reparametrize(t)
         return round_and_cast(
-            self.path_segments[idx].evaluate_hodograph(t)[:, 0] / (self.slider_duration / self.slides),
+            self.path_segments[idx].evaluate_hodograph(t)[:, 0] / self.slide_duration,
         )
 
 
