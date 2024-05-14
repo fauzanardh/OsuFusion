@@ -40,12 +40,16 @@ def compute_error(
 ) -> npt.NDArray:
     errs = ((q(p, u) - points) ** 2).sum(-1)
     split_point = errs.argmax()
-    return errs[split_point], split_point
+    return float(errs[split_point]), int(split_point)
+
+
+def segment_length(p: npt.NDArray) -> float:
+    return float(bezier.Curve.from_nodes(p.T).length)
 
 
 def fit_bezier(
     points: npt.NDArray,
-    max_err: npt.NDArray,
+    max_err: float,
     left_tangent: npt.NDArray = None,
     right_tangent: npt.NDArray = None,
 ) -> List[npt.NDArray]:
@@ -54,10 +58,7 @@ def fit_bezier(
     if len(points) < 2:
         return []
 
-    weights = (lambda x, n: (float(x) ** -np.arange(1, n + 1)) / (1 - float(x) ** -n) * (x - 1))(
-        2,
-        min(5, len(points) - 2),
-    )
+    weights = (lambda x, n: (x ** -np.arange(1, n + 1)) / (1 - x**-n) * (x - 1))(2.0, min(5, len(points) - 2))
 
     if left_tangent is None:
         # points[1] - points[0]
@@ -69,21 +70,14 @@ def fit_bezier(
         r_vecs = points[-3 : -3 - len(weights) : -1] - points[-2]
         right_tangent = normalize(np.einsum("np,n->p", r_vecs, weights))
 
-    if len(points) == 2:
+    if points.shape[0] == 2:
         return [points]
 
-    u = None
-    bez_curve = None
-    for _ in range(32):
-        if u is None:
-            # parameterize points
-            u = [0]
-            u[1:] = np.cumsum(np.linalg.norm(points[1:] - points[:-1], axis=1))
-            u /= u[-1]
-        else:
-            # iterate parameterization
-            u = newton_raphson_root_find(bez_curve, points, u)
+    # parameterize points, assuming constant speed
+    u = np.cumsum(np.linalg.norm(points[1:] - points[:-1], axis=1))
+    u = np.pad(u, (1, 0)) / u[-1]
 
+    for _ in range(32):
         bez_curve = generate_bezier(points, u, left_tangent, right_tangent)
         err, split_point = compute_error(bez_curve, points, u)
 
@@ -94,6 +88,8 @@ def fit_bezier(
                 return [bez_curve[[0, -1]]]
 
             return [bez_curve]
+
+        u = newton_raphson_root_find(bez_curve, points, u)
 
     # Fitting failed -- split at max error point and fit recursively
     center_tangent = normalize(points[split_point - 1] - points[split_point + 1])

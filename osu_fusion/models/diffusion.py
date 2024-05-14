@@ -7,10 +7,9 @@ from einops import reduce, repeat
 from torch.nn import functional as F  # noqa: N812
 from tqdm.auto import tqdm
 
-from osu_fusion.library.osu.from_beatmap import AUDIO_DIM, CONTEXT_DIM, TOTAL_DIM
-
-# from osu_fusion.modules.unet import UNet
+from osu_fusion.library.osu.data.encode import TOTAL_DIM
 from osu_fusion.modules.mmdit import MMDiT
+from osu_fusion.scripts.dataset_creator import AUDIO_DIM, CONTEXT_DIM
 
 MINIMUM_LENGTH = 1024
 
