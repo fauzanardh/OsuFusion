@@ -89,8 +89,6 @@ class OsuFusion(nn.Module):
         orig_len: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         assert x.shape[-1] == a.shape[-1], "x and a must have the same number of sequence length"
-        # Remove the last element of the context tensor (I don't want to include bpm)
-        c = c[:, :-1]
 
         noise = torch.randn_like(x)
         timesteps = torch.randint(
