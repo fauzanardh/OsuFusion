@@ -37,7 +37,7 @@ class OsuFusion(nn.Module):
         self.mmdit = MMDiT(
             dim_in_x=TOTAL_DIM,
             dim_in_a=AUDIO_DIM,
-            dim_in_c=CONTEXT_DIM - 1,
+            dim_in_c=CONTEXT_DIM,
             dim_h=dim_h,
             dim_h_mult=dim_h_mult,
             depth=depth,
