@@ -17,9 +17,9 @@ from osu_fusion.library.osu.data.encode import encode_beatmap
 N_FFT = 2048
 N_MELS = 64
 SR = 22050
-FRAME_RATE = 6
-HOP_LENGTH = int(SR * FRAME_RATE / 1000)
-AUDIO_DIM = 40
+FRAME_RATE = 4
+HOP_LENGTH = (SR // 1000) * FRAME_RATE
+AUDIO_DIM = 32
 CONTEXT_DIM = 5
 
 warnings.filterwarnings("ignore", category=FutureWarning)
