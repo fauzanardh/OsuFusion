@@ -24,7 +24,7 @@ class OsuFusion(nn.Module):
         num_register_tokens: int = 4,
         attn_heads: int = 6,
         attn_qk_norm: bool = True,
-        attn_one_kv: bool = True,
+        attn_kv_heads: int = 1,
         attn_causal: bool = True,
         attn_use_rotary_emb: bool = True,
         cond_drop_prob: float = 0.25,
@@ -44,8 +44,8 @@ class OsuFusion(nn.Module):
             cross_embed_kernel_sizes=cross_embed_kernel_sizes,
             num_register_tokens=num_register_tokens,
             attn_heads=attn_heads,
+            attn_kv_heads=attn_kv_heads,
             attn_qk_norm=attn_qk_norm,
-            attn_one_kv=attn_one_kv,
             attn_causal=attn_causal,
             attn_use_rotary_emb=attn_use_rotary_emb,
         )
