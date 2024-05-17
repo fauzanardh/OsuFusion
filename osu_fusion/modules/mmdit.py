@@ -65,44 +65,34 @@ class CMAttention(nn.Module):
         self: "CMAttention",
         dim: int,
         heads: int,
-        kv_heads: int = 1,
         qk_norm: bool = True,
         causal: bool = True,
         use_rotary_emb: bool = True,
+        infini: bool = True,
+        segment_len: int = 1024,
     ) -> None:
         super().__init__()
         self.heads = heads
-        self.kv_heads = kv_heads
         self.dim_head = dim // heads
         self.qk_norm = qk_norm
 
-        self.to_q_x = nn.Linear(dim, self.dim_head * heads, bias=False)
-        self.to_k_x = nn.Linear(dim, self.dim_head * kv_heads, bias=False)
-        self.to_v_x = nn.Linear(dim, self.dim_head * kv_heads, bias=False)
+        self.to_qkv_x = nn.Linear(dim, self.dim_head * heads * 3, bias=False)
         self.q_x_norm = MultiHeadRMSNorm(self.dim_head, heads) if qk_norm else None
-        self.k_x_norm = MultiHeadRMSNorm(self.dim_head, kv_heads) if qk_norm else None
+        self.k_x_norm = MultiHeadRMSNorm(self.dim_head, heads) if qk_norm else None
 
-        self.to_q_a = nn.Linear(dim, self.dim_head * heads, bias=False)
-        self.to_k_a = nn.Linear(dim, self.dim_head * kv_heads, bias=False)
-        self.to_v_a = nn.Linear(dim, self.dim_head * kv_heads, bias=False)
+        self.to_qkv_a = nn.Linear(dim, self.dim_head * heads * 3, bias=False)
         self.q_a_norm = MultiHeadRMSNorm(self.dim_head, heads) if qk_norm else None
-        self.k_a_norm = MultiHeadRMSNorm(self.dim_head, kv_heads) if qk_norm else None
+        self.k_a_norm = MultiHeadRMSNorm(self.dim_head, heads) if qk_norm else None
 
         # self.rotary_emb = RotaryPositionEmbedding(self.dim_head) if use_rotary_emb else None
-        self.attn = Attention(causal=causal)
+        self.attn = Attention(causal=causal, heads=heads, infini=infini, segment_len=segment_len)
 
     def forward(self: "CMAttention", x: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
-        q_x = self.to_q_x(x)
-        q_x = rearrange(q_x, "b n (h d) -> b h n d", h=self.heads)
-        k_x = self.to_k_x(x)
-        v_x = self.to_v_x(x)
-        k_x, v_x = (rearrange(t, "b n (h d) -> b h n d", h=self.kv_heads) for t in (k_x, v_x))
+        q_x, k_x, v_x = self.to_qkv_x(x).chunk(3, dim=-1)
+        q_x, k_x, v_x = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q_x, k_x, v_x))
 
-        q_a = self.to_q_a(a)
-        q_a = rearrange(q_a, "b n (h d) -> b h n d", h=self.heads)
-        k_a = self.to_k_a(a)
-        v_a = self.to_v_a(a)
-        k_a, v_a = (rearrange(t, "b n (h d) -> b h n d", h=self.kv_heads) for t in (k_a, v_a))
+        q_a, k_a, v_a = self.to_qkv_a(a).chunk(3, dim=-1)
+        q_a, k_a, v_a = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q_a, k_a, v_a))
 
         if self.qk_norm:
             q_x = self.q_x_norm(q_x)
@@ -132,11 +122,12 @@ class MMDiTBlock(nn.Module):
         self: "MMDiTBlock",
         dim_h: int,
         dim_h_mult: int = 4,
-        attn_heads: int = 6,
-        attn_kv_heads: int = 1,
+        attn_heads: int = 8,
         attn_qk_norm: bool = True,
         attn_causal: bool = True,
         attn_use_rotary_emb: bool = True,
+        attn_infini: bool = True,
+        attn_segment_len: int = 1024,
     ) -> None:
         super().__init__()
         # Modulation
@@ -165,10 +156,11 @@ class MMDiTBlock(nn.Module):
         self.attn = CMAttention(
             dim_h,
             attn_heads,
-            kv_heads=attn_kv_heads,
             qk_norm=attn_qk_norm,
             causal=attn_causal,
             use_rotary_emb=attn_use_rotary_emb,
+            infini=attn_infini,
+            segment_len=attn_segment_len,
         )
 
         self.gradient_checkpointing = False
@@ -262,15 +254,16 @@ class MMDiT(nn.Module):
         dim_h_mult: int = 4,
         depth: int = 12,
         cross_embed_kernel_sizes: Tuple[int] = (3, 5, 7),
-        num_register_tokens: int = 4,
-        attn_heads: int = 6,
-        attn_kv_heads: int = 1,
+        attn_heads: int = 8,
         attn_qk_norm: bool = True,
         attn_causal: bool = True,
         attn_use_rotary_emb: bool = True,
+        attn_infini: bool = True,
+        attn_segment_len: int = 1024,
     ) -> None:
         super().__init__()
         self.dim_h = dim_h
+        self.attn_segment_len = attn_segment_len
 
         self.init_x = nn.Sequential(
             CrossEmbedLayer(dim_in_x, dim_h, cross_embed_kernel_sizes),
@@ -299,16 +292,15 @@ class MMDiT(nn.Module):
                     dim_h,
                     dim_h_mult=dim_h_mult,
                     attn_heads=attn_heads,
-                    attn_kv_heads=attn_kv_heads,
                     attn_qk_norm=attn_qk_norm,
                     attn_causal=attn_causal,
                     attn_use_rotary_emb=attn_use_rotary_emb,
+                    attn_infini=attn_infini,
+                    attn_segment_len=attn_segment_len,
                 )
                 for _ in range(depth)
             ],
         )
-        # from 'Vision Transformers Need Registers' paper
-        self.register_tokens = nn.Parameter(torch.randn(num_register_tokens, dim_h))
 
         self.final_layer = FinalLayer(dim_h, dim_in_x)
 
@@ -336,6 +328,12 @@ class MMDiT(nn.Module):
         c: torch.Tensor,
         cond_drop_prob: float = 0.0,
     ) -> torch.Tensor:
+        # Pad to the closest multiple of attn_segment_len
+        n = x.shape[-1]
+        pad = (self.attn_segment_len - (n % self.attn_segment_len)) % self.attn_segment_len
+        x = F.pad(x, (0, pad), value=-1.0)
+        a = F.pad(a, (0, pad), value=-1.0)
+
         x = self.init_x(x)
         a = self.init_a(a)
 
@@ -354,11 +352,8 @@ class MMDiT(nn.Module):
         t = self.pos_emb_time(t).to(x.dtype)
         c = c + self.mlp_time(t) + self.mlp_a(h_a)
 
-        r = repeat(self.register_tokens, "n d -> b n d", b=x.shape[0])
-        x, ps_x = pack([x, r], "b * d")
         for block in self.blocks:
             x, a = block(x, a, c)
-        x, _ = unpack(x, ps_x, "b * d")
 
         x = self.final_layer(x, c)
-        return rearrange(x, "b n d -> b d n")
+        return rearrange(x, "b n d -> b d n")[:, :, :n]

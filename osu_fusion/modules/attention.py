@@ -1,4 +1,5 @@
 from collections import namedtuple
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -56,13 +57,26 @@ class RotaryPositionEmbedding(nn.Module):
 
 
 class Attention(nn.Module):
-    def __init__(self: "Attention", causal: bool = True) -> None:
+    def __init__(
+        self: "Attention",
+        causal: bool = True,
+        heads: int = 8,
+        infini: bool = True,
+        segment_len: int = 1024,
+    ) -> None:
         super().__init__()
         assert not version.parse(torch.__version__) < version.parse("2.0.0"), "sdpa requires torch>=2.0.0"
         self.causal = causal
+        self.infini = infini
+        self.segment_len = segment_len
+
+        self.heads = heads
 
         # sdpa configs
         self.cpu_config = _config(True, True, True)
+
+        if infini:
+            self.gate = nn.Parameter(torch.full((1, heads, 1, 1), -100.0))
 
         if not torch.cuda.is_available():
             return
@@ -73,7 +87,7 @@ class Attention(nn.Module):
         else:
             self.cuda_config = _config(False, True, True)
 
-    def forward(
+    def forward_sdpa(
         self: "Attention",
         q: torch.Tensor,
         k: torch.Tensor,
@@ -97,6 +111,91 @@ class Attention(nn.Module):
             )
 
         return out.to(dtype)
+
+    def _retrieve_from_memory(
+        self: "Attention",
+        q: torch.Tensor,
+        memory: Optional[torch.Tensor] = None,
+        norm_term: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if memory is None or norm_term is None:
+            return torch.zeros_like(q)
+
+        q = F.elu(q) + 1.0
+
+        memory = torch.matmul(q, memory)
+        norm_term = torch.matmul(
+            q,
+            rearrange(norm_term, "b h 1 d -> b h d 1"),
+        )
+
+        return memory / (norm_term + 1e-6)
+
+    def _update_memory(
+        self: "Attention",
+        k: torch.Tensor,
+        v: torch.Tensor,
+        memory: Optional[torch.Tensor] = None,
+        norm_term: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        k = F.elu(k) + 1.0
+
+        if memory is not None:
+            memory = memory + torch.matmul(rearrange(k, "b h n d -> b h d n"), v)
+        else:
+            memory = torch.matmul(rearrange(k, "b h n d -> b h d n"), v)
+
+        if norm_term is not None:  # noqa: SIM108
+            norm_term = norm_term + k.sum(dim=-2, keepdim=True)
+        else:
+            norm_term = k.sum(dim=-2, keepdim=True)
+
+        return memory, norm_term
+
+    def forward_infini(
+        self: "Attention",
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+    ) -> torch.Tensor:
+        n_segments = q.shape[-2] // self.segment_len  # Assume sequence length is divisible by segment length
+        q, k, v = (rearrange(t, "b h (s n) d -> b h s n d", s=n_segments) for t in (q, k, v))
+
+        outputs = []
+        memory = None
+        norm_term = None
+        for idx in range(n_segments):
+            q_segment = q[:, :, idx, :, :]
+            k_segment = k[:, :, idx, :, :]
+            v_segment = v[:, :, idx, :, :]
+
+            memory_output = self._retrieve_from_memory(q_segment, memory, norm_term)
+            updated_memory, updated_norm_term = self._update_memory(
+                k_segment,
+                v_segment,
+                memory,
+                norm_term,
+            )
+            memory = updated_memory.detach()
+            norm_term = updated_norm_term.detach()
+
+            attn = self.forward_sdpa(q_segment, k_segment, v_segment)
+            combined_output = (F.sigmoid(self.gate) * memory_output) + (1 - F.sigmoid(self.gate)) * attn
+            outputs.append(combined_output)
+
+        out = torch.cat(outputs, dim=-2)
+        return out
+
+    def forward(
+        self: "Attention",
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+    ) -> torch.Tensor:
+        if self.infini:
+            with torch.autocast(device_type=q.device.type, dtype=torch.float32):
+                return self.forward_infini(q, k, v)
+        return self.forward_sdpa(q, k, v)
 
 
 class MultiHeadAttention(nn.Module):

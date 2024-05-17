@@ -273,7 +273,7 @@ def main() -> None:
     args.add_argument("--mixed-precision", type=str, default="bf16", choices=["no", "fp16", "bf16"])
     args.add_argument("--gradient-checkpointing", action="store_true")
     args.add_argument("--gradient-accumulation-steps", type=int, default=4)
-    args.add_argument("--model-dim", type=int, default=384)
+    args.add_argument("--model-dim", type=int, default=512)
     args.add_argument("--lr", type=float, default=1e-5)
     args.add_argument("--batch-size", type=int, default=4)
     args.add_argument("--num-workers", type=int, default=2)
