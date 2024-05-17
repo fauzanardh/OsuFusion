@@ -7,7 +7,7 @@ from einops import pack, rearrange, repeat, unpack
 from einops.layers.torch import Rearrange
 from torch.nn import functional as F  # noqa: N812
 
-from osu_fusion.modules.attention import Attention, RotaryPositionEmbedding
+from osu_fusion.modules.attention import Attention
 from osu_fusion.modules.utils import prob_mask_like
 
 
@@ -22,10 +22,6 @@ def zero_init(module: nn.Module) -> nn.Module:
 @torch.jit.script
 def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
-
-
-def l2norm(x: torch.Tensor) -> torch.Tensor:
-    return F.normalize(x, p=2, dim=-1)
 
 
 class SinusoidalPositionEmbedding(nn.Module):
@@ -54,6 +50,16 @@ class FeedForward(nn.Sequential):
         )
 
 
+class MultiHeadRMSNorm(nn.Module):
+    def __init__(self: "MultiHeadRMSNorm", dim: int, heads: int) -> None:
+        super().__init__()
+        self.scale = dim**0.5
+        self.gamma = nn.Parameter(torch.ones(heads, 1, dim))
+
+    def forward(self: "MultiHeadRMSNorm", x: torch.Tensor) -> torch.Tensor:
+        return F.normalize(x, dim=-1) * self.gamma * self.scale
+
+
 class CMAttention(nn.Module):
     def __init__(
         self: "CMAttention",
@@ -73,16 +79,16 @@ class CMAttention(nn.Module):
         self.to_q_x = nn.Linear(dim, self.dim_head * heads, bias=False)
         self.to_k_x = nn.Linear(dim, self.dim_head * kv_heads, bias=False)
         self.to_v_x = nn.Linear(dim, self.dim_head * kv_heads, bias=False)
-        self.q_x_norm_scale = nn.Parameter(torch.ones(heads, 1, self.dim_head)) if qk_norm else None
-        self.k_x_norm_scale = nn.Parameter(torch.ones(kv_heads, 1, self.dim_head)) if qk_norm else None
+        self.q_x_norm = MultiHeadRMSNorm(self.dim_head, heads) if qk_norm else None
+        self.k_x_norm = MultiHeadRMSNorm(self.dim_head, kv_heads) if qk_norm else None
 
         self.to_q_a = nn.Linear(dim, self.dim_head * heads, bias=False)
         self.to_k_a = nn.Linear(dim, self.dim_head * kv_heads, bias=False)
         self.to_v_a = nn.Linear(dim, self.dim_head * kv_heads, bias=False)
-        self.q_a_norm_scale = nn.Parameter(torch.ones(heads, 1, self.dim_head)) if qk_norm else None
-        self.k_a_norm_scale = nn.Parameter(torch.ones(kv_heads, 1, self.dim_head)) if qk_norm else None
+        self.q_a_norm = MultiHeadRMSNorm(self.dim_head, heads) if qk_norm else None
+        self.k_a_norm = MultiHeadRMSNorm(self.dim_head, kv_heads) if qk_norm else None
 
-        self.rotary_emb = RotaryPositionEmbedding(self.dim_head * 2) if use_rotary_emb else None
+        # self.rotary_emb = RotaryPositionEmbedding(self.dim_head) if use_rotary_emb else None
         self.attn = Attention(causal=causal)
 
     def forward(self: "CMAttention", x: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
@@ -99,23 +105,26 @@ class CMAttention(nn.Module):
         k_a, v_a = (rearrange(t, "b n (h d) -> b h n d", h=self.kv_heads) for t in (k_a, v_a))
 
         if self.qk_norm:
-            q_x, k_x, q_a, k_a = map(l2norm, (q_x, k_x, q_a, k_a))
-            q_x = q_x * self.q_x_norm_scale
-            k_x = k_x * self.k_x_norm_scale
-            q_a = q_a * self.q_a_norm_scale
-            k_a = k_a * self.k_a_norm_scale
+            q_x = self.q_x_norm(q_x)
+            k_x = self.k_x_norm(k_x)
+            q_a = self.q_a_norm(q_a)
+            k_a = self.k_a_norm(k_a)
 
-        q = torch.cat([q_x, q_a], dim=-1)
-        k = torch.cat([k_x, k_a], dim=-1)
-        v = torch.cat([v_x, v_a], dim=-1)
+        # Combine the audio data first and then the osu data
+        # logic behind it is that we let the model learn the audio data first
+        # and then the osu data can attend to the audio data
+        q, seq_shape = pack([q_a, q_x], "b h * d")
+        k, _ = pack([k_a, k_x], "b h * d")
+        v, _ = pack([v_a, v_x], "b h * d")
 
-        if self.rotary_emb is not None:
-            q, k = self.rotary_emb(q, k)
+        # if self.rotary_emb is not None:
+        #     q, k = self.rotary_emb(q, k)
 
         out = self.attn(q, k, v)
-        out = rearrange(out, "b h n d -> b n (h d)")
+        out_a, out_x = unpack(out, seq_shape, "b h * d")
 
-        return out
+        out_x, out_a = (rearrange(t, "b h n d -> b n (h d)") for t in (out_x, out_a))
+        return out_x, out_a
 
 
 class MMDiTBlock(nn.Module):
@@ -142,13 +151,13 @@ class MMDiTBlock(nn.Module):
 
         # OsuData branch
         self.norm1_x = nn.LayerNorm(dim_h, elementwise_affine=False, eps=1e-6)
-        self.attn_out_x = nn.Linear(dim_h * 2, dim_h, bias=False)
+        self.attn_out_x = nn.Linear(dim_h, dim_h, bias=False)
         self.norm2_x = nn.LayerNorm(dim_h, elementwise_affine=False, eps=1e-6)
         self.mlp_x = FeedForward(dim_h, dim_mult=dim_h_mult)
 
         # Audio branch
         self.norm1_a = nn.LayerNorm(dim_h, elementwise_affine=False, eps=1e-6)
-        self.attn_out_a = nn.Linear(dim_h * 2, dim_h, bias=False)
+        self.attn_out_a = nn.Linear(dim_h, dim_h, bias=False)
         self.norm2_a = nn.LayerNorm(dim_h, elementwise_affine=False, eps=1e-6)
         self.mlp_a = FeedForward(dim_h, dim_mult=dim_h_mult)
 
@@ -183,19 +192,22 @@ class MMDiTBlock(nn.Module):
             gate_mlp_a,
         ) = self.modulation_a(c).chunk(6, dim=1)
 
+        x_residual = x
+        a_residual = a
+
         # Attention
         h_x = modulate(self.norm1_x(x), shift_attn_x, scale_attn_x)
         h_a = modulate(self.norm1_a(a), shift_attn_a, scale_attn_a)
-        attn_out = self.attn(h_x, h_a)
+        attn_out_x, attn_out_a = self.attn(h_x, h_a)
 
-        x = x + gate_attn_x.unsqueeze(1) * self.attn_out_x(attn_out)
-        a = a + gate_attn_a.unsqueeze(1) * self.attn_out_a(attn_out)
+        x = x + gate_attn_x.unsqueeze(1) * (self.attn_out_x(attn_out_x) + x_residual)
+        a = a + gate_attn_a.unsqueeze(1) * (self.attn_out_a(attn_out_a) + a_residual)
 
         # MLP
         x = x + gate_mlp_x.unsqueeze(1) * self.mlp_x(modulate(self.norm2_x(x), shift_mlp_x, scale_mlp_x))
         a = a + gate_mlp_a.unsqueeze(1) * self.mlp_a(modulate(self.norm2_a(a), shift_mlp_a, scale_mlp_a))
 
-        return x, a
+        return x + x_residual, a + a_residual
 
     def forward(self: "MMDiTBlock", x: torch.Tensor, a: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
         if self.training and self.gradient_checkpointing:
@@ -344,7 +356,6 @@ class MMDiT(nn.Module):
 
         r = repeat(self.register_tokens, "n d -> b n d", b=x.shape[0])
         x, ps_x = pack([x, r], "b * d")
-        a, _ = pack([a, r], "b * d")
         for block in self.blocks:
             x, a = block(x, a, c)
         x, _ = unpack(x, ps_x, "b * d")
