@@ -2,6 +2,7 @@ import os
 import time
 import warnings
 from multiprocessing import Lock
+from multiprocessing.synchronize import Lock as LockBase
 from pathlib import Path
 from typing import Dict
 
@@ -10,24 +11,24 @@ import numpy as np
 import numpy.typing as npt
 from audioread.ffdec import FFmpegAudioFile
 
-if "CREATE_DATASET" in os.environ:
-    from rosu_pp_py import Beatmap as RosuBeatmap
-    from rosu_pp_py import Calculator as RosuCalculator
-
 from osu_fusion.library.osu.beatmap import Beatmap
-from osu_fusion.library.osu.from_beatmap import AUDIO_DIM, from_beatmap
+from osu_fusion.library.osu.data.encode import encode_beatmap
 
 N_FFT = 2048
 N_MELS = 64
 SR = 22050
-FRAME_RATE = 6
-HOP_LENGTH = int(SR * FRAME_RATE / 1000)
+FRAME_RATE = 4
+HOP_LENGTH = (SR // 1000) * FRAME_RATE
+AUDIO_DIM = 32
+CONTEXT_DIM = 5
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 if "CREATE_DATASET" in os.environ:
-    _calculator = RosuCalculator(mode=0)
-    _global_lock: Dict[str, Lock] = {}
+    from rosu_pp_py import Beatmap as RosuBeatmap
+    from rosu_pp_py import Difficulty as RosuDifficulty
+
+    _global_lock: Dict[str, LockBase] = {}
 
 
 def load_audio(audio_file: Path) -> npt.NDArray:
@@ -49,20 +50,18 @@ def load_audio(audio_file: Path) -> npt.NDArray:
 
 
 def normalize_context(context: npt.NDArray) -> npt.NDArray:
-    # normalized HP, CS, OD, AR to [-1, 1] from [0, 10]
+    # normalized CS, AR, OD, HP to [-1, 1] from [0, 10]
     context[0] = context[0] / 5 - 1
     context[1] = context[1] / 5 - 1
     context[2] = context[2] / 5 - 1
     context[3] = context[3] / 5 - 1
     # normalized SR to [-1, 1] from [0, 20]
     context[4] = context[4] / 10 - 1
-    # normalized BPM to [-1, 1] from [0, 300]
-    context[5] = context[5] / 150 - 1
 
     return context
 
 
-def get_lock(path: Path) -> Lock:
+def get_lock(path: Path) -> LockBase:
     return _global_lock.setdefault(str(path), Lock())
 
 
@@ -121,19 +120,16 @@ def prepare_map(data_dir: Path, map_file: Path) -> None:
     try:
         with open(map_file, "r", encoding="utf-8") as f:
             rosu_beatmap = RosuBeatmap(content=f.read())
-        beatmap_attributes = _calculator.map_attributes(rosu_beatmap)
-        sr = _calculator.difficulty(rosu_beatmap).stars
+        rosu_difficulty = RosuDifficulty()
+        sr = rosu_difficulty.calculate(rosu_beatmap).stars
         # clip SR to [0, 20)
         sr = min(max(sr, 0), 20)
-        # clip BPM to [0, 300)
-        bpm = min(max(beatmap_attributes.bpm, 0), 300)
         map_difficulty = [
-            beatmap_attributes.hp,
-            beatmap_attributes.cs,
-            beatmap_attributes.od,
-            beatmap_attributes.ar,
+            rosu_beatmap.cs,
+            rosu_beatmap.ar,
+            rosu_beatmap.od,
+            rosu_beatmap.hp,
             sr,
-            bpm,
         ]
     except Exception as e:
         print(f"Rosu failed to load beatmap {map_file}: {e}")
@@ -157,8 +153,9 @@ def prepare_map(data_dir: Path, map_file: Path) -> None:
         * 1000
     )
 
-    x = from_beatmap(beatmap, frame_times)
-    c = np.array(map_difficulty, dtype=np.float32)
-    c = normalize_context(c)
+    x = encode_beatmap(beatmap, frame_times)
+    c = normalize_context(np.array(map_difficulty, dtype=np.float32))
 
-    np.savez_compressed(map_path, x=x, c=c)
+    # Get relative path for spec_path
+    spec_path = spec_path.relative_to(map_path.parent)
+    np.savez_compressed(map_path, x=x, c=c, spec_path=str(spec_path).replace("\\", "/"))

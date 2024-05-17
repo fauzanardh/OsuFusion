@@ -176,7 +176,7 @@ class Beatmap:
 
     @staticmethod
     def _process_slider_cursor(ho: Slider, nho: Slider, t: int) -> Tuple[Tuple[int, int], float]:
-        slide_duration = ho.slider_duration
+        slide_duration = ho.slide_duration
         if t < slide_duration:
             single_slide_duration = slide_duration / ho.slides
 

@@ -91,10 +91,10 @@ class Slider(HitObject):
         self.slides = slides
         self.length = length
         self.slider_multiplier = slider_multiplier
-        self.slider_duration = length / (slider_multiplier * 100) * beat_length * slides
+        self.slide_duration = length / (slider_multiplier * 100) * beat_length
 
     def end_time(self: "Slider") -> int:
-        return int(self.t + self.slider_duration)
+        return int(self.t + self.slide_duration * self.slides)
 
     def lerp(self: "Slider", t: int) -> npt.NDArray:
         raise NotImplementedError

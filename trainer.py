@@ -19,9 +19,8 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 from osu_fusion.library.dataset import FullSequenceDataset, SubsequenceDataset, normalize_mfcc, sanitize_input
-from osu_fusion.library.osu.from_beatmap import TOTAL_DIM
+from osu_fusion.library.osu.data.encode import TOTAL_DIM
 from osu_fusion.models.diffusion import OsuFusion
-from osu_fusion.modules.ema import EMA
 from osu_fusion.scripts.dataset_creator import load_audio, normalize_context
 
 
@@ -68,7 +67,6 @@ def train_step(
     args: ArgumentParser,
     accelerator: Accelerator,
     model: OsuFusion,
-    ema: EMA,
     optimizer: AdamW,
     scheduler: OneCycleLR,
     batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
@@ -78,7 +76,7 @@ def train_step(
         x, a, c, orig_len = batch
     else:
         x, a, c = batch
-    with accelerator.autocast():
+    with accelerator.autocast() and accelerator.accumulate(model):
         try:
             loss = model(x, a, c, orig_len)
         except AssertionError:
@@ -89,20 +87,18 @@ def train_step(
     optimizer.step()
     optimizer.zero_grad(set_to_none=True)
     scheduler.step()
-    ema.update()
     return loss
 
 
 def sample_step(
     accelerator: Accelerator,
     model: OsuFusion,
-    ema: EMA,
     audio_path: Path,
-    audio_bpm: float,
     step: int,
 ) -> torch.Tensor:
     a = load_audio(audio_path)
-    c = normalize_context(np.array([5.0, 4.0, 9.5, 9.5, 8.0, audio_bpm], dtype=np.float32))
+    # CS, AR, OD, HP, SR
+    c = normalize_context(np.array([4.0, 9.5, 9.5, 4.0, 6.0], dtype=np.float32))
 
     a = torch.from_numpy(a).unsqueeze(0).to(accelerator.device)
     c = torch.from_numpy(c).unsqueeze(0).to(accelerator.device)
@@ -119,40 +115,24 @@ def sample_step(
 
     model.eval()
     with torch.no_grad() and accelerator.autocast():
-        generated_non_ema = model.sample(a, c, x, cond_scale=1.0)
-    non_ema_unet = model.unet
-    model.unet = ema.model
-    with torch.no_grad() and accelerator.autocast():
-        generated_ema = model.sample(a, c, x, cond_scale=1.0)
-    model.unet = non_ema_unet
+        generated = model.sample(a, c, x, cond_scale=1.0)
     model.train()
 
-    w, h = generated_non_ema.shape[-1] // 150, 7
-    fig_non_ema, axs = plt.subplots(
+    w, h = generated.shape[-1] // 150, 7
+    fig, axs = plt.subplots(
         h,
         1,
         figsize=(w, h * 8),
         sharex=True,
     )
-    for feature, ax in zip(generated_non_ema[0].cpu(), axs):
+    for feature, ax in zip(generated[0].cpu(), axs):
         ax.plot(feature)
 
-    w, h = generated_ema.shape[-1] // 150, 7
-    fig_ema, axs = plt.subplots(
-        h,
-        1,
-        figsize=(w, h * 8),
-        sharex=True,
-    )
-    for feature, ax in zip(generated_ema[0].cpu(), axs):
-        ax.plot(feature)
-
-    accelerator.log({"generated_non-ema": wandb.Image(fig_non_ema), "generated_ema": wandb.Image(fig_ema)}, step=step)
-    plt.close(fig_non_ema)
-    plt.close(fig_ema)
+    accelerator.log({"generated": wandb.Image(fig)}, step=step)
+    plt.close(fig)
 
 
-def load_checkpoint(model: OsuFusion, ema: EMA, checkpoint: Path) -> None:
+def load_checkpoint(model: OsuFusion, checkpoint: Path) -> None:
     print(f"Loading checkpoint from {checkpoint}...")
     model_sd = {}
     with safetensors.safe_open(checkpoint / "model.safetensors", "pt") as f:
@@ -160,13 +140,6 @@ def load_checkpoint(model: OsuFusion, ema: EMA, checkpoint: Path) -> None:
             model_sd[key] = f.get_tensor(key)
     model.load_state_dict(model_sd)
     print(f"Loaded model from {checkpoint}")
-
-    ema_sd = {}
-    with safetensors.safe_open(checkpoint / "ema" / "model.safetensors", "pt") as f:
-        for key in f.keys():  # noqa: SIM118
-            ema_sd[key] = f.get_tensor(key)
-    ema.load_state_dict(ema_sd)
-    print(f"Loaded EMA from {checkpoint}")
 
 
 def train(args: ArgumentParser) -> None:  # noqa: C901
@@ -186,7 +159,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     )
 
     model = OsuFusion(args.model_dim)
-    model.unet.set_gradient_checkpointing(args.gradient_checkpointing)
+    model.mmdit.set_gradient_checkpointing(args.gradient_checkpointing)
     optimizer = AdamW(model.parameters(), lr=args.lr)
     scheduler = OneCycleLR(
         optimizer,
@@ -194,10 +167,6 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         total_steps=args.total_steps,
         pct_start=args.pct_start,
     )
-    ema = EMA(model.unet)
-
-    if args.resume is not None:
-        load_checkpoint(model, ema, args.resume)
 
     print("Loading dataset...")
     all_maps = list(args.dataset_dir.rglob("*.map.npz"))
@@ -212,9 +181,8 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         collate_fn=collate_fn if args.full_sequence else None,
     )
 
-    model, ema, optimizer, scheduler, dataloader = accelerator.prepare(
+    model, optimizer, scheduler, dataloader = accelerator.prepare(
         model,
-        ema,
         optimizer,
         scheduler,
         dataloader,
@@ -237,7 +205,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                     iter_dataloader = iter(dataloader)
 
             try:
-                loss = train_step(args, accelerator, model, ema, optimizer, scheduler, batch)
+                loss = train_step(args, accelerator, model, optimizer, scheduler, batch)
             except RuntimeError as e:
                 print(f"Error: {e}")
                 continue
@@ -274,7 +242,6 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                 accelerator.wait_for_everyone()
                 save_dir = args.project_dir / f"checkpoint-{step + 1}"
                 accelerator.save_model(model, save_dir)
-                accelerator.save_model(ema, save_dir / "ema")
 
                 if accelerator.is_main_process:
                     accelerator.log({"save_loss": avg_loss}, step=step + 1)
@@ -290,9 +257,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                 sample_step(
                     accelerator,
                     model,
-                    ema,
                     args.sample_audio,
-                    args.sample_audio_bpm,
                     step=step + 1,
                 )
 
@@ -308,17 +273,21 @@ def main() -> None:
     args.add_argument("--full-sequence", action="store_true")
     args.add_argument("--mixed-precision", type=str, default="bf16", choices=["no", "fp16", "bf16"])
     args.add_argument("--gradient-checkpointing", action="store_true")
-    args.add_argument("--model-dim", type=int, default=128)
+    args.add_argument("--gradient-accumulation-steps", type=int, default=4)
+    args.add_argument("--model-dim", type=int, default=512)
     args.add_argument("--lr", type=float, default=1e-5)
-    args.add_argument("--batch-size", type=int, default=16)
+    args.add_argument("--batch-size", type=int, default=4)
     args.add_argument("--num-workers", type=int, default=2)
-    args.add_argument("--total-steps", type=int, default=500000)
+    args.add_argument(
+        "--total-steps",
+        type=int,
+        default=1000000,
+    )  # actual total steps = total_steps // gradient_accumulation_steps
     args.add_argument("--save-every", type=int, default=1000)
     args.add_argument("--max-num-checkpoints", type=int, default=5)
     args.add_argument("--pct-start", type=float, default=0.002)
     args.add_argument("--sample-every", type=int, default=1000)
     args.add_argument("--sample-audio", type=Path, default=None)
-    args.add_argument("--sample-audio-bpm", type=float, default=180.0)
     args = args.parse_args()
 
     train(args)

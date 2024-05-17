@@ -1,4 +1,5 @@
 from collections import namedtuple
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -16,7 +17,7 @@ class RotaryPositionEmbedding(nn.Module):
         self: "RotaryPositionEmbedding",
         dim: int,
         theta: int = 10000,
-        scale_base: int = 8192,
+        scale_base: int = 4096,
     ) -> None:
         super().__init__()
         self.scale_base = scale_base
@@ -29,7 +30,7 @@ class RotaryPositionEmbedding(nn.Module):
         self._sin_cached = None
 
     def _update_cos_sin_tables(self: "RotaryPositionEmbedding", x: torch.Tensor) -> torch.Tensor:
-        seq_len = x.shape[-1]
+        seq_len = x.shape[-2]
         if seq_len != self._seq_len_cached or self._cos_cached.device != x.device or self._cos_cached.dtype != x.dtype:
             self._seq_len_cached = seq_len
             t = torch.arange(
@@ -38,11 +39,11 @@ class RotaryPositionEmbedding(nn.Module):
                 device=x.device,
             )
             t *= self.scale_base / seq_len
-            freqs = torch.einsum("i , j -> i j", self.inv_freq.to(x.dtype), t)
-            emb = torch.cat([freqs, freqs], dim=-2)
+            freqs = torch.einsum("i , j -> i j", t, self.inv_freq.to(x.dtype))
+            emb = torch.cat([freqs, freqs], dim=-1)
 
-            self._cos_cached = emb.cos()[None, None, :, :]
-            self._sin_cached = emb.sin()[None, None, :, :]
+            self._cos_cached = rearrange(emb.cos(), "n d -> 1 1 n d")
+            self._sin_cached = rearrange(emb.sin(), "n d -> 1 1 n d")
 
         return self._cos_cached, self._sin_cached
 
@@ -56,17 +57,28 @@ class RotaryPositionEmbedding(nn.Module):
 
 
 class Attention(nn.Module):
-    def __init__(self: "Attention", sdpa: bool = False, linear: bool = False) -> None:
+    def __init__(
+        self: "Attention",
+        causal: bool = True,
+        heads: int = 8,
+        infini: bool = True,
+        segment_len: int = 1024,
+    ) -> None:
         super().__init__()
-        assert not (sdpa and version.parse(torch.__version__) < version.parse("2.0.0")), "sdpa requires torch>=2.0.0"
-        assert not (sdpa and linear), "sdpa can't be used with linear attention"
-        self.sdpa = sdpa
-        self.linear = linear
+        assert not version.parse(torch.__version__) < version.parse("2.0.0"), "sdpa requires torch>=2.0.0"
+        self.causal = causal
+        self.infini = infini
+        self.segment_len = segment_len
+
+        self.heads = heads
 
         # sdpa configs
         self.cpu_config = _config(True, True, True)
 
-        if not torch.cuda.is_available() or not self.sdpa:
+        if infini:
+            self.gate = nn.Parameter(torch.full((1, heads, 1, 1), -100.0))
+
+        if not torch.cuda.is_available():
             return
 
         device_properties = torch.cuda.get_device_properties(torch.device("cuda"))
@@ -75,59 +87,103 @@ class Attention(nn.Module):
         else:
             self.cuda_config = _config(False, True, True)
 
-    def sdpa_attn(
+    def forward_sdpa(
         self: "Attention",
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
     ) -> torch.Tensor:
-        is_cuda, dtype = q.is_cuda, q.dtype
+        is_cuda, dtype = v.is_cuda, v.dtype
         config = self.cuda_config if is_cuda else self.cpu_config
 
         with torch.backends.cuda.sdp_kernel(**config._asdict()):
-            if config.enable_flash and any(
-                [q.dtype == torch.float64, k.dtype == torch.float64, v.dtype == torch.float64],
-            ):
-                q = q.half()
-                k = k.half()
-                v = v.half()
-            q, k, v = (rearrange(t, "b h d n -> b n h d") for t in (q, k, v))
+            q = q.half()
+            k = k.half()
+            v = v.half()
             q, k, v = (t.contiguous() for t in (q, k, v))
-            scale = q.shape[-2] ** -0.5
+            scale = q.shape[-1] ** -0.5
             q = q * scale
             out = F.scaled_dot_product_attention(
                 q,
                 k,
                 v,
+                is_causal=self.causal,
             )
-            out = rearrange(out, "b n h d -> b h d n")
 
-        return out.to(dtype) if config.enable_flash else out
+        return out.to(dtype)
 
-    def attn_linear(
+    def _retrieve_from_memory(
+        self: "Attention",
+        q: torch.Tensor,
+        memory: Optional[torch.Tensor] = None,
+        norm_term: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if memory is None or norm_term is None:
+            return torch.zeros_like(q)
+
+        q = F.elu(q) + 1.0
+
+        memory = torch.matmul(q, memory)
+        norm_term = torch.matmul(
+            q,
+            rearrange(norm_term, "b h 1 d -> b h d 1"),
+        )
+
+        return memory / (norm_term + 1e-6)
+
+    def _update_memory(
+        self: "Attention",
+        k: torch.Tensor,
+        v: torch.Tensor,
+        memory: Optional[torch.Tensor] = None,
+        norm_term: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        k = F.elu(k) + 1.0
+
+        if memory is not None:
+            memory = memory + torch.matmul(rearrange(k, "b h n d -> b h d n"), v)
+        else:
+            memory = torch.matmul(rearrange(k, "b h n d -> b h d n"), v)
+
+        if norm_term is not None:  # noqa: SIM108
+            norm_term = norm_term + k.sum(dim=-2, keepdim=True)
+        else:
+            norm_term = k.sum(dim=-2, keepdim=True)
+
+        return memory, norm_term
+
+    def forward_infini(
         self: "Attention",
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
     ) -> torch.Tensor:
-        scale = q.shape[-1] ** -0.5
-        q = q.softmax(dim=-2) * scale
-        k = k.softmax(dim=-1)
-        context = torch.einsum("b h d n, b h e n -> b h d e", k, v)
-        out = torch.einsum("b h d e, b h d n -> b h e n", context, q)
-        return out
+        n_segments = q.shape[-2] // self.segment_len  # Assume sequence length is divisible by segment length
+        q, k, v = (rearrange(t, "b h (s n) d -> b h s n d", s=n_segments) for t in (q, k, v))
 
-    def attn(
-        self: "Attention",
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-    ) -> torch.Tensor:
-        scale = q.shape[-2] ** -0.5
-        q = q * scale
-        sim = torch.einsum("b h d i, b h d j -> b h i j", q, k)
-        attn = sim.softmax(dim=-1)
-        out = torch.einsum("b h i j, b h d j -> b h d i", attn, v)
+        outputs = []
+        memory = None
+        norm_term = None
+        for idx in range(n_segments):
+            q_segment = q[:, :, idx, :, :]
+            k_segment = k[:, :, idx, :, :]
+            v_segment = v[:, :, idx, :, :]
+
+            memory_output = self._retrieve_from_memory(q_segment, memory, norm_term)
+            updated_memory, updated_norm_term = self._update_memory(
+                k_segment,
+                v_segment,
+                memory,
+                norm_term,
+            )
+            memory = updated_memory.detach()
+            norm_term = updated_norm_term.detach()
+
+            attn = self.forward_sdpa(q_segment, k_segment, v_segment)
+            combined_output = (F.sigmoid(self.gate) * memory_output) + (1 - F.sigmoid(self.gate)) * attn
+            outputs.append(combined_output)
+
+        out = torch.cat(outputs, dim=-2)
         return out
 
     def forward(
@@ -136,12 +192,10 @@ class Attention(nn.Module):
         k: torch.Tensor,
         v: torch.Tensor,
     ) -> torch.Tensor:
-        if self.sdpa:
-            return self.sdpa_attn(q, k, v)
-        elif self.linear:
-            return self.attn_linear(q, k, v)
-        else:
-            return self.attn(q, k, v)
+        if self.infini:
+            with torch.autocast(device_type=q.device.type, dtype=torch.float32):
+                return self.forward_infini(q, k, v)
+        return self.forward_sdpa(q, k, v)
 
 
 class MultiHeadAttention(nn.Module):
@@ -150,30 +204,29 @@ class MultiHeadAttention(nn.Module):
         dim: int,
         dim_head: int = 32,
         heads: int = 8,
-        sdpa: bool = False,
-        linear: bool = False,
+        causal: bool = True,
         use_rotary_emb: bool = True,
     ) -> None:
         super().__init__()
         self.heads = heads
 
         inner_dim = dim_head * heads
-        self.to_qkv = nn.Conv1d(dim, inner_dim * 3, 1, bias=False)
+        self.to_qkv = nn.Linear(dim, inner_dim * 3, 1, bias=False)
         self.rotary_emb = RotaryPositionEmbedding(dim_head) if use_rotary_emb else None
-        self.attention = Attention(sdpa=sdpa, linear=linear)
-        self.to_out = nn.Conv1d(inner_dim, dim, 1)
+        self.attention = Attention(causal=causal)
+        self.to_out = nn.Linear(inner_dim, dim, 1)
 
     def forward(
         self: "MultiHeadAttention",
         x: torch.Tensor,
     ) -> torch.Tensor:
         q, k, v = self.to_qkv(x).chunk(3, dim=-2)
-        q, k, v = (rearrange(t, "b (h d) n -> b h d n", h=self.heads) for t in (q, k, v))
+        q, k, v = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q, k, v))
         if self.rotary_emb is not None:
             q, k = self.rotary_emb(q, k)
 
         out = self.attention(q, k, v)
-        out = rearrange(out, "b h d n -> b (h d) n")
+        out = rearrange(out, "b h n d -> b n (h d)")
 
         out = self.to_out(out)
         return out

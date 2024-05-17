@@ -6,7 +6,8 @@ import numpy as np
 import torch
 from torch.utils.data import IterableDataset
 
-from osu_fusion.library.osu.from_beatmap import AUDIO_DIM, CONTEXT_DIM, TOTAL_DIM
+from osu_fusion.library.osu.data.encode import TOTAL_DIM
+from osu_fusion.scripts.dataset_creator import AUDIO_DIM, CONTEXT_DIM
 
 MFCC_MAX_VALUE = 300
 MFCC_MIN_VALUE = -600
@@ -23,9 +24,8 @@ def normalize_mfcc(mfcc: torch.Tensor) -> torch.Tensor:
 
 
 def load_tensor(map_file: Path) -> torch.Tensor:
-    audio_file = map_file.parent / "audio_mp3" / "spec.npz"
-
     map_data = np.load(map_file)
+    audio_file = map_file.parent / map_data["spec_path"].tolist()
     audio_data = np.load(audio_file)
     x = torch.tensor(map_data["x"], dtype=torch.float32)
     c = torch.tensor(map_data["c"], dtype=torch.float32)
@@ -61,19 +61,20 @@ class StreamPerSample(IterableDataset):
         if worker_info is None:
             num_workers = 1
             worker_id = 0
+            seed = torch.initial_seed()
         else:
             num_workers = worker_info.num_workers
             worker_id = worker_info.id
+            seed = worker_info.seed
+
+        random.seed(seed)
 
         for i, sample in random.sample(list(enumerate(self.dataset)), int(len(self.dataset) * self.sample_density)):
             if i % num_workers != worker_id:
                 continue
 
-            try:
-                for x in self.sample_stream(sample):
-                    yield x
-            except Exception:
-                continue
+            for x in self.sample_stream(sample):
+                yield x
 
         # Randomize the dataset order for each epoch
         random.shuffle(self.dataset)
@@ -93,22 +94,15 @@ class DummyDataset(StreamPerSample):
 
 
 class FullSequenceDataset(StreamPerSample):
-    MAX_LENGTH = 65536
-
     def sample_stream(self: StreamPerSample, map_file: Path) -> Generator[torch.Tensor, None, None]:
-        x, a, c = load_tensor(map_file)
-
-        if x.shape[-1] > self.MAX_LENGTH:
-            return
-
-        yield x[..., : self.MAX_LENGTH], a[..., : self.MAX_LENGTH], c
+        yield load_tensor(map_file)
 
 
 class SubsequenceDataset(StreamPerSample):
     def __init__(self: "SubsequenceDataset", **kwargs: Dict) -> None:
         super().__init__(**kwargs)
 
-        self.sequence_length = kwargs.pop("sequence_length", 8192)
+        self.sequence_length = kwargs.pop("sequence_length", 4096)
         self.subsequence_density = kwargs.pop("subsequence_density", 2.0)
         super().__init__(**kwargs)
 
