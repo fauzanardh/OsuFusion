@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 from osu_fusion.library.dataset import FullSequenceDataset, SubsequenceDataset, normalize_mfcc, sanitize_input
-from osu_fusion.library.osu.from_beatmap import TOTAL_DIM
+from osu_fusion.library.osu.data.encode import TOTAL_DIM
 from osu_fusion.models.diffusion import OsuFusion
 from osu_fusion.scripts.dataset_creator import load_audio, normalize_context
 
@@ -97,7 +97,8 @@ def sample_step(
     step: int,
 ) -> torch.Tensor:
     a = load_audio(audio_path)
-    c = normalize_context(np.array([5.0, 4.0, 9.5, 9.5, 8.0], dtype=np.float32))
+    # CS, AR, OD, HP, SR
+    c = normalize_context(np.array([4.0, 9.5, 9.5, 4.0, 6.0], dtype=np.float32))
 
     a = torch.from_numpy(a).unsqueeze(0).to(accelerator.device)
     c = torch.from_numpy(c).unsqueeze(0).to(accelerator.device)

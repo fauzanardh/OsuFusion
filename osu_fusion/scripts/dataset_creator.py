@@ -50,7 +50,7 @@ def load_audio(audio_file: Path) -> npt.NDArray:
 
 
 def normalize_context(context: npt.NDArray) -> npt.NDArray:
-    # normalized HP, CS, OD, AR to [-1, 1] from [0, 10]
+    # normalized CS, AR, OD, HP to [-1, 1] from [0, 10]
     context[0] = context[0] / 5 - 1
     context[1] = context[1] / 5 - 1
     context[2] = context[2] / 5 - 1
