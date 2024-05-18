@@ -3,7 +3,7 @@ import random
 import shutil
 from argparse import ArgumentParser
 from pathlib import Path
-from typing import List, Tuple
+from typing import Generator, List, Tuple
 
 import numpy as np
 import safetensors
@@ -22,6 +22,12 @@ from osu_fusion.library.dataset import FullSequenceDataset, SubsequenceDataset, 
 from osu_fusion.library.osu.data.encode import TOTAL_DIM
 from osu_fusion.models.diffusion import OsuFusion
 from osu_fusion.scripts.dataset_creator import load_audio, normalize_context
+
+
+def cycle(dataloader: DataLoader) -> Generator[Tuple[torch.Tensor, torch.Tensor, torch.Tensor], None, None]:
+    while True:
+        for batch in dataloader:
+            yield batch
 
 
 def delete_old_checkpoints(project_dir: Path, max_num_checkpoints: int) -> None:
@@ -193,16 +199,13 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     clear_checkpoints(args.project_dir)
 
     print("Training...")
-    iter_dataloader = iter(dataloader)
+    cycle_dataloader = cycle(dataloader)
     losses = []  # Keep track of the last `args.save_every` losses
     with tqdm(total=args.total_steps, smoothing=0.0, disable=not accelerator.is_local_main_process) as pbar:
         for step in range(args.total_steps):
             batch = None
             while batch is None:
-                try:
-                    batch = next(iter_dataloader)
-                except Exception:
-                    iter_dataloader = iter(dataloader)
+                batch = next(cycle_dataloader)
 
             try:
                 loss = train_step(args, accelerator, model, optimizer, scheduler, batch)
