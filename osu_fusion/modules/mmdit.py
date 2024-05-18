@@ -84,8 +84,14 @@ class CMAttention(nn.Module):
         self.q_a_norm = MultiHeadRMSNorm(self.dim_head, heads) if qk_norm else None
         self.k_a_norm = MultiHeadRMSNorm(self.dim_head, heads) if qk_norm else None
 
-        # self.rotary_emb = RotaryPositionEmbedding(self.dim_head) if use_rotary_emb else None
-        self.attn = Attention(causal=causal, heads=heads, infini=infini, segment_len=segment_len)
+        self.attn = Attention(
+            self.dim_head,
+            heads=heads,
+            causal=causal,
+            use_rotary_emb=use_rotary_emb,
+            infini=infini,
+            segment_len=segment_len,
+        )
 
     def forward(self: "CMAttention", x: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
         q_x, k_x, v_x = self.to_qkv_x(x).chunk(3, dim=-1)
@@ -106,9 +112,6 @@ class CMAttention(nn.Module):
         q, seq_shape = pack([q_a, q_x], "b h * d")
         k, _ = pack([k_a, k_x], "b h * d")
         v, _ = pack([v_a, v_x], "b h * d")
-
-        # if self.rotary_emb is not None:
-        #     q, k = self.rotary_emb(q, k)
 
         out = self.attn(q, k, v)
         out_a, out_x = unpack(out, seq_shape, "b h * d")
