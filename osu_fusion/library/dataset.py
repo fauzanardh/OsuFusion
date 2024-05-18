@@ -9,15 +9,6 @@ from torch.utils.data import IterableDataset
 from osu_fusion.library.osu.data.encode import TOTAL_DIM
 from osu_fusion.scripts.dataset_creator import AUDIO_DIM, CONTEXT_DIM
 
-MFCC_MAX_VALUE = 300
-MFCC_MIN_VALUE = -600
-
-
-# Temporary function to normalize MFCCs in my dataset
-# TODO: Implement this to the dataset creator instead
-def normalize_mfcc(mfcc: torch.Tensor) -> torch.Tensor:
-    return (mfcc - MFCC_MIN_VALUE) / (MFCC_MAX_VALUE - MFCC_MIN_VALUE) * 2 - 1
-
 
 def load_tensor(map_file: Path) -> torch.Tensor:
     map_data = np.load(map_file)
@@ -31,7 +22,7 @@ def load_tensor(map_file: Path) -> torch.Tensor:
         msg = "Invalid values in map file"
         raise ValueError(msg)
 
-    return x, normalize_mfcc(a), c
+    return x, a, c
 
 
 class StreamPerSample(IterableDataset):

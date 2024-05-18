@@ -46,6 +46,11 @@ def load_audio(audio_file: Path) -> npt.NDArray:
         hop_length=HOP_LENGTH,
         n_mels=N_MELS,
     )
+
+    # Calculate CMVN
+    spec_mean = spec.mean(axis=1, keepdims=True)
+    spec_std = spec.std(axis=1, keepdims=True)
+    spec = (spec - spec_mean) / (spec_std + 1e-10)
     return spec
 
 
