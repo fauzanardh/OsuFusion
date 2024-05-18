@@ -7,22 +7,23 @@ from scipy.signal import find_peaks
 from osu_fusion.library.osu.beatmap import Beatmap
 from osu_fusion.library.osu.hit_objects import Slider, Spinner
 
-ONSET_MIN_TIME = 4
-ONSET_MAX_TIME = 11
 
-
-def onsets(beatmap: Beatmap, frame_times: npt.NDArray) -> npt.NDArray:
-    onsets_ = np.full_like(frame_times, 2**ONSET_MAX_TIME)
+def flips(beatmap: Beatmap, frame_times: npt.NDArray) -> npt.NDArray:
+    hit = np.full_like(frame_times, 1.0)
+    current_state = 1.0
     for hit_object in beatmap.hit_objects:
-        hit = frame_times - hit_object.t
-        region = (hit >= 0) & (hit <= 2**ONSET_MAX_TIME)
-        onsets_[region] = hit[region]
-    log_onsets = np.log2(onsets_ + 2**ONSET_MIN_TIME).clip(ONSET_MIN_TIME, ONSET_MAX_TIME)
-    return (log_onsets - ONSET_MIN_TIME) / (ONSET_MAX_TIME - ONSET_MIN_TIME)
+        closest_frame_idx = np.searchsorted(frame_times, hit_object.t)
+        if closest_frame_idx < len(frame_times):
+            current_state = 1.0 - current_state
+            hit[closest_frame_idx:] = current_state
+    return hit
 
 
-def decode_onsets(onsets_: npt.NDArray) -> List[int]:
-    return find_peaks(-onsets_, height=0.6, distance=4)[0].tolist()
+def decode_flips(flips_: npt.NDArray) -> List[int]:
+    signal_gradients = np.gradient(flips_)
+    rising = find_peaks(signal_gradients, height=0.5)[0].tolist()
+    falling = find_peaks(-signal_gradients, height=0.5)[0].tolist()
+    return sorted(rising + falling)
 
 
 Real = Union[int, float]
@@ -69,7 +70,7 @@ def decode_extents(extents_: npt.NDArray) -> Tuple[List[int], List[int]]:
 def hit_signals(beatmap: Beatmap, frame_times: npt.NDArray) -> npt.NDArray:
     signals = np.stack(
         [
-            onsets(beatmap, frame_times),
+            flips(beatmap, frame_times),
             extents(
                 [
                     (hit_object.t, hit_object.end_time())

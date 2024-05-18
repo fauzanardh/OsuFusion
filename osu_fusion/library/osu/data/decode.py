@@ -7,7 +7,7 @@ import numpy.typing as npt
 
 from osu_fusion.library.osu.data.encode import BeatmapEncoding
 from osu_fusion.library.osu.data.fit_bezier import fit_bezier, segment_length
-from osu_fusion.library.osu.data.hit import decode_extents, decode_onsets
+from osu_fusion.library.osu.data.hit import decode_extents, decode_flips
 
 
 @dataclass
@@ -86,7 +86,7 @@ def decode_beatmap(metadata: Metadata, encoded_beatmap: npt.NDArray, frame_times
     cursor_signals = encoded_beatmap[[BeatmapEncoding.CURSOR_X, BeatmapEncoding.CURSOR_Y]]
     cursor_signals = ((cursor_signals + 1) / 2) * np.array([[512], [384]])
 
-    onset_locs = decode_onsets(encoded_beatmap[BeatmapEncoding.ONSET])
+    onset_locs = decode_flips(encoded_beatmap[BeatmapEncoding.ONSET])
     onset_loc2idx = np.full_like(frame_times, -1, dtype=int)
     for i, onset_idx in enumerate(onset_locs):
         onset_loc2idx[onset_idx - ONSET_TOL : onset_idx + ONSET_TOL + 1] = i
