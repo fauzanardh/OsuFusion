@@ -13,10 +13,6 @@ MFCC_MAX_VALUE = 300
 MFCC_MIN_VALUE = -600
 
 
-def sanitize_input(x: torch.Tensor) -> torch.Tensor:
-    return x.clamp(min=-1.0, max=1.0)
-
-
 # Temporary function to normalize MFCCs in my dataset
 # TODO: Implement this to the dataset creator instead
 def normalize_mfcc(mfcc: torch.Tensor) -> torch.Tensor:
@@ -31,15 +27,11 @@ def load_tensor(map_file: Path) -> torch.Tensor:
     c = torch.tensor(map_data["c"], dtype=torch.float32)
     a = torch.tensor(audio_data["a"], dtype=torch.float32)
 
-    x = sanitize_input(x)
-    a = sanitize_input(normalize_mfcc(a))
-    c = sanitize_input(c)
-
     if torch.isnan(x).any() or torch.isnan(a).any() or torch.isnan(c).any():
         msg = "Invalid values in map file"
         raise ValueError(msg)
 
-    return x, a, c
+    return x, normalize_mfcc(a), c
 
 
 class StreamPerSample(IterableDataset):
