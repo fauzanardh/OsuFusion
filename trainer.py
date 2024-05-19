@@ -121,7 +121,7 @@ def sample_step(
         generated = model.sample(a, c, x, cond_scale=1.0)
     model.train()
 
-    w, h = generated.shape[-1] // 150, 7
+    w, h = generated.shape[-1] // 150, TOTAL_DIM
     fig, axs = plt.subplots(
         h,
         1,
