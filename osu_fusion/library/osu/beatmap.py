@@ -5,7 +5,7 @@ from typing import Any, Dict, Generator, List, Tuple
 
 import numpy as np
 
-from osu_fusion.library.osu.hit_objects import Circle, Slider, Spinner, Timed, TimingPoint
+from osu_fusion.library.osu.hit_objects import Circle, HitObject, Slider, Spinner, Timed, TimingPoint
 from osu_fusion.library.osu.sliders import from_control_points
 
 CX, CY = 256, 192
@@ -154,7 +154,7 @@ class Beatmap:
         del self.unparsed_events
 
     @staticmethod
-    def _process_circle_cursor(ho: Circle, nho: Circle, t: int) -> Tuple[Tuple[int, int], float]:
+    def _process_circle_cursor(ho: Circle, nho: HitObject, t: int) -> Tuple[Tuple[int, int], float]:
         if nho is not None:
             f = t / (nho.t - ho.t)
             return ((1 - f) * ho.x + f * nho.x, (1 - f) * ho.y + f * nho.y), t
@@ -162,7 +162,7 @@ class Beatmap:
             return (ho.x, ho.y), t
 
     @staticmethod
-    def _process_spinner_cursor(ho: Spinner, nho: Spinner, t: int) -> Tuple[Tuple[int, int], float]:
+    def _process_spinner_cursor(ho: Spinner, nho: HitObject, t: int) -> Tuple[Tuple[int, int], float]:
         spin_duration = ho.u - ho.t
         if t < spin_duration:
             return (CX, CY), 0
@@ -175,7 +175,7 @@ class Beatmap:
                 return (CX, CY), t
 
     @staticmethod
-    def _process_slider_cursor(ho: Slider, nho: Slider, t: int) -> Tuple[Tuple[int, int], float]:
+    def _process_slider_cursor(ho: Slider, nho: HitObject, t: int) -> Tuple[Tuple[int, int], float]:
         slide_duration = ho.slide_duration
         if t < slide_duration:
             single_slide_duration = slide_duration / ho.slides
