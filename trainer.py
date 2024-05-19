@@ -18,7 +18,7 @@ from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-from osu_fusion.library.dataset import FullSequenceDataset, SubsequenceDataset, normalize_mfcc, sanitize_input
+from osu_fusion.library.dataset import FullSequenceDataset, SubsequenceDataset
 from osu_fusion.library.osu.data.encode import TOTAL_DIM
 from osu_fusion.models.diffusion import OsuFusion
 from osu_fusion.scripts.dataset_creator import load_audio, normalize_context
@@ -108,9 +108,6 @@ def sample_step(
 
     a = torch.from_numpy(a).unsqueeze(0).to(accelerator.device)
     c = torch.from_numpy(c).unsqueeze(0).to(accelerator.device)
-
-    a = sanitize_input(normalize_mfcc(a))
-    c = sanitize_input(c)
 
     b, _, n = a.shape
 
