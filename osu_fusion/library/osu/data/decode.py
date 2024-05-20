@@ -73,10 +73,6 @@ def slider_decoder(
     return length, control_points
 
 
-ONSET_TOL = 2
-DEFAULT_BPM_LENGTH = 60000 / 120  # 120 BPM
-
-
 def add_hit_circle(cursor_signals: npt.NDArray, onset_loc: int, t: float, combo_bit: int) -> str:
     x, y = cursor_signals[:, onset_loc].round().astype(int)
     return f"{x},{y},{t},{2**0 + combo_bit},0,0:0:0:0:"
@@ -86,28 +82,25 @@ def decode_beatmap(metadata: Metadata, encoded_beatmap: npt.NDArray, frame_times
     cursor_signals = encoded_beatmap[[BeatmapEncoding.CURSOR_X, BeatmapEncoding.CURSOR_Y]]
     cursor_signals = ((cursor_signals + 1) / 2) * np.array([[512], [384]])
 
-    onset_locs = decode_flips(encoded_beatmap[BeatmapEncoding.ONSET])
-    onset_loc2idx = np.full_like(frame_times, -1, dtype=int)
-    for i, onset_idx in enumerate(onset_locs):
-        onset_loc2idx[onset_idx - ONSET_TOL : onset_idx + ONSET_TOL + 1] = i
+    hit_locs = decode_flips(encoded_beatmap[BeatmapEncoding.HIT])
+    loc2idx = np.full_like(frame_times, -1, dtype=int)
+    for i, onset_idx in enumerate(hit_locs):
+        loc2idx[onset_idx] = i
 
-    new_combos = [False] * len(onset_locs)
-    for combo_start in decode_extents(encoded_beatmap[BeatmapEncoding.COMBO])[0]:
-        onset_idx = onset_loc2idx[combo_start]
-        if onset_idx == -1:
-            continue
-        new_combos[onset_idx] = True
+    new_combos = [False] * len(hit_locs)
+    for combo_locs in decode_flips(encoded_beatmap[BeatmapEncoding.COMBO]):
+        new_combos[loc2idx[combo_locs]] = True
 
-    sustain_ends = [-1] * len(onset_locs)
+    sustain_ends = [-1] * len(hit_locs)
     for sustain_start, sustain_end in zip(*decode_extents(encoded_beatmap[BeatmapEncoding.SUSTAIN])):
-        onset_idx = onset_loc2idx[sustain_start]
+        onset_idx = loc2idx[sustain_start]
         if onset_idx == -1:
             continue
         sustain_ends[onset_idx] = sustain_end
 
-    slider_ends = [-1] * len(onset_locs)
+    slider_ends = [-1] * len(hit_locs)
     for slider_start, slider_end in zip(*decode_extents(encoded_beatmap[BeatmapEncoding.SLIDER])):
-        onset_idx = onset_loc2idx[slider_start]
+        onset_idx = loc2idx[slider_start]
         if onset_idx == -1:
             continue
         slider_ends[onset_idx] = slider_end
@@ -118,11 +111,11 @@ def decode_beatmap(metadata: Metadata, encoded_beatmap: npt.NDArray, frame_times
     slider_ts = []
     slider_vels = []
 
-    for onset_loc, new_combo, sustain_end, slider_end in zip(onset_locs, new_combos, sustain_ends, slider_ends):
-        t = frame_times[onset_loc]
+    for hit_loc, new_combo, sustain_end, slider_end in zip(hit_locs, new_combos, sustain_ends, slider_ends):
+        t = frame_times[hit_loc]
         combo_bit = 2**2 if new_combo else 0
 
-        add_hit_circle_ = partial(add_hit_circle, cursor_signals, onset_loc, t, combo_bit)
+        add_hit_circle_ = partial(add_hit_circle, cursor_signals, hit_loc, t, combo_bit)
 
         if sustain_end == -1:
             hit_objects.append(add_hit_circle_())
@@ -139,8 +132,8 @@ def decode_beatmap(metadata: Metadata, encoded_beatmap: npt.NDArray, frame_times
             continue
 
         # Slider
-        num_slides = max(1, round((sustain_end - onset_loc) / (slider_end - onset_loc)))
-        length, control_points = slider_decoder(cursor_signals, onset_loc, sustain_end, num_slides)
+        num_slides = max(1, round((sustain_end - hit_loc) / (slider_end - hit_loc)))
+        length, control_points = slider_decoder(cursor_signals, hit_loc, sustain_end, num_slides)
 
         if length == 0:
             # zero-length slider

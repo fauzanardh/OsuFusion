@@ -8,14 +8,15 @@ from osu_fusion.library.osu.beatmap import Beatmap
 from osu_fusion.library.osu.hit_objects import Slider, Spinner
 
 
-def flips(beatmap: Beatmap, frame_times: npt.NDArray) -> npt.NDArray:
-    hit = np.full_like(frame_times, 1.0)
-    current_state = 1.0
+def flips(beatmap: Beatmap, frame_times: npt.NDArray, combo: bool = False) -> npt.NDArray:
+    hit = np.full_like(frame_times, 0.0)
+    current_state = 0.0
     for hit_object in beatmap.hit_objects:
-        closest_frame_idx = np.searchsorted(frame_times, hit_object.t)
-        if closest_frame_idx < len(frame_times):
-            current_state = 1.0 - current_state
-            hit[closest_frame_idx:] = current_state
+        if not combo or hit_object.new_combo:
+            closest_frame_idx = np.searchsorted(frame_times, hit_object.t)
+            if closest_frame_idx < len(frame_times):
+                current_state = 1.0 - current_state
+                hit[closest_frame_idx:] = current_state
     return hit
 
 
@@ -87,10 +88,7 @@ def hit_signals(beatmap: Beatmap, frame_times: npt.NDArray) -> npt.NDArray:
                 ],
                 frame_times,
             ),
-            extents(
-                combo_regions(beatmap),
-                frame_times,
-            ),
+            flips(beatmap, frame_times, combo=True),
         ],
     )
 

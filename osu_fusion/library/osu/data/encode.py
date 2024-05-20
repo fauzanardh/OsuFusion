@@ -7,14 +7,11 @@ from osu_fusion.library.osu.beatmap import Beatmap
 from osu_fusion.library.osu.data.cursor import cursor_signal
 from osu_fusion.library.osu.data.hit import hit_signals
 
-# HIT_DIM = 4
-# CURSOR_DIM = 2
-# TOTAL_DIM = HIT_DIM + CURSOR_DIM
 BeatmapEncoding = IntEnum(
     "BeatmapEncoding",
     [
         # hit signals
-        "ONSET",
+        "HIT",
         "SUSTAIN",
         "SLIDER",
         "COMBO",
