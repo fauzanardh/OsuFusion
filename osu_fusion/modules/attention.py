@@ -105,8 +105,6 @@ class Attention(nn.Module):
             k = k.half()
             v = v.half()
             q, k, v = (t.contiguous() for t in (q, k, v))
-            scale = q.shape[-1] ** -0.5
-            q = q * scale
             out = F.scaled_dot_product_attention(
                 q,
                 k,
