@@ -1,5 +1,5 @@
 from collections import namedtuple
-from typing import Optional
+from typing import List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -93,6 +93,7 @@ class Attention(nn.Module):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
+        attn_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         is_cuda, dtype = v.is_cuda, v.dtype
         config = self.cuda_config if is_cuda else self.cpu_config
@@ -109,7 +110,7 @@ class Attention(nn.Module):
                 q,
                 k,
                 v,
-                is_causal=self.causal,
+                attn_mask=attn_mask,
             )
 
         return out.to(dtype)
@@ -159,6 +160,7 @@ class Attention(nn.Module):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
+        padding_data: Optional[Tuple[int, List[int]]] = None,
     ) -> torch.Tensor:
         n_segments = q.shape[-2] // self.segment_len  # Assume sequence length is divisible by segment length
         q, k, v = (rearrange(t, "b h (s n) d -> b h s n d", s=n_segments) for t in (q, k, v))
@@ -166,10 +168,31 @@ class Attention(nn.Module):
         outputs = []
         memory = None
         norm_term = None
+        total_segment_processed = 0
         for idx in range(n_segments):
             q_segment = q[:, :, idx, :, :]
             k_segment = k[:, :, idx, :, :]
             v_segment = v[:, :, idx, :, :]
+
+            attn_mask = None
+            # I hate this, but it's the only way I can think of to handle padding
+            if padding_data is not None:
+                total_next_segment = total_segment_processed + self.segment_len
+                for pad_idx in padding_data[1]:
+                    if total_segment_processed <= pad_idx < total_next_segment:
+                        # Create an attention mask for the padding
+                        # pad_idx is the start of the padding, and padding_data[0] is the length of the padding
+                        attn_mask = torch.zeros(q_segment.shape[-2], k_segment.shape[-2], device=q.device)
+                        attn_mask[
+                            :,
+                            pad_idx - total_segment_processed : pad_idx - total_segment_processed + padding_data[0],
+                        ] = float("-inf")
+
+            # Add causal mask
+            if self.causal:
+                causal_mask = torch.triu(torch.ones(q_segment.shape[-2], k_segment.shape[-2]), diagonal=1).to(q.device)
+                causal_mask.masked_fill_(causal_mask == 1, float("-inf"))
+                attn_mask = causal_mask if attn_mask is None else attn_mask + causal_mask
 
             memory_output = self._retrieve_from_memory(q_segment, memory, norm_term)
             updated_memory, updated_norm_term = self._update_memory(
@@ -181,9 +204,11 @@ class Attention(nn.Module):
             memory = updated_memory.detach()
             norm_term = updated_norm_term.detach()
 
-            attn = self.forward_sdpa(q_segment, k_segment, v_segment)
+            attn = self.forward_sdpa(q_segment, k_segment, v_segment, attn_mask=attn_mask)
             combined_output = (F.sigmoid(self.gate) * memory_output) + (1 - F.sigmoid(self.gate)) * attn
             outputs.append(combined_output)
+
+            total_segment_processed += q_segment.shape[-2]
 
         out = torch.cat(outputs, dim=-2)
         return out
@@ -193,10 +218,11 @@ class Attention(nn.Module):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
+        padding_data: Optional[Tuple[int, int]] = None,
     ) -> torch.Tensor:
         if self.infini:
             with torch.autocast(device_type=q.device.type, dtype=torch.float32):
-                return self.forward_infini(q, k, v)
+                return self.forward_infini(q, k, v, padding_data=padding_data)
         return self.forward_sdpa(q, k, v)
 
 

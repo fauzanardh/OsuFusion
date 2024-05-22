@@ -1,5 +1,5 @@
 import math
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -93,7 +93,12 @@ class JointAttention(nn.Module):
             segment_len=segment_len,
         )
 
-    def forward(self: "JointAttention", x: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self: "JointAttention",
+        x: torch.Tensor,
+        a: torch.Tensor,
+        padding_data: Optional[Tuple[int, List[int]]] = None,
+    ) -> torch.Tensor:
         q_x, k_x, v_x = self.to_qkv_x(x).chunk(3, dim=-1)
         q_x, k_x, v_x = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q_x, k_x, v_x))
 
@@ -113,7 +118,7 @@ class JointAttention(nn.Module):
         k, _ = pack([k_a, k_x], "b h * d")
         v, _ = pack([v_a, v_x], "b h * d")
 
-        out = self.attn(q, k, v)
+        out = self.attn(q, k, v, padding_data=padding_data)
         out_a, out_x = unpack(out, seq_shape, "b h * d")
 
         out_x, out_a = (rearrange(t, "b h n d -> b n (h d)") for t in (out_x, out_a))
@@ -167,7 +172,13 @@ class MMDiTBlock(nn.Module):
 
         self.gradient_checkpointing = False
 
-    def forward_body(self: "MMDiTBlock", x: torch.Tensor, a: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+    def forward_body(
+        self: "MMDiTBlock",
+        x: torch.Tensor,
+        a: torch.Tensor,
+        c: torch.Tensor,
+        padding_data: Optional[Tuple[int, List[int]]] = None,
+    ) -> torch.Tensor:
         # Modulation
         (
             shift_attn_x,
@@ -189,7 +200,7 @@ class MMDiTBlock(nn.Module):
         # Attention
         h_x = modulate(self.norm1_x(x), shift_attn_x, scale_attn_x)
         h_a = modulate(self.norm1_a(a), shift_attn_a, scale_attn_a)
-        attn_out_x, attn_out_a = self.attn(h_x, h_a)
+        attn_out_x, attn_out_a = self.attn(h_x, h_a, padding_data=padding_data)
 
         x = x + gate_attn_x.unsqueeze(1) * (self.attn_out_x(attn_out_x))
         a = a + gate_attn_a.unsqueeze(1) * (self.attn_out_a(attn_out_a))
@@ -200,11 +211,17 @@ class MMDiTBlock(nn.Module):
 
         return x, a
 
-    def forward(self: "MMDiTBlock", x: torch.Tensor, a: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self: "MMDiTBlock",
+        x: torch.Tensor,
+        a: torch.Tensor,
+        c: torch.Tensor,
+        padding_data: Optional[Tuple[int, List[int]]] = None,
+    ) -> torch.Tensor:
         if self.training and self.gradient_checkpointing:
-            return torch.utils.checkpoint.checkpoint(self.forward_body, x, a, c, use_reentrant=True)
+            return torch.utils.checkpoint.checkpoint(self.forward_body, x, a, c, padding_data, use_reentrant=True)
         else:
-            return self.forward_body(x, a, c)
+            return self.forward_body(x, a, c, padding=padding_data)
 
 
 class CrossEmbedLayer(nn.Module):
@@ -329,9 +346,10 @@ class MMDiT(nn.Module):
     ) -> torch.Tensor:
         # Pad to the closest multiple of attn_segment_len
         n = x.shape[-1]
-        pad = (self.attn_segment_len - (n % self.attn_segment_len)) % self.attn_segment_len
-        x = F.pad(x, (0, pad), value=-1.0)
-        a = F.pad(a, (0, pad), value=0.0)
+        pad_len = (self.attn_segment_len - (n % self.attn_segment_len)) % self.attn_segment_len
+        x = F.pad(x, (0, pad_len), value=-1.0)
+        a = F.pad(a, (0, pad_len), value=0.0)
+        padding_start_idxs = [n, 2 * n + pad_len]
 
         x = self.init_x(x)
         a = self.init_a(a)
@@ -351,7 +369,7 @@ class MMDiT(nn.Module):
         c = c + self.mlp_time(self.pos_emb_time(t)) + self.mlp_a(h_a)
 
         for block in self.blocks:
-            x, a = block(x, a, c)
+            x, a = block(x, a, c, padding_data=(pad_len, padding_start_idxs))
 
         x = self.final_layer(x, c)
         return rearrange(x, "b n d -> b d n")[:, :, :n]
