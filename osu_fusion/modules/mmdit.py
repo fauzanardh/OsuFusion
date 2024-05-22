@@ -60,9 +60,9 @@ class MultiHeadRMSNorm(nn.Module):
         return F.normalize(x, dim=-1) * self.gamma * self.scale
 
 
-class CMAttention(nn.Module):
+class JointAttention(nn.Module):
     def __init__(
-        self: "CMAttention",
+        self: "JointAttention",
         dim: int,
         heads: int,
         qk_norm: bool = True,
@@ -93,7 +93,7 @@ class CMAttention(nn.Module):
             segment_len=segment_len,
         )
 
-    def forward(self: "CMAttention", x: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
+    def forward(self: "JointAttention", x: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
         q_x, k_x, v_x = self.to_qkv_x(x).chunk(3, dim=-1)
         q_x, k_x, v_x = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q_x, k_x, v_x))
 
@@ -155,8 +155,7 @@ class MMDiTBlock(nn.Module):
         self.norm2_a = nn.LayerNorm(dim_h, elementwise_affine=False, eps=1e-6)
         self.mlp_a = FeedForward(dim_h, dim_mult=dim_h_mult)
 
-        # Cross-Modal Attention (I don't know if the name is correct)
-        self.attn = CMAttention(
+        self.attn = JointAttention(
             dim_h,
             attn_heads,
             qk_norm=attn_qk_norm,
