@@ -309,7 +309,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
             current_step += 1
 
     accelerator.wait_for_everyone()
-    save_model_sd(model, args.project_dir)
+    save_model_sd(accelerator.unwrap_model(model), args.project_dir)
 
 
 def main() -> None:
