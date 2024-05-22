@@ -6,18 +6,18 @@ from pathlib import Path
 from typing import Generator, List, Tuple
 
 import numpy as np
-import safetensors
 import torch
-import wandb
 from accelerate import Accelerator
 from accelerate.utils import ProjectConfiguration
 from matplotlib import pyplot as plt
+from safetensors.torch import save_file
 from torch.nn import functional as F  # noqa: N812
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
+import wandb
 from osu_fusion.library.dataset import FullSequenceDataset, SubsequenceDataset
 from osu_fusion.library.osu.data.encode import TOTAL_DIM
 from osu_fusion.models.diffusion import OsuFusion
@@ -43,6 +43,8 @@ def clear_checkpoints(project_dir: Path) -> None:
     for checkpoint in checkpoints:
         if checkpoint.is_dir():
             shutil.rmtree(checkpoint)
+        elif checkpoint.is_file():
+            checkpoint.unlink()
 
 
 def collate_fn(
@@ -135,14 +137,45 @@ def sample_step(
     plt.close(fig)
 
 
-def load_checkpoint(model: OsuFusion, checkpoint: Path) -> None:
-    print(f"Loading checkpoint from {checkpoint}...")
-    model_sd = {}
-    with safetensors.safe_open(checkpoint / "model.safetensors", "pt") as f:
-        for key in f.keys():  # noqa: SIM118
-            model_sd[key] = f.get_tensor(key)
-    model.load_state_dict(model_sd)
-    print(f"Loaded model from {checkpoint}")
+def save_model_sd(model: OsuFusion, project_dir: Path) -> None:
+    model_sd = model.state_dict()
+    save_file(model_sd, project_dir / "model.safetensors")
+
+
+def save_checkpoint(
+    model: OsuFusion,
+    optimizer: AdamW,
+    scheduler: OneCycleLR,
+    current_step: int,
+    project_dir: Path,
+) -> None:
+    checkpoint_dir = project_dir / f"checkpoint-{current_step + 1}"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Saving checkpoint to {project_dir}...")
+    model_state_dict = model.state_dict()
+    optimizer_state_dict = optimizer.state_dict()
+    scheduler_state_dict = scheduler.state_dict()
+    rng_state = torch.get_rng_state()
+
+    torch.save(
+        {
+            "model_state_dict": model_state_dict,
+            "optimizer_state_dict": optimizer_state_dict,
+            "scheduler_state_dict": scheduler_state_dict,
+            "rng_state": rng_state,
+        },
+        checkpoint_dir / "checkpoint.pt",
+    )
+
+
+def load_checkpoint(model: OsuFusion, optimizer: AdamW, scheduler: OneCycleLR, checkpoint_path: Path) -> int:
+    print(f"Loading checkpoint from {checkpoint_path}...")
+    checkpoint = torch.load(checkpoint_path / "checkpoint.pt")
+    model.load_state_dict(checkpoint["model_state_dict"])
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+    torch.set_rng_state(checkpoint["rng_state"])
+    return int(checkpoint_path.stem.split("-")[1])
 
 
 def train(args: ArgumentParser) -> None:  # noqa: C901
@@ -151,6 +184,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     # os.environ["WANDB_API_KEY"] = ""
     accelerator = Accelerator(
         mixed_precision=args.mixed_precision,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
         project_config=ProjectConfiguration(
             project_dir=args.project_dir,
             automatic_checkpoint_naming=True,
@@ -170,6 +204,8 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         total_steps=args.total_steps,
         pct_start=args.pct_start,
     )
+
+    current_step = load_checkpoint(model, optimizer, scheduler, args.resume) if args.resume is not None else 0
 
     print("Loading dataset...")
     all_maps = list(args.dataset_dir.rglob("*.map.npz"))
@@ -192,14 +228,19 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     )
     model.train()
 
-    print("Clearing old checkpoints...")
-    clear_checkpoints(args.project_dir)
+    if args.resume is None:
+        print("Clearing old checkpoints...")
+        clear_checkpoints(args.project_dir)
 
     print("Training...")
     cycle_dataloader = cycle(dataloader)
     losses = []  # Keep track of the last `args.save_every` losses
-    with tqdm(total=args.total_steps, smoothing=0.0, disable=not accelerator.is_local_main_process) as pbar:
-        for step in range(args.total_steps):
+    with tqdm(
+        total=args.total_steps - current_step,
+        smoothing=0.0,
+        disable=not accelerator.is_local_main_process,
+    ) as pbar:
+        while current_step < args.total_steps:
             batch = None
             while batch is None:
                 batch = next(cycle_dataloader)
@@ -214,7 +255,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
             if torch.isnan(loss):
                 # Save the model before exiting
                 accelerator.wait_for_everyone()
-                accelerator.save_model(model, args.project_dir / f"checkpoint-{step + 1}-NaN")
+                accelerator.save_model(model, args.project_dir / f"checkpoint-{current_step + 1}-NaN")
                 msg = "NaN loss encountered"
                 raise RuntimeError(msg)
             loss = loss.item()
@@ -225,7 +266,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
 
             avg_loss = sum(losses) / len(losses)
             pbar.set_description(
-                f"Steps: {step + 1}, loss={loss:.5f}, avg_loss={avg_loss:.5f}, lr={scheduler.get_last_lr()[0]:.5f}",
+                f"Steps: {current_step + 1}, loss={loss:.5f}, avg_loss={avg_loss:.5f}, lr={scheduler.get_last_lr()[0]:.5f}",  # noqa: E501
             )
             pbar.update()
 
@@ -235,20 +276,24 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                         "loss": loss,
                         "lr": scheduler.get_last_lr()[0],
                     },
-                    step=step + 1,
+                    step=current_step + 1,
                 )
 
-            if (step + 1) % args.save_every == 0:
+            if (current_step + 1) % args.save_every == 0:
                 accelerator.wait_for_everyone()
-                save_dir = args.project_dir / f"checkpoint-{step + 1}"
-                accelerator.save_model(model, save_dir)
-
                 if accelerator.is_main_process:
-                    accelerator.log({"save_loss": avg_loss}, step=step + 1)
+                    accelerator.log({"save_loss": avg_loss}, step=current_step + 1)
+                    save_checkpoint(
+                        accelerator.unwrap_model(model),
+                        optimizer,
+                        scheduler,
+                        current_step,
+                        args.project_dir,
+                    )
                     delete_old_checkpoints(args.project_dir, args.max_num_checkpoints)
 
             if (
-                (step + 1) % args.sample_every == 0
+                (current_step + 1) % args.sample_every == 0
                 and accelerator.is_main_process
                 and args.sample_audio is not None
                 and args.sample_audio.exists()
@@ -258,11 +303,13 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                     accelerator,
                     model,
                     args.sample_audio,
-                    step=step + 1,
+                    step=current_step + 1,
                 )
 
+            current_step += 1
+
     accelerator.wait_for_everyone()
-    accelerator.save_model(model, args.project_dir / "checkpoint-final")
+    save_model_sd(model, args.project_dir)
 
 
 def main() -> None:
@@ -273,7 +320,7 @@ def main() -> None:
     args.add_argument("--full-sequence", action="store_true")
     args.add_argument("--mixed-precision", type=str, default="bf16", choices=["no", "fp16", "bf16"])
     args.add_argument("--gradient-checkpointing", action="store_true")
-    args.add_argument("--gradient-accumulation-steps", type=int, default=4)
+    args.add_argument("--gradient-accumulation-steps", type=int, default=1)
     args.add_argument("--model-dim", type=int, default=512)
     args.add_argument("--model-attn-heads", type=int, default=8)
     args.add_argument("--model-depth", type=int, default=12)
