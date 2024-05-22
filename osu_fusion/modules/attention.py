@@ -223,7 +223,18 @@ class Attention(nn.Module):
         if self.infini:
             with torch.autocast(device_type=q.device.type, dtype=torch.float32):
                 return self.forward_infini(q, k, v, padding_data=padding_data)
-        return self.forward_sdpa(q, k, v)
+
+        attn_mask = None
+        if padding_data is not None:
+            for pad_idx in padding_data[1]:
+                attn_mask = torch.zeros(q.shape[-2], k.shape[-2], device=q.device)
+                attn_mask[:, pad_idx : pad_idx + padding_data[0]] = float("-inf")
+
+        if self.causal:
+            causal_mask = torch.triu(torch.ones(q.shape[-2], k.shape[-2]), diagonal=1).to(q.device)
+            causal_mask.masked_fill_(causal_mask == 1, float("-inf"))
+            attn_mask = causal_mask if attn_mask is None else attn_mask + causal_mask
+        return self.forward_sdpa(q, k, v, attn_mask=attn_mask)
 
 
 class MultiHeadAttention(nn.Module):
