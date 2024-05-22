@@ -161,7 +161,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         project_name="OsuFusion",
     )
 
-    model = OsuFusion(args.model_dim)
+    model = OsuFusion(args.model_dim, attn_heads=args.model_attn_heads, depth=args.model_depth)
     model.mmdit.set_gradient_checkpointing(args.gradient_checkpointing)
     optimizer = AdamW(model.parameters(), lr=args.lr)
     scheduler = OneCycleLR(
@@ -275,6 +275,8 @@ def main() -> None:
     args.add_argument("--gradient-checkpointing", action="store_true")
     args.add_argument("--gradient-accumulation-steps", type=int, default=4)
     args.add_argument("--model-dim", type=int, default=512)
+    args.add_argument("--model-attn-heads", type=int, default=8)
+    args.add_argument("--model-depth", type=int, default=12)
     args.add_argument("--lr", type=float, default=1e-5)
     args.add_argument("--batch-size", type=int, default=4)
     args.add_argument("--num-workers", type=int, default=2)
