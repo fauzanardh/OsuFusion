@@ -187,22 +187,19 @@ class MMDiTBlock(nn.Module):
             gate_mlp_a,
         ) = self.modulation_a(c).chunk(6, dim=1)
 
-        x_residual = x
-        a_residual = a
-
         # Attention
         h_x = modulate(self.norm1_x(x), shift_attn_x, scale_attn_x)
         h_a = modulate(self.norm1_a(a), shift_attn_a, scale_attn_a)
         attn_out_x, attn_out_a = self.attn(h_x, h_a)
 
-        x = x + gate_attn_x.unsqueeze(1) * (self.attn_out_x(attn_out_x) + x_residual)
-        a = a + gate_attn_a.unsqueeze(1) * (self.attn_out_a(attn_out_a) + a_residual)
+        x = x + gate_attn_x.unsqueeze(1) * (self.attn_out_x(attn_out_x))
+        a = a + gate_attn_a.unsqueeze(1) * (self.attn_out_a(attn_out_a))
 
         # MLP
         x = x + gate_mlp_x.unsqueeze(1) * self.mlp_x(modulate(self.norm2_x(x), shift_mlp_x, scale_mlp_x))
         a = a + gate_mlp_a.unsqueeze(1) * self.mlp_a(modulate(self.norm2_a(a), shift_mlp_a, scale_mlp_a))
 
-        return x + x_residual, a + a_residual
+        return x, a
 
     def forward(self: "MMDiTBlock", x: torch.Tensor, a: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
         if self.training and self.gradient_checkpointing:
@@ -335,7 +332,7 @@ class MMDiT(nn.Module):
         n = x.shape[-1]
         pad = (self.attn_segment_len - (n % self.attn_segment_len)) % self.attn_segment_len
         x = F.pad(x, (0, pad), value=-1.0)
-        a = F.pad(a, (0, pad), value=-1.0)
+        a = F.pad(a, (0, pad), value=0.0)
 
         x = self.init_x(x)
         a = self.init_a(a)
@@ -352,8 +349,7 @@ class MMDiT(nn.Module):
         h_a = torch.cat([mean_features_a, std_features_a], dim=1)
         h_a = self.feature_extractor_a(h_a)
 
-        t = self.pos_emb_time(t).to(x.dtype)
-        c = c + self.mlp_time(t) + self.mlp_a(h_a)
+        c = c + self.mlp_time(self.pos_emb_time(t)) + self.mlp_a(h_a)
 
         for block in self.blocks:
             x, a = block(x, a, c)
