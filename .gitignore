@@ -160,8 +160,12 @@ cython_debug/
 #.idea/
 
 *.ipynb
-weights/*
+weights/
 !weights/.gitkeep
 experiments/
 .vscode/
+wandb/
+*.bat
+*.sh
+*.ps1
 *_debug.py
