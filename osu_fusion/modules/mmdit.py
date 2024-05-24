@@ -221,7 +221,7 @@ class MMDiTBlock(nn.Module):
         if self.training and self.gradient_checkpointing:
             return torch.utils.checkpoint.checkpoint(self.forward_body, x, a, c, padding_data, use_reentrant=True)
         else:
-            return self.forward_body(x, a, c, padding=padding_data)
+            return self.forward_body(x, a, c, padding_data=padding_data)
 
 
 class CrossEmbedLayer(nn.Module):
