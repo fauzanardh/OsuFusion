@@ -4,7 +4,6 @@ from typing import Dict, List, Optional, Tuple
 import torch
 import torch.nn as nn
 from einops import pack, rearrange, repeat, unpack
-from einops.layers.torch import Rearrange
 from torch.nn import functional as F  # noqa: N812
 
 from osu_fusion.modules.attention import Attention
@@ -281,16 +280,8 @@ class MMDiT(nn.Module):
         self.dim_h = dim_h
         self.attn_segment_len = attn_segment_len
 
-        self.init_x = nn.Sequential(
-            CrossEmbedLayer(dim_in_x, dim_h, cross_embed_kernel_sizes),
-            Rearrange("b d n -> b n d"),
-            nn.Linear(dim_h, dim_h),
-        )
-        self.init_a = nn.Sequential(
-            CrossEmbedLayer(dim_in_a, dim_h, cross_embed_kernel_sizes),
-            Rearrange("b d n -> b n d"),
-            nn.Linear(dim_h, dim_h),
-        )
+        self.init_x = CrossEmbedLayer(dim_in_x, dim_h, cross_embed_kernel_sizes)
+        self.init_a = CrossEmbedLayer(dim_in_a, dim_h, cross_embed_kernel_sizes)
 
         self.mlp_a = FeedForward(dim_h, dim_mult=dim_h_mult)
         self.feature_extractor_a = nn.Linear(dim_h * 2, dim_h)
@@ -321,7 +312,6 @@ class MMDiT(nn.Module):
         self.final_layer = FinalLayer(dim_h, dim_in_x)
 
     def set_gradient_checkpointing(self: "MMDiT", value: bool) -> None:
-        self.gradient_checkpointing = value
         for name, module in self.named_modules():
             if hasattr(module, "gradient_checkpointing"):
                 module.gradient_checkpointing = value
@@ -351,8 +341,8 @@ class MMDiT(nn.Module):
         a = F.pad(a, (0, pad_len), value=0.0)
         padding_start_idxs = [n, 2 * n + pad_len]
 
-        x = self.init_x(x)
-        a = self.init_a(a)
+        x = rearrange(self.init_x(x), "b d n -> b n d")
+        a = rearrange(self.init_a(a), "b d n -> b n d")
 
         cond_mask = prob_mask_like((x.shape[0],), 1.0 - cond_drop_prob, device=x.device)
         cond_mask = rearrange(cond_mask, "b -> b 1")
@@ -369,7 +359,7 @@ class MMDiT(nn.Module):
         c = c + self.mlp_time(self.pos_emb_time(t)) + self.mlp_a(h_a)
 
         for block in self.blocks:
-            x, a = block(x, a, c, padding_data=(pad_len, padding_start_idxs))
+            x, a = block(x, a, c, padding_data=(pad_len, padding_start_idxs) if pad_len != 0 else None)
 
         x = self.final_layer(x, c)
         return rearrange(x, "b n d -> b d n")[:, :, :n]
