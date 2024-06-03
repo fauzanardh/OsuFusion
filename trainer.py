@@ -90,8 +90,8 @@ def train_step(
         except AssertionError:
             return None
     accelerator.backward(loss)
-    if accelerator.sync_gradients:
-        accelerator.clip_grad_norm_(model.parameters(), 1.0)
+    # if accelerator.sync_gradients:
+    #     accelerator.clip_grad_norm_(model.parameters(), 1.0)
     optimizer.step()
     optimizer.zero_grad(set_to_none=True)
     scheduler.step()
@@ -171,8 +171,12 @@ def save_checkpoint(
 def load_checkpoint(model: OsuFusion, optimizer: AdamW, scheduler: OneCycleLR, checkpoint_path: Path) -> int:
     print(f"Loading checkpoint from {checkpoint_path}...")
     checkpoint = torch.load(checkpoint_path / "checkpoint.pt")
-    model.load_state_dict(checkpoint["model_state_dict"])
-    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    try:
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    except RuntimeError:  # Model changed
+        print("Model changed, loading with strict=False...")
+        model.load_state_dict(checkpoint["model_state_dict"], strict=False)
     scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
     torch.set_rng_state(checkpoint["rng_state"])
     return int(checkpoint_path.stem.split("-")[1])
@@ -241,39 +245,43 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         disable=not accelerator.is_local_main_process,
     ) as pbar:
         while current_step < args.total_steps:
-            batch = None
-            while batch is None:
-                batch = next(cycle_dataloader)
+            accumulation_loss = 0.0
+            for _ in range(args.gradient_accumulation_steps):
+                batch = None
+                while batch is None:
+                    batch = next(cycle_dataloader)
 
-            try:
-                loss = train_step(args, accelerator, model, optimizer, scheduler, batch)
-            except RuntimeError as e:
-                print(f"Error: {e}")
-                continue
-            if loss is None:
-                continue
-            if torch.isnan(loss):
-                # Save the model before exiting
-                accelerator.wait_for_everyone()
-                accelerator.save_model(model, args.project_dir / f"checkpoint-{current_step + 1}-NaN")
-                msg = "NaN loss encountered"
-                raise RuntimeError(msg)
-            loss = loss.item()
-            losses.append(loss)
+                try:
+                    loss = train_step(args, accelerator, model, optimizer, scheduler, batch)
+                except RuntimeError as e:
+                    print(f"Error: {e}")
+                    continue
+                if loss is None:
+                    continue
+                if torch.isnan(loss):
+                    # Save the model before exiting
+                    accelerator.wait_for_everyone()
+                    accelerator.save_model(model, args.project_dir / f"checkpoint-{current_step + 1}-NaN")
+                    msg = "NaN loss encountered"
+                    raise RuntimeError(msg)
+                accumulation_loss += loss.item()
+
+            accumulation_loss /= args.gradient_accumulation_steps
+            losses.append(accumulation_loss)
 
             if len(losses) > args.save_every:
                 losses.pop(0)
 
             avg_loss = sum(losses) / len(losses)
             pbar.set_description(
-                f"Steps: {current_step + 1}, loss={loss:.5f}, avg_loss={avg_loss:.5f}, lr={scheduler.get_last_lr()[0]:.5f}",  # noqa: E501
+                f"Steps: {current_step + 1}, loss={accumulation_loss:.5f}, avg_loss={avg_loss:.5f}, lr={scheduler.get_last_lr()[0]:.5f}",  # noqa: E501
             )
             pbar.update()
 
             if accelerator.is_main_process:
                 accelerator.log(
                     {
-                        "loss": loss,
+                        "loss": accumulation_loss,
                         "lr": scheduler.get_last_lr()[0],
                     },
                     step=current_step + 1,
@@ -327,11 +335,7 @@ def main() -> None:
     args.add_argument("--lr", type=float, default=1e-5)
     args.add_argument("--batch-size", type=int, default=4)
     args.add_argument("--num-workers", type=int, default=2)
-    args.add_argument(
-        "--total-steps",
-        type=int,
-        default=1000000,
-    )  # actual total steps = total_steps // gradient_accumulation_steps
+    args.add_argument("--total-steps", type=int, default=1000000)
     args.add_argument("--save-every", type=int, default=1000)
     args.add_argument("--max-num-checkpoints", type=int, default=5)
     args.add_argument("--pct-start", type=float, default=0.002)
