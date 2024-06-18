@@ -10,14 +10,6 @@ from osu_fusion.modules.attention import Attention
 from osu_fusion.modules.utils import prob_mask_like
 
 
-def zero_init(module: nn.Module) -> nn.Module:
-    nn.init.zeros_(module.weight)
-    if module.bias is not None:
-        nn.init.zeros_(module.bias)
-
-    return module
-
-
 @torch.jit.script
 def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
@@ -49,6 +41,21 @@ class FeedForward(nn.Sequential):
         )
 
 
+class PatchEmbedding(nn.Module):
+    def __init__(self: "PatchEmbedding", dim_in: int, dim_emb: int, patch_size: int) -> None:
+        super().__init__()
+        self.patch_size = patch_size
+        self.proj = nn.Conv1d(dim_in, dim_emb, patch_size, stride=patch_size)
+        self.norm = nn.LayerNorm(dim_emb, eps=1e-6)
+
+    def forward(self: "PatchEmbedding", x: torch.Tensor) -> torch.Tensor:
+        assert x.shape[-1] % self.patch_size == 0, "Input sequence length must be divisible by the patch size"
+
+        pad = (self.patch_size - x.shape[-1] % self.patch_size) % self.patch_size
+        x = F.pad(x, (0, pad))
+        return rearrange(self.proj(x), "b d n -> b n d")
+
+
 class MultiHeadRMSNorm(nn.Module):
     def __init__(self: "MultiHeadRMSNorm", dim: int, heads: int) -> None:
         super().__init__()
@@ -68,7 +75,7 @@ class JointAttention(nn.Module):
         causal: bool = True,
         use_rotary_emb: bool = True,
         infini: bool = True,
-        segment_len: int = 1024,
+        segment_len: int = 256,
     ) -> None:
         super().__init__()
         self.heads = heads
@@ -134,17 +141,17 @@ class MMDiTBlock(nn.Module):
         attn_causal: bool = True,
         attn_use_rotary_emb: bool = True,
         attn_infini: bool = True,
-        attn_segment_len: int = 1024,
+        attn_segment_len: int = 256,
     ) -> None:
         super().__init__()
         # Modulation
         self.modulation_x = nn.Sequential(
             nn.SiLU(),
-            zero_init(nn.Linear(dim_h, dim_h * 6, bias=True)),
+            nn.Linear(dim_h, dim_h * 6, bias=True),
         )
         self.modulation_a = nn.Sequential(
             nn.SiLU(),
-            zero_init(nn.Linear(dim_h, dim_h * 6, bias=True)),
+            nn.Linear(dim_h, dim_h * 6, bias=True),
         )
 
         # OsuData branch
@@ -243,20 +250,19 @@ class CrossEmbedLayer(nn.Module):
 
 
 class FinalLayer(nn.Module):
-    def __init__(self: "FinalLayer", dim_h: int, dim_out: int) -> None:
+    def __init__(self: "FinalLayer", dim_h: int, patch_size: int, dim_out: int) -> None:
         super().__init__()
         self.norm = nn.LayerNorm(dim_h, elementwise_affine=False, eps=1e-6)
         self.modulation = nn.Sequential(
             nn.SiLU(),
-            zero_init(nn.Linear(dim_h, dim_h * 2, bias=True)),
+            nn.Linear(dim_h, dim_h * 2, bias=True),
         )
-        self.linear = zero_init(nn.Linear(dim_h, dim_out))
+        self.linear = nn.Linear(dim_h, patch_size * dim_out)
 
     def forward(self: "FinalLayer", x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
         shift, scale = self.modulation(c).chunk(2, dim=1)
         x = modulate(self.norm(x), shift, scale)
-        x = self.linear(x)
-        return x
+        return self.linear(x)
 
 
 class MMDiT(nn.Module):
@@ -267,21 +273,23 @@ class MMDiT(nn.Module):
         dim_in_c: int,
         dim_h: int,
         dim_h_mult: int = 4,
+        patch_size: int = 16,
         depth: int = 12,
-        cross_embed_kernel_sizes: Tuple[int] = (3, 5, 7),
         attn_heads: int = 8,
         attn_qk_norm: bool = True,
         attn_causal: bool = True,
         attn_use_rotary_emb: bool = True,
         attn_infini: bool = True,
-        attn_segment_len: int = 1024,
+        attn_segment_len: int = 256,
     ) -> None:
         super().__init__()
         self.dim_h = dim_h
+        self.dim_in_x = dim_in_x
+        self.patch_size = patch_size
         self.attn_segment_len = attn_segment_len
 
-        self.init_x = CrossEmbedLayer(dim_in_x, dim_h, cross_embed_kernel_sizes)
-        self.init_a = CrossEmbedLayer(dim_in_a, dim_h, cross_embed_kernel_sizes)
+        self.emb_x = PatchEmbedding(dim_in_x, dim_h, patch_size)
+        self.emb_a = PatchEmbedding(dim_in_a, dim_h, patch_size)
 
         self.mlp_a = FeedForward(dim_h, dim_mult=dim_h_mult)
         self.feature_extractor_a = nn.Linear(dim_h * 2, dim_h)
@@ -309,7 +317,38 @@ class MMDiT(nn.Module):
             ],
         )
 
-        self.final_layer = FinalLayer(dim_h, dim_in_x)
+        self.final_layer = FinalLayer(dim_h, self.patch_size, dim_in_x)
+
+        self.initialize_weights()
+
+    def initialize_weights(self: "MMDiT") -> None:
+        def _basic_init(module: nn.Module) -> None:
+            if isinstance(module, (nn.Linear, nn.Conv1d)):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+
+        # Basic initialization for layers
+        self.apply(_basic_init)
+
+        # Initialize embedder
+        nn.init.normal_(self.mlp_time[0].weight, std=0.02)
+        nn.init.normal_(self.mlp_time[2].weight, std=0.02)
+        nn.init.normal_(self.mlp_cond[1][0].weight, std=0.02)
+        nn.init.normal_(self.mlp_cond[1][2].weight, std=0.02)
+
+        # Zero-out adaLN layers
+        for block in self.blocks:
+            nn.init.zeros_(block.modulation_x[1].weight)
+            nn.init.zeros_(block.modulation_x[1].bias)
+            nn.init.zeros_(block.modulation_a[1].weight)
+            nn.init.zeros_(block.modulation_a[1].bias)
+
+        # Zero-out output layer
+        nn.init.zeros_(self.final_layer.modulation[1].weight)
+        nn.init.zeros_(self.final_layer.modulation[1].bias)
+        nn.init.zeros_(self.final_layer.linear.weight)
+        nn.init.zeros_(self.final_layer.linear.bias)
 
     def set_gradient_checkpointing(self: "MMDiT", value: bool) -> None:
         for name, module in self.named_modules():
@@ -336,14 +375,18 @@ class MMDiT(nn.Module):
     ) -> torch.Tensor:
         # Pad to the closest multiple of attn_segment_len
         n = x.shape[-1]
-        pad_len = (self.attn_segment_len - (n % self.attn_segment_len)) % self.attn_segment_len
+        segment_len = self.attn_segment_len // 2  # We use half the segment length for each modality
+        segment_len *= self.patch_size  # times the patch size to get the real segment length
+        pad_len = (segment_len - (n % segment_len)) % segment_len
         x = F.pad(x, (0, pad_len), value=-1.0)
         a = F.pad(a, (0, pad_len), value=0.0)
         padding_start_idxs = [n, 2 * n + pad_len]
 
-        x = rearrange(self.init_x(x), "b d n -> b n d")
-        a = rearrange(self.init_a(a), "b d n -> b n d")
+        # Patchify the input
+        x = self.emb_x(x)
+        a = self.emb_a(a)
 
+        # Add positional embedding and condition
         cond_mask = prob_mask_like((x.shape[0],), 1.0 - cond_drop_prob, device=x.device)
         cond_mask = rearrange(cond_mask, "b -> b 1")
         null_conds = repeat(self.null_cond, "d -> b d", b=x.shape[0])
@@ -351,15 +394,18 @@ class MMDiT(nn.Module):
         c = torch.where(cond_mask, c, null_conds)
 
         # Statistic audio features pooling
-        mean_features_a = a.mean(dim=1)
-        std_features_a = a.std(dim=1)
-        h_a = torch.cat([mean_features_a, std_features_a], dim=1)
+        h_a = torch.cat([a.mean(dim=1), a.std(dim=1)], dim=1)
         h_a = self.feature_extractor_a(h_a)
 
         c = c + self.mlp_time(self.pos_emb_time(t)) + self.mlp_a(h_a)
 
+        # Run the blocks
         for block in self.blocks:
             x, a = block(x, a, c, padding_data=(pad_len, padding_start_idxs) if pad_len != 0 else None)
 
+        # Run the final layer
         x = self.final_layer(x, c)
-        return rearrange(x, "b n d -> b d n")[:, :, :n]
+
+        # Unpatchify the output
+        x = rearrange(x, "b n (p d) -> b d (n p)", p=self.patch_size)
+        return x[:, :, :n]

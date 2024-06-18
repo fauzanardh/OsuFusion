@@ -17,8 +17,11 @@ class RotaryPositionEmbedding(nn.Module):
         self: "RotaryPositionEmbedding",
         dim: int,
         theta: int = 10000,
+        scale_base: int = 1024,
     ) -> None:
         super().__init__()
+        self.scale_base = scale_base
+
         inv_freq = 1.0 / (theta ** (torch.arange(0, dim, 2).float() / dim))
         self.register_buffer("inv_freq", inv_freq, persistent=False)
 
@@ -35,6 +38,7 @@ class RotaryPositionEmbedding(nn.Module):
                 dtype=torch.float32,
                 device=x.device,
             )
+            t *= self.scale_base / seq_len
             freqs = torch.einsum("i , j -> i j", t, self.inv_freq.to(x.dtype))
             emb = torch.cat([freqs, freqs], dim=-1)
 
@@ -60,7 +64,7 @@ class Attention(nn.Module):
         causal: bool = True,
         use_rotary_emb: bool = True,
         infini: bool = True,
-        segment_len: int = 1024,
+        segment_len: int = 256,
     ) -> None:
         super().__init__()
         assert not version.parse(torch.__version__) < version.parse("2.0.0"), "sdpa requires torch>=2.0.0"
@@ -77,7 +81,7 @@ class Attention(nn.Module):
             self.rotary_emb = RotaryPositionEmbedding(dim_head)
 
         if infini:
-            self.gate = nn.Parameter(torch.full((1, heads, 1, 1), -100.0))
+            self.gate = nn.Parameter(torch.full((1, heads, 1, 1), 0.0))  # Start at 50% memory
 
         if not torch.cuda.is_available():
             return
@@ -97,9 +101,6 @@ class Attention(nn.Module):
     ) -> torch.Tensor:
         is_cuda, dtype = v.is_cuda, v.dtype
         config = self.cuda_config if is_cuda else self.cpu_config
-
-        if self.use_rotary_emb:
-            q, k = self.rotary_emb(q, k)
 
         with torch.backends.cuda.sdp_kernel(**config._asdict()):
             q = q.half()
@@ -220,6 +221,9 @@ class Attention(nn.Module):
         v: torch.Tensor,
         padding_data: Optional[Tuple[int, int]] = None,
     ) -> torch.Tensor:
+        if self.use_rotary_emb:
+            q, k = self.rotary_emb(q, k)
+
         if self.infini:
             with torch.autocast(device_type=q.device.type, dtype=torch.float32):
                 return self.forward_infini(q, k, v, padding_data=padding_data)
