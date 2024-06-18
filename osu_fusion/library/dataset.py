@@ -64,8 +64,8 @@ class StreamPerSample(IterableDataset):
 
 
 class DummyDataset(StreamPerSample):
-    MIN_LENGTH = 1024
-    MAX_LENGTH = 4096
+    MIN_LENGTH = 8192
+    MAX_LENGTH = 16384
 
     def sample_stream(self: StreamPerSample, _: Path) -> Generator[torch.Tensor, None, None]:
         length = random.randint(self.MIN_LENGTH, self.MAX_LENGTH)
