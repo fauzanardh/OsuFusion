@@ -168,7 +168,13 @@ def save_checkpoint(
     )
 
 
-def load_checkpoint(model: OsuFusion, optimizer: AdamW, scheduler: OneCycleLR, checkpoint_path: Path) -> int:
+def load_checkpoint(
+    model: OsuFusion,
+    optimizer: AdamW,
+    scheduler: OneCycleLR,
+    checkpoint_path: Path,
+    reset_steps: bool = False,
+) -> int:
     print(f"Loading checkpoint from {checkpoint_path}...")
     checkpoint = torch.load(checkpoint_path / "checkpoint.pt")
     try:
@@ -177,9 +183,10 @@ def load_checkpoint(model: OsuFusion, optimizer: AdamW, scheduler: OneCycleLR, c
     except RuntimeError:  # Model changed
         print("Model changed, loading with strict=False...")
         model.load_state_dict(checkpoint["model_state_dict"], strict=False)
-    scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+    if not reset_steps:
+        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
     torch.set_rng_state(checkpoint["rng_state"])
-    return int(checkpoint_path.stem.split("-")[1])
+    return 0 if reset_steps else int(checkpoint_path.stem.split("-")[1])
 
 
 def train(args: ArgumentParser) -> None:  # noqa: C901
@@ -209,7 +216,9 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         pct_start=args.pct_start,
     )
 
-    current_step = load_checkpoint(model, optimizer, scheduler, args.resume) if args.resume is not None else 0
+    current_step = (
+        load_checkpoint(model, optimizer, scheduler, args.resume, args.reset_steps) if args.resume is not None else 0
+    )
 
     print("Loading dataset...")
     all_maps = list(args.dataset_dir.rglob("*.map.npz"))
@@ -325,6 +334,7 @@ def main() -> None:
     args.add_argument("--project-dir", type=Path)
     args.add_argument("--dataset-dir", type=Path)
     args.add_argument("--resume", type=Path, default=None)
+    args.add_argument("--reset-steps", action="store_true")
     args.add_argument("--full-sequence", action="store_true")
     args.add_argument("--mixed-precision", type=str, default="bf16", choices=["no", "fp16", "bf16"])
     args.add_argument("--gradient-checkpointing", action="store_true")
