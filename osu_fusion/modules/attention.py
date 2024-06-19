@@ -1,5 +1,5 @@
 from collections import namedtuple
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -63,25 +63,18 @@ class Attention(nn.Module):
         heads: int = 8,
         causal: bool = True,
         use_rotary_emb: bool = True,
-        infini: bool = True,
-        segment_len: int = 256,
     ) -> None:
         super().__init__()
         assert not version.parse(torch.__version__) < version.parse("2.0.0"), "sdpa requires torch>=2.0.0"
         self.heads = heads
         self.use_rotary_emb = use_rotary_emb
         self.causal = causal
-        self.infini = infini
-        self.segment_len = segment_len
 
         # sdpa configs
         self.cpu_config = _config(True, True, True)
 
         if use_rotary_emb:
             self.rotary_emb = RotaryPositionEmbedding(dim_head)
-
-        if infini:
-            self.gate = nn.Parameter(torch.full((1, heads, 1, 1), 0.0))  # Start at 50% memory
 
         if not torch.cuda.is_available():
             return
@@ -116,104 +109,6 @@ class Attention(nn.Module):
 
         return out.to(dtype)
 
-    def _retrieve_from_memory(
-        self: "Attention",
-        q: torch.Tensor,
-        memory: Optional[torch.Tensor] = None,
-        norm_term: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        if memory is None or norm_term is None:
-            return torch.zeros_like(q)
-
-        q = F.elu(q) + 1.0
-
-        memory = torch.matmul(q, memory)
-        norm_term = torch.matmul(
-            q,
-            rearrange(norm_term, "b h 1 d -> b h d 1"),
-        )
-
-        return memory / (norm_term + 1e-6)
-
-    def _update_memory(
-        self: "Attention",
-        k: torch.Tensor,
-        v: torch.Tensor,
-        memory: Optional[torch.Tensor] = None,
-        norm_term: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        k = F.elu(k) + 1.0
-
-        if memory is not None:
-            memory = memory + torch.matmul(rearrange(k, "b h n d -> b h d n"), v)
-        else:
-            memory = torch.matmul(rearrange(k, "b h n d -> b h d n"), v)
-
-        if norm_term is not None:  # noqa: SIM108
-            norm_term = norm_term + k.sum(dim=-2, keepdim=True)
-        else:
-            norm_term = k.sum(dim=-2, keepdim=True)
-
-        return memory, norm_term
-
-    def forward_infini(
-        self: "Attention",
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        padding_data: Optional[Tuple[int, List[int]]] = None,
-    ) -> torch.Tensor:
-        n_segments = q.shape[-2] // self.segment_len  # Assume sequence length is divisible by segment length
-        q, k, v = (rearrange(t, "b h (s n) d -> b h s n d", s=n_segments) for t in (q, k, v))
-
-        outputs = []
-        memory = None
-        norm_term = None
-        total_segment_processed = 0
-        for idx in range(n_segments):
-            q_segment = q[:, :, idx, :, :]
-            k_segment = k[:, :, idx, :, :]
-            v_segment = v[:, :, idx, :, :]
-
-            attn_mask = None
-            # I hate this, but it's the only way I can think of to handle padding
-            if padding_data is not None:
-                total_next_segment = total_segment_processed + self.segment_len
-                for pad_idx in padding_data[1]:
-                    if total_segment_processed <= pad_idx < total_next_segment:
-                        # Create an attention mask for the padding
-                        # pad_idx is the start of the padding, and padding_data[0] is the length of the padding
-                        attn_mask = torch.zeros(q_segment.shape[-2], k_segment.shape[-2], device=q.device)
-                        attn_mask[
-                            :,
-                            pad_idx - total_segment_processed : pad_idx - total_segment_processed + padding_data[0],
-                        ] = float("-inf")
-
-            # Add causal mask
-            if self.causal:
-                causal_mask = torch.triu(torch.ones(q_segment.shape[-2], k_segment.shape[-2]), diagonal=1).to(q.device)
-                causal_mask.masked_fill_(causal_mask == 1, float("-inf"))
-                attn_mask = causal_mask if attn_mask is None else attn_mask + causal_mask
-
-            memory_output = self._retrieve_from_memory(q_segment, memory, norm_term)
-            updated_memory, updated_norm_term = self._update_memory(
-                k_segment,
-                v_segment,
-                memory,
-                norm_term,
-            )
-            memory = updated_memory.detach()
-            norm_term = updated_norm_term.detach()
-
-            attn = self.forward_sdpa(q_segment, k_segment, v_segment, attn_mask=attn_mask)
-            combined_output = (F.sigmoid(self.gate) * memory_output) + (1 - F.sigmoid(self.gate)) * attn
-            outputs.append(combined_output)
-
-            total_segment_processed += q_segment.shape[-2]
-
-        out = torch.cat(outputs, dim=-2)
-        return out
-
     def forward(
         self: "Attention",
         q: torch.Tensor,
@@ -223,10 +118,6 @@ class Attention(nn.Module):
     ) -> torch.Tensor:
         if self.use_rotary_emb:
             q, k = self.rotary_emb(q, k)
-
-        if self.infini:
-            with torch.autocast(device_type=q.device.type, dtype=torch.float32):
-                return self.forward_infini(q, k, v, padding_data=padding_data)
 
         attn_mask = None
         if padding_data is not None:

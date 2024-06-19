@@ -74,8 +74,6 @@ class JointAttention(nn.Module):
         qk_norm: bool = True,
         causal: bool = True,
         use_rotary_emb: bool = True,
-        infini: bool = True,
-        segment_len: int = 256,
     ) -> None:
         super().__init__()
         self.heads = heads
@@ -95,8 +93,6 @@ class JointAttention(nn.Module):
             heads=heads,
             causal=causal,
             use_rotary_emb=use_rotary_emb,
-            infini=infini,
-            segment_len=segment_len,
         )
 
     def forward(
@@ -140,8 +136,6 @@ class MMDiTBlock(nn.Module):
         attn_qk_norm: bool = True,
         attn_causal: bool = True,
         attn_use_rotary_emb: bool = True,
-        attn_infini: bool = True,
-        attn_segment_len: int = 256,
     ) -> None:
         super().__init__()
         # Modulation
@@ -172,8 +166,6 @@ class MMDiTBlock(nn.Module):
             qk_norm=attn_qk_norm,
             causal=attn_causal,
             use_rotary_emb=attn_use_rotary_emb,
-            infini=attn_infini,
-            segment_len=attn_segment_len,
         )
 
         self.gradient_checkpointing = False
@@ -252,6 +244,8 @@ class CrossEmbedLayer(nn.Module):
 class FinalLayer(nn.Module):
     def __init__(self: "FinalLayer", dim_h: int, patch_size: int, dim_out: int) -> None:
         super().__init__()
+        self.patch_size = patch_size
+
         self.norm = nn.LayerNorm(dim_h, elementwise_affine=False, eps=1e-6)
         self.modulation = nn.Sequential(
             nn.SiLU(),
@@ -262,7 +256,8 @@ class FinalLayer(nn.Module):
     def forward(self: "FinalLayer", x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
         shift, scale = self.modulation(c).chunk(2, dim=1)
         x = modulate(self.norm(x), shift, scale)
-        return self.linear(x)
+        x = self.linear(x)
+        return rearrange(x, "b n (p d) -> b d (n p)", p=self.patch_size)
 
 
 class MMDiT(nn.Module):
@@ -273,20 +268,17 @@ class MMDiT(nn.Module):
         dim_in_c: int,
         dim_h: int,
         dim_h_mult: int = 4,
-        patch_size: int = 16,
+        patch_size: int = 32,
         depth: int = 12,
         attn_heads: int = 8,
         attn_qk_norm: bool = True,
         attn_causal: bool = True,
         attn_use_rotary_emb: bool = True,
-        attn_infini: bool = True,
-        attn_segment_len: int = 256,
     ) -> None:
         super().__init__()
         self.dim_h = dim_h
         self.dim_in_x = dim_in_x
         self.patch_size = patch_size
-        self.attn_segment_len = attn_segment_len
 
         self.emb_x = PatchEmbedding(dim_in_x, dim_h, patch_size)
         self.emb_a = PatchEmbedding(dim_in_a, dim_h, patch_size)
@@ -310,8 +302,6 @@ class MMDiT(nn.Module):
                     attn_qk_norm=attn_qk_norm,
                     attn_causal=attn_causal,
                     attn_use_rotary_emb=attn_use_rotary_emb,
-                    attn_infini=attn_infini,
-                    attn_segment_len=attn_segment_len,
                 )
                 for _ in range(depth)
             ],
@@ -373,11 +363,9 @@ class MMDiT(nn.Module):
         c: torch.Tensor,
         cond_drop_prob: float = 0.0,
     ) -> torch.Tensor:
-        # Pad to the closest multiple of attn_segment_len
+        # Pad to the closest multiple of patch_size
         n = x.shape[-1]
-        segment_len = self.attn_segment_len // 2  # We use half the segment length for each modality
-        segment_len *= self.patch_size  # times the patch size to get the real segment length
-        pad_len = (segment_len - (n % segment_len)) % segment_len
+        pad_len = (self.patch_size - (n % self.patch_size)) % self.patch_size
         x = F.pad(x, (0, pad_len), value=-1.0)
         a = F.pad(a, (0, pad_len), value=0.0)
         padding_start_idxs = [n, 2 * n + pad_len]
@@ -407,5 +395,4 @@ class MMDiT(nn.Module):
         x = self.final_layer(x, c)
 
         # Unpatchify the output
-        x = rearrange(x, "b n (p d) -> b d (n p)", p=self.patch_size)
         return x[:, :, :n]

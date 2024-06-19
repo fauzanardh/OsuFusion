@@ -19,14 +19,12 @@ class OsuFusion(nn.Module):
         self: "OsuFusion",
         dim_h: int,
         dim_h_mult: int = 4,
-        patch_size: int = 16,
+        patch_size: int = 32,
         depth: int = 12,
         attn_heads: int = 8,
         attn_qk_norm: bool = True,
         attn_causal: bool = True,
         attn_use_rotary_emb: bool = True,
-        attn_infini: bool = True,
-        attn_segment_len: int = 256,
         cond_drop_prob: float = 0.25,
         train_timesteps: int = 1000,
         sampling_timesteps: int = 35,
@@ -46,8 +44,6 @@ class OsuFusion(nn.Module):
             attn_qk_norm=attn_qk_norm,
             attn_causal=attn_causal,
             attn_use_rotary_emb=attn_use_rotary_emb,
-            attn_infini=attn_infini,
-            attn_segment_len=attn_segment_len,
         )
 
         self.scheduler = DDPMScheduler(
