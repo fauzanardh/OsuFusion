@@ -89,9 +89,12 @@ def train_step(
             loss = model(x, a, c, orig_len)
         except AssertionError:
             return None
+    # Skip if loss is NaN
+    if torch.isnan(loss):
+        return loss
     accelerator.backward(loss)
-    # if accelerator.sync_gradients:
-    #     accelerator.clip_grad_norm_(model.parameters(), 1.0)
+    if accelerator.sync_gradients:
+        accelerator.clip_grad_norm_(model.parameters(), 1.0)
     optimizer.step()
     optimizer.zero_grad(set_to_none=True)
     scheduler.step()
@@ -148,8 +151,9 @@ def save_checkpoint(
     scheduler: OneCycleLR,
     current_step: int,
     project_dir: Path,
+    is_nan: bool = False,
 ) -> None:
-    checkpoint_dir = project_dir / f"checkpoint-{current_step + 1}"
+    checkpoint_dir = project_dir / f"checkpoint-{current_step + 1}{'-nan' if is_nan else ''}"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     print(f"Saving checkpoint to {project_dir}...")
     model_state_dict = model.state_dict()
@@ -255,6 +259,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     ) as pbar:
         while current_step < args.total_steps:
             accumulation_loss = 0.0
+            nan_loss_count = 0
             for _ in range(args.gradient_accumulation_steps):
                 batch = None
                 while batch is None:
@@ -268,14 +273,12 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                 if loss is None:
                     continue
                 if torch.isnan(loss):
-                    # Save the model before exiting
-                    accelerator.wait_for_everyone()
-                    accelerator.save_model(model, args.project_dir / f"checkpoint-{current_step + 1}-NaN")
-                    msg = "NaN loss encountered"
-                    raise RuntimeError(msg)
+                    print("NaN loss encountered")
+                    nan_loss_count += 1
+                    continue
                 accumulation_loss += loss.item()
 
-            accumulation_loss /= args.gradient_accumulation_steps
+            accumulation_loss /= args.gradient_accumulation_steps - nan_loss_count
             losses.append(accumulation_loss)
 
             if len(losses) > args.save_every:
