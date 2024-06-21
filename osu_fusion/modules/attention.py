@@ -1,5 +1,5 @@
 from collections import namedtuple
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -17,7 +17,7 @@ class RotaryPositionEmbedding(nn.Module):
         self: "RotaryPositionEmbedding",
         dim: int,
         theta: int = 10000,
-        scale_base: int = 1024,
+        scale_base: int = 4096,
     ) -> None:
         super().__init__()
         self.scale_base = scale_base
@@ -61,14 +61,12 @@ class Attention(nn.Module):
         self: "Attention",
         dim_head: int,
         heads: int = 8,
-        causal: bool = True,
         use_rotary_emb: bool = True,
     ) -> None:
         super().__init__()
         assert not version.parse(torch.__version__) < version.parse("2.0.0"), "sdpa requires torch>=2.0.0"
         self.heads = heads
         self.use_rotary_emb = use_rotary_emb
-        self.causal = causal
 
         # sdpa configs
         self.cpu_config = _config(True, True, True)
@@ -85,7 +83,7 @@ class Attention(nn.Module):
         else:
             self.cuda_config = _config(False, True, True)
 
-    def forward_sdpa(
+    def forward(
         self: "Attention",
         q: torch.Tensor,
         k: torch.Tensor,
@@ -94,6 +92,9 @@ class Attention(nn.Module):
     ) -> torch.Tensor:
         is_cuda, dtype = v.is_cuda, v.dtype
         config = self.cuda_config if is_cuda else self.cpu_config
+
+        if self.use_rotary_emb:
+            q, k = self.rotary_emb(q, k)
 
         with torch.backends.cuda.sdp_kernel(**config._asdict()):
             q = q.half()
@@ -106,30 +107,7 @@ class Attention(nn.Module):
                 v,
                 attn_mask=attn_mask,
             )
-
         return out.to(dtype)
-
-    def forward(
-        self: "Attention",
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        padding_data: Optional[Tuple[int, int]] = None,
-    ) -> torch.Tensor:
-        if self.use_rotary_emb:
-            q, k = self.rotary_emb(q, k)
-
-        attn_mask = None
-        if padding_data is not None:
-            for pad_idx in padding_data[1]:
-                attn_mask = torch.zeros(q.shape[-2], k.shape[-2], device=q.device)
-                attn_mask[:, pad_idx : pad_idx + padding_data[0]] = float("-inf")
-
-        if self.causal:
-            causal_mask = torch.triu(torch.ones(q.shape[-2], k.shape[-2]), diagonal=1).to(q.device)
-            causal_mask.masked_fill_(causal_mask == 1, float("-inf"))
-            attn_mask = causal_mask if attn_mask is None else attn_mask + causal_mask
-        return self.forward_sdpa(q, k, v, attn_mask=attn_mask)
 
 
 class MultiHeadAttention(nn.Module):

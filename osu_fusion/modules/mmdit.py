@@ -1,5 +1,5 @@
 import math
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import torch
 import torch.nn as nn
@@ -46,13 +46,9 @@ class PatchEmbedding(nn.Module):
         super().__init__()
         self.patch_size = patch_size
         self.proj = nn.Conv1d(dim_in, dim_emb, patch_size, stride=patch_size)
-        self.norm = nn.LayerNorm(dim_emb, eps=1e-6)
 
     def forward(self: "PatchEmbedding", x: torch.Tensor) -> torch.Tensor:
         assert x.shape[-1] % self.patch_size == 0, "Input sequence length must be divisible by the patch size"
-
-        pad = (self.patch_size - x.shape[-1] % self.patch_size) % self.patch_size
-        x = F.pad(x, (0, pad))
         return rearrange(self.proj(x), "b d n -> b n d")
 
 
@@ -72,7 +68,6 @@ class JointAttention(nn.Module):
         dim: int,
         heads: int,
         qk_norm: bool = True,
-        causal: bool = True,
         use_rotary_emb: bool = True,
     ) -> None:
         super().__init__()
@@ -91,7 +86,6 @@ class JointAttention(nn.Module):
         self.attn = Attention(
             self.dim_head,
             heads=heads,
-            causal=causal,
             use_rotary_emb=use_rotary_emb,
         )
 
@@ -99,7 +93,7 @@ class JointAttention(nn.Module):
         self: "JointAttention",
         x: torch.Tensor,
         a: torch.Tensor,
-        padding_data: Optional[Tuple[int, List[int]]] = None,
+        attn_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         q_x, k_x, v_x = self.to_qkv_x(x).chunk(3, dim=-1)
         q_x, k_x, v_x = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q_x, k_x, v_x))
@@ -120,7 +114,7 @@ class JointAttention(nn.Module):
         k, _ = pack([k_a, k_x], "b h * d")
         v, _ = pack([v_a, v_x], "b h * d")
 
-        out = self.attn(q, k, v, padding_data=padding_data)
+        out = self.attn(q, k, v, attn_mask=attn_mask)
         out_a, out_x = unpack(out, seq_shape, "b h * d")
 
         out_x, out_a = (rearrange(t, "b h n d -> b n (h d)") for t in (out_x, out_a))
@@ -134,7 +128,6 @@ class MMDiTBlock(nn.Module):
         dim_h_mult: int = 4,
         attn_heads: int = 8,
         attn_qk_norm: bool = True,
-        attn_causal: bool = True,
         attn_use_rotary_emb: bool = True,
     ) -> None:
         super().__init__()
@@ -164,7 +157,6 @@ class MMDiTBlock(nn.Module):
             dim_h,
             attn_heads,
             qk_norm=attn_qk_norm,
-            causal=attn_causal,
             use_rotary_emb=attn_use_rotary_emb,
         )
 
@@ -175,7 +167,7 @@ class MMDiTBlock(nn.Module):
         x: torch.Tensor,
         a: torch.Tensor,
         c: torch.Tensor,
-        padding_data: Optional[Tuple[int, List[int]]] = None,
+        attn_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         # Modulation
         (
@@ -198,7 +190,7 @@ class MMDiTBlock(nn.Module):
         # Attention
         h_x = modulate(self.norm1_x(x), shift_attn_x, scale_attn_x)
         h_a = modulate(self.norm1_a(a), shift_attn_a, scale_attn_a)
-        attn_out_x, attn_out_a = self.attn(h_x, h_a, padding_data=padding_data)
+        attn_out_x, attn_out_a = self.attn(h_x, h_a, attn_mask=attn_mask)
 
         x = x + gate_attn_x.unsqueeze(1) * (self.attn_out_x(attn_out_x))
         a = a + gate_attn_a.unsqueeze(1) * (self.attn_out_a(attn_out_a))
@@ -214,31 +206,12 @@ class MMDiTBlock(nn.Module):
         x: torch.Tensor,
         a: torch.Tensor,
         c: torch.Tensor,
-        padding_data: Optional[Tuple[int, List[int]]] = None,
+        attn_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if self.training and self.gradient_checkpointing:
-            return torch.utils.checkpoint.checkpoint(self.forward_body, x, a, c, padding_data, use_reentrant=True)
+            return torch.utils.checkpoint.checkpoint(self.forward_body, x, a, c, attn_mask, use_reentrant=True)
         else:
-            return self.forward_body(x, a, c, padding_data=padding_data)
-
-
-class CrossEmbedLayer(nn.Module):
-    def __init__(self: "CrossEmbedLayer", dim: int, dim_out: int, kernel_sizes: Tuple[int]) -> None:
-        super().__init__()
-        kernel_sizes = sorted(kernel_sizes)
-        num_scales = len(kernel_sizes)
-
-        dim_scales = [int(dim / (2**i)) for i in range(1, num_scales)]
-        dim_scales = [*dim_scales, dim_out - sum(dim_scales)]
-
-        convs = []
-        for kernel, dim_scale in zip(kernel_sizes, dim_scales):
-            convs.append(nn.Conv1d(dim, dim_scale, kernel, padding=kernel // 2))
-
-        self.convs = nn.ModuleList(convs)
-
-    def forward(self: "CrossEmbedLayer", x: torch.Tensor) -> torch.Tensor:
-        return torch.cat([conv(x) for conv in self.convs], dim=1)
+            return self.forward_body(x, a, c, attn_mask=attn_mask)
 
 
 class FinalLayer(nn.Module):
@@ -268,23 +241,22 @@ class MMDiT(nn.Module):
         dim_in_c: int,
         dim_h: int,
         dim_h_mult: int = 4,
-        patch_size: int = 32,
+        patch_size: int = 4,
         depth: int = 12,
         attn_heads: int = 8,
         attn_qk_norm: bool = True,
-        attn_causal: bool = True,
+        attn_causal: bool = False,
         attn_use_rotary_emb: bool = True,
     ) -> None:
         super().__init__()
         self.dim_h = dim_h
         self.dim_in_x = dim_in_x
         self.patch_size = patch_size
+        self.attn_causal = attn_causal
 
         self.emb_x = PatchEmbedding(dim_in_x, dim_h, patch_size)
         self.emb_a = PatchEmbedding(dim_in_a, dim_h, patch_size)
 
-        self.mlp_a = FeedForward(dim_h, dim_mult=dim_h_mult)
-        self.feature_extractor_a = nn.Linear(dim_h * 2, dim_h)
         self.pos_emb_time = SinusoidalPositionEmbedding(dim_h)
         self.mlp_time = FeedForward(dim_h, dim_mult=dim_h_mult)
         self.mlp_cond = nn.Sequential(
@@ -300,7 +272,6 @@ class MMDiT(nn.Module):
                     dim_h_mult=dim_h_mult,
                     attn_heads=attn_heads,
                     attn_qk_norm=attn_qk_norm,
-                    attn_causal=attn_causal,
                     attn_use_rotary_emb=attn_use_rotary_emb,
                 )
                 for _ in range(depth)
@@ -368,7 +339,6 @@ class MMDiT(nn.Module):
         pad_len = (self.patch_size - (n % self.patch_size)) % self.patch_size
         x = F.pad(x, (0, pad_len), value=-1.0)
         a = F.pad(a, (0, pad_len), value=0.0)
-        padding_start_idxs = [n, 2 * n + pad_len]
 
         # Patchify the input
         x = self.emb_x(x)
@@ -381,15 +351,11 @@ class MMDiT(nn.Module):
         c = self.mlp_cond(c)
         c = torch.where(cond_mask, c, null_conds)
 
-        # Statistic audio features pooling
-        h_a = torch.cat([a.mean(dim=1), a.std(dim=1)], dim=1)
-        h_a = self.feature_extractor_a(h_a)
-
-        c = c + self.mlp_time(self.pos_emb_time(t)) + self.mlp_a(h_a)
+        c = c + self.mlp_time(self.pos_emb_time(t))
 
         # Run the blocks
         for block in self.blocks:
-            x, a = block(x, a, c, padding_data=(pad_len, padding_start_idxs) if pad_len != 0 else None)
+            x, a = block(x, a, c)
 
         # Run the final layer
         x = self.final_layer(x, c)
