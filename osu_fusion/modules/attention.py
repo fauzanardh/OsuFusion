@@ -17,11 +17,8 @@ class RotaryPositionEmbedding(nn.Module):
         self: "RotaryPositionEmbedding",
         dim: int,
         theta: int = 10000,
-        scale_base: int = 1024,
     ) -> None:
         super().__init__()
-        self.scale_base = scale_base
-
         inv_freq = 1.0 / (theta ** (torch.arange(0, dim, 2).float() / dim))
         self.register_buffer("inv_freq", inv_freq, persistent=False)
 
@@ -38,7 +35,6 @@ class RotaryPositionEmbedding(nn.Module):
                 dtype=torch.float32,
                 device=x.device,
             )
-            t *= self.scale_base / seq_len
             freqs = torch.einsum("i , j -> i j", t, self.inv_freq.to(x.dtype))
             emb = torch.cat([freqs, freqs], dim=-1)
 
@@ -61,7 +57,7 @@ class Attention(nn.Module):
         self: "Attention",
         dim_head: int,
         heads: int = 8,
-        causal: bool = True,
+        causal: bool = False,
         use_rotary_emb: bool = True,
         infini: bool = True,
         segment_len: int = 256,
@@ -179,11 +175,11 @@ class Attention(nn.Module):
             # I hate this, but it's the only way I can think of to handle padding
             if padding_data is not None:
                 total_next_segment = total_segment_processed + self.segment_len
+                # Create an attention mask for the padding
+                # pad_idx is the start of the padding, and padding_data[0] is the length of the padding
+                attn_mask = torch.zeros(q_segment.shape[-2], k_segment.shape[-2], device=q.device)
                 for pad_idx in padding_data[1]:
                     if total_segment_processed <= pad_idx < total_next_segment:
-                        # Create an attention mask for the padding
-                        # pad_idx is the start of the padding, and padding_data[0] is the length of the padding
-                        attn_mask = torch.zeros(q_segment.shape[-2], k_segment.shape[-2], device=q.device)
                         attn_mask[
                             :,
                             pad_idx - total_segment_processed : pad_idx - total_segment_processed + padding_data[0],

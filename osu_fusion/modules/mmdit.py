@@ -46,13 +46,9 @@ class PatchEmbedding(nn.Module):
         super().__init__()
         self.patch_size = patch_size
         self.proj = nn.Conv1d(dim_in, dim_emb, patch_size, stride=patch_size)
-        self.norm = nn.LayerNorm(dim_emb, eps=1e-6)
 
     def forward(self: "PatchEmbedding", x: torch.Tensor) -> torch.Tensor:
         assert x.shape[-1] % self.patch_size == 0, "Input sequence length must be divisible by the patch size"
-
-        pad = (self.patch_size - x.shape[-1] % self.patch_size) % self.patch_size
-        x = F.pad(x, (0, pad))
         return rearrange(self.proj(x), "b d n -> b n d")
 
 
@@ -72,7 +68,7 @@ class JointAttention(nn.Module):
         dim: int,
         heads: int,
         qk_norm: bool = True,
-        causal: bool = True,
+        causal: bool = False,
         use_rotary_emb: bool = True,
         infini: bool = True,
         segment_len: int = 256,
@@ -138,7 +134,7 @@ class MMDiTBlock(nn.Module):
         dim_h_mult: int = 4,
         attn_heads: int = 8,
         attn_qk_norm: bool = True,
-        attn_causal: bool = True,
+        attn_causal: bool = False,
         attn_use_rotary_emb: bool = True,
         attn_infini: bool = True,
         attn_segment_len: int = 256,
@@ -230,25 +226,6 @@ class MMDiTBlock(nn.Module):
             return self.forward_body(x, a, c, padding_data=padding_data)
 
 
-class CrossEmbedLayer(nn.Module):
-    def __init__(self: "CrossEmbedLayer", dim: int, dim_out: int, kernel_sizes: Tuple[int]) -> None:
-        super().__init__()
-        kernel_sizes = sorted(kernel_sizes)
-        num_scales = len(kernel_sizes)
-
-        dim_scales = [int(dim / (2**i)) for i in range(1, num_scales)]
-        dim_scales = [*dim_scales, dim_out - sum(dim_scales)]
-
-        convs = []
-        for kernel, dim_scale in zip(kernel_sizes, dim_scales):
-            convs.append(nn.Conv1d(dim, dim_scale, kernel, padding=kernel // 2))
-
-        self.convs = nn.ModuleList(convs)
-
-    def forward(self: "CrossEmbedLayer", x: torch.Tensor) -> torch.Tensor:
-        return torch.cat([conv(x) for conv in self.convs], dim=1)
-
-
 class FinalLayer(nn.Module):
     def __init__(self: "FinalLayer", dim_h: int, patch_size: int, dim_out: int) -> None:
         super().__init__()
@@ -273,11 +250,11 @@ class MMDiT(nn.Module):
         dim_in_c: int,
         dim_h: int,
         dim_h_mult: int = 4,
-        patch_size: int = 16,
+        patch_size: int = 8,
         depth: int = 12,
         attn_heads: int = 8,
         attn_qk_norm: bool = True,
-        attn_causal: bool = True,
+        attn_causal: bool = False,
         attn_use_rotary_emb: bool = True,
         attn_infini: bool = True,
         attn_segment_len: int = 256,
@@ -291,8 +268,6 @@ class MMDiT(nn.Module):
         self.emb_x = PatchEmbedding(dim_in_x, dim_h, patch_size)
         self.emb_a = PatchEmbedding(dim_in_a, dim_h, patch_size)
 
-        self.mlp_a = FeedForward(dim_h, dim_mult=dim_h_mult)
-        self.feature_extractor_a = nn.Linear(dim_h * 2, dim_h)
         self.pos_emb_time = SinusoidalPositionEmbedding(dim_h)
         self.mlp_time = FeedForward(dim_h, dim_mult=dim_h_mult)
         self.mlp_cond = nn.Sequential(
@@ -380,7 +355,6 @@ class MMDiT(nn.Module):
         pad_len = (segment_len - (n % segment_len)) % segment_len
         x = F.pad(x, (0, pad_len), value=-1.0)
         a = F.pad(a, (0, pad_len), value=0.0)
-        padding_start_idxs = [n, 2 * n + pad_len]
 
         # Patchify the input
         x = self.emb_x(x)
@@ -393,15 +367,11 @@ class MMDiT(nn.Module):
         c = self.mlp_cond(c)
         c = torch.where(cond_mask, c, null_conds)
 
-        # Statistic audio features pooling
-        h_a = torch.cat([a.mean(dim=1), a.std(dim=1)], dim=1)
-        h_a = self.feature_extractor_a(h_a)
-
-        c = c + self.mlp_time(self.pos_emb_time(t)) + self.mlp_a(h_a)
+        c = c + self.mlp_time(self.pos_emb_time(t))
 
         # Run the blocks
         for block in self.blocks:
-            x, a = block(x, a, c, padding_data=(pad_len, padding_start_idxs) if pad_len != 0 else None)
+            x, a = block(x, a, c)  # padding_data=(pad_len, padding_start_idxs) if pad_len != 0 else None
 
         # Run the final layer
         x = self.final_layer(x, c)
