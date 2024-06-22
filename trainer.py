@@ -259,7 +259,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     ) as pbar:
         while current_step < args.total_steps:
             accumulation_loss = 0.0
-            nan_loss_count = 0
+            valid_loss_count = 0
             for _ in range(args.gradient_accumulation_steps):
                 batch = None
                 while batch is None:
@@ -270,15 +270,14 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                 except RuntimeError as e:
                     print(f"Error: {e}")
                     continue
-                if loss is None:
-                    continue
-                if torch.isnan(loss):
+                if loss is None or torch.isnan(loss):
                     print("NaN loss encountered")
-                    nan_loss_count += 1
                     continue
                 accumulation_loss += loss.item()
+                valid_loss_count += 1
 
-            accumulation_loss /= args.gradient_accumulation_steps - nan_loss_count
+            if valid_loss_count != 0:
+                accumulation_loss /= valid_loss_count
             losses.append(accumulation_loss)
 
             if len(losses) > args.save_every:

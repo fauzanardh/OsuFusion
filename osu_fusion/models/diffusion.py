@@ -3,7 +3,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 from diffusers import DDPMScheduler
-from einops import reduce, repeat
+from einops import repeat
 from torch.nn import functional as F  # noqa: N812
 from tqdm.auto import tqdm
 
@@ -90,7 +90,7 @@ class OsuFusion(nn.Module):
     ) -> torch.Tensor:
         assert x.shape[-1] == a.shape[-1], "x and a must have the same number of sequence length"
 
-        noise = torch.randn_like(x)
+        noise = torch.randn_like(x, device=x.device)
         timesteps = torch.randint(
             0,
             self.scheduler.config.num_train_timesteps,
@@ -102,10 +102,17 @@ class OsuFusion(nn.Module):
 
         pred = self.mmdit(x_noisy, a, timesteps, c, self.cond_drop_prob)
 
-        losses = F.mse_loss(pred, noise, reduction="none")
+        # Calculate loss
+        loss = F.mse_loss(pred, x, reduction="none")
+
+        # Create mask for losses to ignore padding
+        b, _, n = x.shape
+        mask = torch.ones((b, n), device=x.device)
         if orig_len is not None:
             for i, orig in enumerate(orig_len):
-                losses[i, orig:] = 0.0
+                mask[i, orig:] = 0.0
+        mask = repeat(mask, "b n -> b d n", d=TOTAL_DIM)
 
-        losses = reduce(losses, "b ... -> b", "mean")
-        return losses.mean()
+        # Using mean instead of sum because if the sequence length is big
+        # the intermediate loss values can be very big
+        return (loss * mask).mean() / mask.mean()
