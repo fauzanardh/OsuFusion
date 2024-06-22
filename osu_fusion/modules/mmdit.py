@@ -68,7 +68,7 @@ class JointAttention(nn.Module):
         dim: int,
         heads: int,
         qk_norm: bool = True,
-        causal: bool = False,
+        causal: bool = True,
         use_rotary_emb: bool = True,
         infini: bool = True,
         segment_len: int = 256,
@@ -134,7 +134,7 @@ class MMDiTBlock(nn.Module):
         dim_h_mult: int = 4,
         attn_heads: int = 8,
         attn_qk_norm: bool = True,
-        attn_causal: bool = False,
+        attn_causal: bool = True,
         attn_use_rotary_emb: bool = True,
         attn_infini: bool = True,
         attn_segment_len: int = 256,
@@ -250,11 +250,11 @@ class MMDiT(nn.Module):
         dim_in_c: int,
         dim_h: int,
         dim_h_mult: int = 4,
-        patch_size: int = 8,
+        patch_size: int = 4,
         depth: int = 12,
         attn_heads: int = 8,
         attn_qk_norm: bool = True,
-        attn_causal: bool = False,
+        attn_causal: bool = True,
         attn_use_rotary_emb: bool = True,
         attn_infini: bool = True,
         attn_segment_len: int = 256,
@@ -350,7 +350,7 @@ class MMDiT(nn.Module):
     ) -> torch.Tensor:
         # Pad to the closest multiple of attn_segment_len
         n = x.shape[-1]
-        segment_len = self.attn_segment_len // 2  # We use half the segment length for each modality
+        segment_len = self.attn_segment_len // 2  # We use half the segment length since we have two modalities
         segment_len *= self.patch_size  # times the patch size to get the real segment length
         pad_len = (segment_len - (n % segment_len)) % segment_len
         x = F.pad(x, (0, pad_len), value=-1.0)
