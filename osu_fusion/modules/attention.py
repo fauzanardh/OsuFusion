@@ -123,7 +123,7 @@ class Attention(nn.Module):
         norm_term: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if memory is None or norm_term is None:
-            return torch.zeros_like(q)
+            return torch.zeros_like(q, device=q.device)
 
         q = F.elu(q) + 1.0
 
@@ -191,7 +191,10 @@ class Attention(nn.Module):
 
             # Add causal mask
             if self.causal:
-                causal_mask = torch.triu(torch.ones(q_segment.shape[-2], k_segment.shape[-2]), diagonal=1).to(q.device)
+                causal_mask = torch.triu(
+                    torch.ones(q_segment.shape[-2], k_segment.shape[-2], device=q_segment.device),
+                    diagonal=1,
+                )
                 causal_mask.masked_fill_(causal_mask == 1, float("-inf"))
                 attn_mask = causal_mask if attn_mask is None else attn_mask + causal_mask
 
@@ -235,7 +238,7 @@ class Attention(nn.Module):
                 attn_mask[:, pad_idx : pad_idx + padding_data[0]] = float("-inf")
 
         if self.causal:
-            causal_mask = torch.triu(torch.ones(q.shape[-2], k.shape[-2]), diagonal=1).to(q.device)
+            causal_mask = torch.triu(torch.ones(q.shape[-2], k.shape[-2], device=q.device), diagonal=1)
             causal_mask.masked_fill_(causal_mask == 1, float("-inf"))
             attn_mask = causal_mask if attn_mask is None else attn_mask + causal_mask
         return self.forward_sdpa(q, k, v, attn_mask=attn_mask)

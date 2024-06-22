@@ -39,6 +39,13 @@ class FeedForward(nn.Sequential):
             nn.SiLU(),
             nn.Linear(inner_dim, dim),
         )
+        self.gradient_checkpointing = False
+
+    def forward(self: "FeedForward", x: torch.Tensor) -> torch.Tensor:
+        if self.training and self.gradient_checkpointing and x.requires_grad:
+            return torch.utils.checkpoint.checkpoint(super().forward, x, use_reentrant=True)
+        else:
+            return super().forward(x)
 
 
 class PatchEmbedding(nn.Module):
@@ -236,10 +243,18 @@ class FinalLayer(nn.Module):
         )
         self.linear = nn.Linear(dim_h, patch_size * dim_out)
 
-    def forward(self: "FinalLayer", x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+        self.gradient_checkpointing = False
+
+    def forward_body(self: "FinalLayer", x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
         shift, scale = self.modulation(c).chunk(2, dim=1)
         x = modulate(self.norm(x), shift, scale)
         return self.linear(x)
+
+    def forward(self: "FinalLayer", x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+        if self.training and self.gradient_checkpointing:
+            return torch.utils.checkpoint.checkpoint(self.forward_body, x, c, use_reentrant=True)
+        else:
+            return self.forward_body(x, c)
 
 
 class MMDiT(nn.Module):
