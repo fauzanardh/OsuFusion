@@ -103,7 +103,7 @@ class OsuFusion(nn.Module):
         pred = self.mmdit(x_noisy, a, timesteps, c, self.cond_drop_prob)
 
         # Calculate loss
-        loss = F.mse_loss(pred, x, reduction="none")
+        loss = F.mse_loss(pred, noise, reduction="none")
 
         # Create mask for losses to ignore padding
         b, _, n = x.shape
