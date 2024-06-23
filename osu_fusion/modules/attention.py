@@ -208,9 +208,13 @@ class Attention(nn.Module):
             memory = updated_memory.detach()
             norm_term = updated_norm_term.detach()
 
-            attn = self.forward_sdpa(q_segment, k_segment, v_segment, attn_mask=attn_mask)
-            combined_output = (F.sigmoid(self.gate) * memory_output) + (1 - F.sigmoid(self.gate)) * attn
-            outputs.append(combined_output)
+            if idx == 0:
+                attn = self.forward_sdpa(q_segment, k_segment, v_segment, attn_mask=attn_mask)
+                outputs.append(attn)
+            else:
+                attn = self.forward_sdpa(q_segment, k_segment, v_segment, attn_mask=attn_mask)
+                combined_output = (F.sigmoid(self.gate) * memory_output) + (1 - F.sigmoid(self.gate)) * attn
+                outputs.append(combined_output)
 
             total_segment_processed += q_segment.shape[-2]
 
