@@ -63,6 +63,7 @@ class Attention(nn.Module):
         heads: int = 8,
         causal: bool = True,
         use_rotary_emb: bool = True,
+        context_len: int = 4096,
         infini: bool = True,
         segment_len: int = 256,
     ) -> None:
@@ -78,7 +79,7 @@ class Attention(nn.Module):
         self.cpu_config = _config(True, True, True)
 
         if use_rotary_emb:
-            self.rotary_emb = RotaryPositionEmbedding(dim_head)
+            self.rotary_emb = RotaryPositionEmbedding(dim_head, scale_base=context_len)
 
         if infini:
             self.gate = nn.Parameter(torch.full((1, heads, 1, 1), 0.0))  # Start at 50% memory
@@ -208,13 +209,9 @@ class Attention(nn.Module):
             memory = updated_memory.detach()
             norm_term = updated_norm_term.detach()
 
-            if idx == 0:
-                attn = self.forward_sdpa(q_segment, k_segment, v_segment, attn_mask=attn_mask)
-                outputs.append(attn)
-            else:
-                attn = self.forward_sdpa(q_segment, k_segment, v_segment, attn_mask=attn_mask)
-                combined_output = (F.sigmoid(self.gate) * memory_output) + (1 - F.sigmoid(self.gate)) * attn
-                outputs.append(combined_output)
+            attn = self.forward_sdpa(q_segment, k_segment, v_segment, attn_mask=attn_mask)
+            combined_output = (F.sigmoid(self.gate) * memory_output) + (1 - F.sigmoid(self.gate)) * attn
+            outputs.append(combined_output)
 
             total_segment_processed += q_segment.shape[-2]
 

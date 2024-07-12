@@ -42,8 +42,8 @@ class FeedForward(nn.Sequential):
         self.gradient_checkpointing = False
 
     def forward(self: "FeedForward", x: torch.Tensor) -> torch.Tensor:
-        if self.training and self.gradient_checkpointing and x.requires_grad:
-            return torch.utils.checkpoint.checkpoint(super().forward, x, use_reentrant=True)
+        if self.training and self.gradient_checkpointing:
+            return torch.utils.checkpoint.checkpoint(super().forward, x, use_reentrant=False)
         else:
             return super().forward(x)
 
@@ -54,9 +54,17 @@ class PatchEmbedding(nn.Module):
         self.patch_size = patch_size
         self.proj = nn.Conv1d(dim_in, dim_emb, patch_size, stride=patch_size)
 
-    def forward(self: "PatchEmbedding", x: torch.Tensor) -> torch.Tensor:
+        self.gradient_checkpointing = False
+
+    def forward_body(self: "PatchEmbedding", x: torch.Tensor) -> torch.Tensor:
         assert x.shape[-1] % self.patch_size == 0, "Input sequence length must be divisible by the patch size"
         return rearrange(self.proj(x), "b d n -> b n d")
+
+    def forward(self: "PatchEmbedding", x: torch.Tensor) -> torch.Tensor:
+        if self.training and self.gradient_checkpointing:
+            return torch.utils.checkpoint.checkpoint(self.forward_body, x, use_reentrant=False)
+        else:
+            return self.forward_body(x)
 
 
 class MultiHeadRMSNorm(nn.Module):
@@ -279,6 +287,7 @@ class MMDiT(nn.Module):
         self.dim_in_x = dim_in_x
         self.patch_size = patch_size
         self.attn_segment_len = attn_segment_len
+        self.attn_infini = attn_infini
 
         self.emb_x = PatchEmbedding(dim_in_x, dim_h, patch_size)
         self.emb_a = PatchEmbedding(dim_in_a, dim_h, patch_size)
@@ -363,11 +372,16 @@ class MMDiT(nn.Module):
         c: torch.Tensor,
         cond_drop_prob: float = 0.0,
     ) -> torch.Tensor:
-        # Pad to the closest multiple of attn_segment_len
         n = x.shape[-1]
-        segment_len = self.attn_segment_len // 2  # We use half the segment length since we have two modalities
-        segment_len *= self.patch_size  # times the patch size to get the real segment length
-        pad_len = (segment_len - (n % segment_len)) % segment_len
+        if self.attn_infini:
+            # Pad to the closest multiple of attn_segment_len
+            segment_len = self.attn_segment_len // 2  # We use half the segment length since we have two modalities
+            segment_len *= self.patch_size  # times the patch size to get the real segment length
+            pad_len = (segment_len - (n % segment_len)) % segment_len
+        else:
+            # Pad to the closest multiple of patch_size
+            pad_len = (self.patch_size - (n % self.patch_size)) % self.patch_size
+
         x = F.pad(x, (0, pad_len), value=-1.0)
         a = F.pad(a, (0, pad_len), value=0.0)
 
@@ -379,8 +393,8 @@ class MMDiT(nn.Module):
         cond_mask = prob_mask_like((x.shape[0],), 1.0 - cond_drop_prob, device=x.device)
         cond_mask = rearrange(cond_mask, "b -> b 1")
         null_conds = repeat(self.null_cond, "d -> b d", b=x.shape[0])
-        c = self.mlp_cond(c)
         c = torch.where(cond_mask, c, null_conds)
+        c = self.mlp_cond(c)
 
         c = c + self.mlp_time(self.pos_emb_time(t))
 

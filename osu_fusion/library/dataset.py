@@ -64,8 +64,8 @@ class StreamPerSample(IterableDataset):
 
 
 class DummyDataset(StreamPerSample):
-    MIN_LENGTH = 8192
-    MAX_LENGTH = 16384
+    MIN_LENGTH = 4096
+    MAX_LENGTH = 8192
 
     def sample_stream(self: StreamPerSample, _: Path) -> Generator[torch.Tensor, None, None]:
         length = random.randint(self.MIN_LENGTH, self.MAX_LENGTH)
@@ -85,7 +85,7 @@ class SubsequenceDataset(StreamPerSample):
     def __init__(self: "SubsequenceDataset", **kwargs: Dict) -> None:
         super().__init__(**kwargs)
 
-        self.sequence_length = kwargs.pop("sequence_length", 8192)
+        self.sequence_length = kwargs.pop("sequence_length", 4096)
         self.subsequence_density = kwargs.pop("subsequence_density", 2.0)
         super().__init__(**kwargs)
 

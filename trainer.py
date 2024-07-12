@@ -93,8 +93,8 @@ def train_step(
     if torch.isnan(loss):
         return loss
     accelerator.backward(loss)
-    if accelerator.sync_gradients:
-        accelerator.clip_grad_norm_(model.parameters(), 1.0)
+    # if accelerator.sync_gradients:
+    #     accelerator.clip_grad_norm_(model.parameters(), 1.0)
     optimizer.step()
     optimizer.zero_grad(set_to_none=True)
     scheduler.step()
@@ -210,8 +210,8 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         project_name="OsuFusion",
     )
 
-    model = OsuFusion(args.model_dim, attn_heads=args.model_attn_heads, depth=args.model_depth)
-    model.mmdit.set_gradient_checkpointing(args.gradient_checkpointing)
+    model = OsuFusion(args.model_dim, attn_infini=False)
+    model.unet.set_gradient_checkpointing(args.gradient_checkpointing)
     optimizer = AdamW(model.parameters(), lr=args.lr)
     scheduler = OneCycleLR(
         optimizer,
