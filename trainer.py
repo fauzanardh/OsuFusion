@@ -190,7 +190,7 @@ def load_checkpoint(
         model.load_state_dict(checkpoint["model_state_dict"], strict=False)
     if not reset_steps:
         scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-    torch.set_rng_state(checkpoint["rng_state"])
+    torch.set_rng_state(checkpoint["rng_state"].cpu())
     return 0 if reset_steps else int(checkpoint_path.stem.split("-")[1])
 
 
