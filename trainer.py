@@ -180,7 +180,8 @@ def load_checkpoint(
     reset_steps: bool = False,
 ) -> int:
     print(f"Loading checkpoint from {checkpoint_path}...")
-    checkpoint = torch.load(checkpoint_path / "checkpoint.pt")
+    device = next(model.parameters()).device
+    checkpoint = torch.load(checkpoint_path / "checkpoint.pt", map_location=device)
     try:
         model.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
@@ -220,10 +221,6 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         pct_start=args.pct_start,
     )
 
-    current_step = (
-        load_checkpoint(model, optimizer, scheduler, args.resume, args.reset_steps) if args.resume is not None else 0
-    )
-
     print("Loading dataset...")
     all_maps = list(args.dataset_dir.rglob("*.map.npz"))
     random.shuffle(all_maps)
@@ -243,6 +240,11 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         scheduler,
         dataloader,
     )
+
+    current_step = (
+        load_checkpoint(model, optimizer, scheduler, args.resume, args.reset_steps) if args.resume is not None else 0
+    )
+
     model.train()
 
     if args.resume is None:
