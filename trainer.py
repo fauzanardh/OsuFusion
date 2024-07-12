@@ -255,6 +255,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     with tqdm(
         total=args.total_steps - current_step,
         smoothing=0.0,
+        dynamic_ncols=True,
         disable=not accelerator.is_local_main_process,
     ) as pbar:
         while current_step < args.total_steps:

@@ -79,7 +79,7 @@ class OsuFusion(nn.Module):
             x = torch.randn((b, TOTAL_DIM, n), device=device)
 
         self.scheduler.set_timesteps(self.sampling_timesteps)
-        for t in tqdm(self.scheduler.timesteps, desc="sampling loop time step"):
+        for t in tqdm(self.scheduler.timesteps, desc="sampling loop time step", dynamic_ncols=True):
             t_batched = repeat(t, "... -> b ...", b=b).long().to(device)
             pred = self.unet.forward_with_cond_scale(x, a, t_batched, c, cond_scale=cond_scale)
             x = self.scheduler.step(pred, t, x).prev_sample
