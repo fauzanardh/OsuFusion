@@ -18,7 +18,7 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 import wandb
-from osu_fusion.library.dataset import FullSequenceDataset, SubsequenceDataset
+from osu_fusion.library.dataset import FullSequenceDataset, RandomLengthDataset, SubsequenceDataset
 from osu_fusion.library.osu.data.encode import TOTAL_DIM
 from osu_fusion.models.diffusion import OsuFusion
 from osu_fusion.scripts.dataset_creator import load_audio, normalize_context
@@ -171,6 +171,11 @@ def save_checkpoint(
         checkpoint_dir / "checkpoint.pt",
     )
 
+    del model_state_dict
+    del optimizer_state_dict
+    del scheduler_state_dict
+    torch.cuda.empty_cache()
+
 
 def load_checkpoint(
     model: OsuFusion,
@@ -224,14 +229,24 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     print("Loading dataset...")
     all_maps = list(args.dataset_dir.rglob("*.map.npz"))
     random.shuffle(all_maps)
-    dataset = FullSequenceDataset(dataset=all_maps) if args.full_sequence else SubsequenceDataset(dataset=all_maps)
+
+    if args.full_sequence:
+        dataset = FullSequenceDataset(dataset=all_maps)
+        collator = collate_fn
+    elif args.random_length:
+        dataset = RandomLengthDataset(dataset=all_maps)
+        collator = collate_fn
+    else:
+        dataset = SubsequenceDataset(dataset=all_maps)
+        collator = None
+
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         persistent_workers=True,
         pin_memory=True,
-        collate_fn=collate_fn if args.full_sequence else None,
+        collate_fn=collator,
     )
 
     model, optimizer, scheduler, dataloader = accelerator.prepare(
@@ -261,26 +276,16 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         disable=not accelerator.is_local_main_process,
     ) as pbar:
         while current_step < args.total_steps:
+            torch.cuda.empty_cache()  # Temporary fix for CUDA out of memory
             accumulation_loss = 0.0
-            valid_loss_count = 0
             for _ in range(args.gradient_accumulation_steps):
-                batch = None
-                while batch is None:
-                    batch = next(cycle_dataloader)
+                batch = next(cycle_dataloader)
+                loss = train_step(args, accelerator, model, optimizer, scheduler, batch)
 
-                try:
-                    loss = train_step(args, accelerator, model, optimizer, scheduler, batch)
-                except RuntimeError as e:
-                    print(f"Error: {e}")
-                    continue
                 if loss is None or torch.isnan(loss):
                     print("NaN loss encountered")
                     continue
                 accumulation_loss += loss.item()
-                valid_loss_count += 1
-
-            if valid_loss_count != 0:
-                accumulation_loss /= valid_loss_count
             losses.append(accumulation_loss)
 
             if len(losses) > args.save_every:
@@ -341,6 +346,7 @@ def main() -> None:
     args.add_argument("--resume", type=Path, default=None)
     args.add_argument("--reset-steps", action="store_true")
     args.add_argument("--full-sequence", action="store_true")
+    args.add_argument("--random-length", action="store_true")
     args.add_argument("--mixed-precision", type=str, default="bf16", choices=["no", "fp16", "bf16"])
     args.add_argument("--gradient-checkpointing", action="store_true")
     args.add_argument("--gradient-accumulation-steps", type=int, default=1)

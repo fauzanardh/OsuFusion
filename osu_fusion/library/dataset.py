@@ -28,7 +28,6 @@ def load_tensor(map_file: Path) -> torch.Tensor:
 class StreamPerSample(IterableDataset):
     def __init__(self: "StreamPerSample", **kwargs: Dict) -> None:
         super().__init__()
-
         self.dataset = kwargs.pop("dataset")
         self.sample_density = kwargs.pop("sample_density", 1.0)
 
@@ -81,13 +80,27 @@ class FullSequenceDataset(StreamPerSample):
         yield load_tensor(map_file)
 
 
+class RandomLengthDataset(StreamPerSample):
+    MIN_LENGTH = 4096
+    MAX_LENGTH = 8192
+
+    def sample_stream(self: StreamPerSample, map_file: Path) -> Generator[torch.Tensor, None, None]:
+        try:
+            x, a, c = load_tensor(map_file)
+        except ValueError:
+            return
+        n = x.shape[-1]
+
+        length = random.randint(self.MIN_LENGTH, min(self.MAX_LENGTH, n))
+        start = random.randint(0, n - length)
+        yield x[..., start : start + length], a[..., start : start + length], c
+
+
 class SubsequenceDataset(StreamPerSample):
     def __init__(self: "SubsequenceDataset", **kwargs: Dict) -> None:
         super().__init__(**kwargs)
-
         self.sequence_length = kwargs.pop("sequence_length", 4096)
         self.subsequence_density = kwargs.pop("subsequence_density", 2.0)
-        super().__init__(**kwargs)
 
     def sample_stream(self: StreamPerSample, map_file: Path) -> Generator[torch.Tensor, None, None]:
         try:
