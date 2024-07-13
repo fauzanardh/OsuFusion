@@ -61,7 +61,7 @@ class Attention(nn.Module):
         self: "Attention",
         dim_head: int,
         heads: int = 8,
-        causal: bool = True,
+        causal: bool = False,
         use_rotary_emb: bool = True,
         context_len: int = 4096,
         infini: bool = True,

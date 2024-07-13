@@ -25,7 +25,7 @@ class OsuFusion(nn.Module):
         attn_dim_head: int = 64,
         attn_heads: int = 8,
         attn_qk_norm: bool = True,
-        attn_causal: bool = True,
+        attn_causal: bool = False,
         attn_use_rotary_emb: bool = True,
         attn_context_len: int = 4096,
         attn_infini: bool = True,
