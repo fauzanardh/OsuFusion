@@ -2,8 +2,10 @@ accelerate==0.29.3
 bezier==2023.7.28
 diffusers==0.27.2
 einops==0.7.0
+gradio==4.38.1
 librosa==0.10.1
 matplotlib==3.8.4
 resampy==0.4.3
+sanitize-filename==1.2.0
 scipy==1.13.0
 wandb==0.16.6
