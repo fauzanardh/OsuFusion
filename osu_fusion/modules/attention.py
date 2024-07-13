@@ -107,6 +107,7 @@ class Attention(nn.Module):
             q = q.half()
             k = k.half()
             v = v.half()
+            attn_mask = attn_mask.half() if attn_mask is not None else None
             q, k, v = (t.contiguous() for t in (q, k, v))
             out = F.scaled_dot_product_attention(
                 q,
