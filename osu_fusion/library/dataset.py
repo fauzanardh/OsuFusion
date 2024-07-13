@@ -91,6 +91,9 @@ class RandomLengthDataset(StreamPerSample):
             return
         n = x.shape[-1]
 
+        if n < self.MIN_LENGTH:
+            return
+
         length = random.randint(self.MIN_LENGTH, min(self.MAX_LENGTH, n))
         start = random.randint(0, n - length)
         yield x[..., start : start + length], a[..., start : start + length], c
