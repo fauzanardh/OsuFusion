@@ -16,6 +16,10 @@ class Metadata:
     title: str
     artist: str
     version: str
+    cs: float
+    ar: float
+    od: float
+    hp: float
 
 
 map_template = """osu file format v14
@@ -35,10 +39,10 @@ Version: {version}
 Tags: OsuFusion
 
 [Difficulty]
-HPDrainRate: 5
-CircleSize: 4
-OverallDifficulty: 9.5
-ApproachRate: 9.5
+HPDrainRate: {hp}
+CircleSize: {cs}
+OverallDifficulty: {od}
+ApproachRate: {ar}
 SliderMultiplier: 1
 SliderTickRate: 1
 
