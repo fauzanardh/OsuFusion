@@ -80,7 +80,7 @@ def train_step(
     batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
 ) -> float:
     orig_len = None
-    if args.full_sequence:
+    if args.full_sequence or args.random_length:
         x, a, c, orig_len = batch
     else:
         x, a, c = batch
