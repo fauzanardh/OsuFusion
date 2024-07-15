@@ -179,6 +179,10 @@ class CrossTransformerBlock(nn.Module):
             segment_len=segment_len,
         )
         self.linear = nn.Linear(dim_head * heads, dim_in)
+        self.gate = nn.Sequential(
+            nn.Linear(dim_in, 1),
+            nn.Sigmoid(),
+        )
 
         self.gradient_checkpointing = False
 
@@ -196,6 +200,10 @@ class CrossTransformerBlock(nn.Module):
 
         out = self.attn(q, k, v)
         out = rearrange(out, "b h n d -> b n (h d)")
+
+        gate = self.gate(x)
+        out = gate * out
+
         return rearrange(x + self.linear(out), "b n d -> b d n")
 
     def forward(self: "CrossTransformerBlock", x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
