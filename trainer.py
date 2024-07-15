@@ -192,7 +192,11 @@ def load_checkpoint(
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
     except RuntimeError:  # Model changed
         print("Model changed, loading with strict=False...")
-        model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+        incompatible_keys = model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+        if len(incompatible_keys.missing_keys) > 0:
+            print(f"Missing keys: {incompatible_keys.missing_keys}")
+        if len(incompatible_keys.unexpected_keys) > 0:
+            print(f"Unexpected keys: {incompatible_keys.unexpected_keys}")
     if not reset_steps:
         scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
     torch.set_rng_state(checkpoint["rng_state"].cpu())
