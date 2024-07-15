@@ -280,7 +280,6 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         disable=not accelerator.is_local_main_process,
     ) as pbar:
         while current_step < args.total_steps:
-            torch.cuda.empty_cache()  # Temporary fix for CUDA out of memory
             accumulation_loss = 0.0
             for _ in range(args.gradient_accumulation_steps):
                 batch = next(cycle_dataloader)
