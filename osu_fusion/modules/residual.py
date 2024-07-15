@@ -1,16 +1,8 @@
-from typing import Dict, List, Optional
+from typing import Optional
 
 import torch
 import torch.nn as nn
 from einops import rearrange
-
-
-class Always:
-    def __init__(self: "Always", value: int) -> None:
-        self.value = value
-
-    def __call__(self: "Always", *args: List, **kwargs: Dict) -> int:
-        return self.value
 
 
 class GlobalContext(nn.Module):
@@ -75,6 +67,7 @@ class ResidualBlock(nn.Module):
         self.block2 = Block(dim_out, dim_out)
 
         self.res_conv = nn.Conv1d(dim_in, dim_out, 1) if dim_in != dim_out else nn.Identity()
+        self.gca = GlobalContext(dim_out, dim_out)
 
         self.gradient_checkpointing = False
 
@@ -89,6 +82,8 @@ class ResidualBlock(nn.Module):
 
         h = self.block1(x, scale_shift=scale_shift)
         h = self.block2(h)
+
+        h = h * self.gca(h)
 
         return h + self.res_conv(x)
 
