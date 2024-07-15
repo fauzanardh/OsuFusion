@@ -147,95 +147,180 @@ class TransformerBlock(nn.Module):
             return self.forward_body(x)
 
 
-class AudioEncoder(nn.Module):
+class CrossTransformerBlock(nn.Module):
     def __init__(
-        self: "AudioEncoder",
+        self: "CrossTransformerBlock",
         dim_in: int,
-        dim_h: int,
-        dim_h_mult: Tuple[int] = (1, 2, 3, 4),
-        num_layer_blocks: Tuple[int] = (3, 3, 3, 3),
-        cross_embed_kernel_sizes: Tuple[int] = (3, 7, 15),
-        attn_dim_head: int = 64,
-        attn_heads: int = 8,
-        attn_qk_norm: bool = True,
-        attn_causal: bool = False,
-        attn_use_rotary_emb: bool = True,
-        attn_context_len: int = 8192,
-        attn_infini: bool = True,
-        attn_segment_len: int = 1024,
+        dim_head: int,
+        heads: int,
+        qk_norm: bool = True,
+        causal: bool = False,
+        use_rotary_emb: bool = True,
+        context_len: int = 4096,
+        infini: bool = True,
+        segment_len: int = 1024,
     ) -> None:
         super().__init__()
-        self.dim_h = dim_h
-        self.dim_cond = dim_h * 4
-        self.attn_context_len = attn_context_len
+        self.heads = heads
+        self.qk_norm = qk_norm
 
-        self.init_conv = CrossEmbedLayer(dim_in, dim_h, cross_embed_kernel_sizes)
-        self.time_mlp = nn.Sequential(
-            SinusoidalPositionEmbedding(self.dim_cond),
-            nn.Linear(self.dim_cond, self.dim_cond),
-            nn.SiLU(),
-            nn.Linear(self.dim_cond, self.dim_cond),
+        self.to_q = nn.Linear(dim_in, dim_head * heads, bias=False)
+        self.to_kv = nn.Linear(dim_in, dim_head * heads * 2, bias=False)
+        self.q_norm = MultiHeadRMSNorm(dim_head, heads) if qk_norm else None
+        self.k_norm = MultiHeadRMSNorm(dim_head, heads) if qk_norm else None
+
+        self.attn = Attention(
+            dim_head,
+            heads=heads,
+            causal=causal,
+            use_rotary_emb=use_rotary_emb,
+            context_len=context_len,
+            infini=infini,
+            segment_len=segment_len,
         )
+        self.linear = nn.Linear(dim_head * heads, dim_in)
 
-        dims_h = tuple((dim_h * mult) for mult in dim_h_mult)
-        dims_h = (dim_h, *dims_h)
-        in_out = tuple(zip(dims_h[:-1], dims_h[1:]))
-        n_layers = len(in_out)
+        self.gradient_checkpointing = False
 
-        layers = []
-        for i in range(n_layers):
-            layer_dim_in, layer_dim_out = in_out[i]
-            num_blocks = num_layer_blocks[i]
-            attn_context_len_layer = attn_context_len // (2**i)
-            attn_segment_len_layer = attn_segment_len // (2**i)
-            layers.append(
-                nn.ModuleList(
-                    [
-                        ResidualBlock(layer_dim_in, layer_dim_out, self.dim_cond),
-                        nn.ModuleList(
-                            [ResidualBlock(layer_dim_out, layer_dim_out, self.dim_cond) for _ in range(num_blocks)],
-                        ),
-                        nn.ModuleList(
-                            [
-                                TransformerBlock(
-                                    layer_dim_out,
-                                    attn_dim_head,
-                                    heads=attn_heads,
-                                    qk_norm=attn_qk_norm,
-                                    causal=attn_causal,
-                                    use_rotary_emb=attn_use_rotary_emb,
-                                    context_len=attn_context_len_layer,
-                                    infini=attn_infini,
-                                    segment_len=attn_segment_len_layer,
-                                )
-                                for _ in range(num_blocks)
-                            ],
-                        ),
-                        Downsample(layer_dim_out, layer_dim_out)
-                        if i < (n_layers - 1)
-                        else Parallel(
-                            nn.Conv1d(layer_dim_out, layer_dim_out, 3, padding=1),
-                            nn.Conv1d(layer_dim_out, layer_dim_out, 1),
-                        ),
-                    ],
-                ),
+    def forward_body(self: "CrossTransformerBlock", x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+        x = rearrange(x, "b d n -> b n d")
+        c = rearrange(c, "b d n -> b n d")
+
+        q = self.to_q(x)
+        k, v = self.to_kv(c).chunk(2, dim=-1)
+        q, k, v = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q, k, v))
+
+        if self.qk_norm:
+            q = self.q_norm(q)
+            k = self.k_norm(k)
+
+        out = self.attn(q, k, v)
+        out = rearrange(out, "b h n d -> b n (h d)")
+        return rearrange(x + self.linear(out), "b n d -> b d n")
+
+    def forward(self: "CrossTransformerBlock", x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+        if self.training and self.gradient_checkpointing:
+            return torch.utils.checkpoint.checkpoint(self.forward_body, x, c, use_reentrant=True)
+
+
+class UNetBlock(nn.Module):
+    def __init__(
+        self: "UNetBlock",
+        dim_in: int,
+        dim_out: int,
+        dim_cond: int,
+        layer_idx: int,
+        n_layers: int,
+        down_block: bool,
+        num_blocks: int,
+        attn_dim_head: int,
+        attn_heads: int,
+        attn_qk_norm: bool,
+        attn_causal: bool,
+        attn_use_rotary_emb: bool,
+        attn_context_len_layer: int,
+        attn_infini: bool,
+        attn_segment_len_layer: int,
+    ) -> None:
+        super().__init__()
+        self.init_resnet_x = ResidualBlock(dim_in if down_block else dim_in * 2, dim_out, dim_cond)
+        self.init_resnet_a = ResidualBlock(dim_in, dim_out, dim_cond)
+        self.resnets_x = nn.ModuleList(
+            [ResidualBlock(dim_out, dim_out, dim_cond) for _ in range(num_blocks)],
+        )
+        self.resnets_a = nn.ModuleList(
+            [ResidualBlock(dim_out, dim_out, dim_cond) for _ in range(num_blocks)],
+        )
+        self.transformers = nn.ModuleList(
+            [
+                TransformerBlock(
+                    dim_out,
+                    attn_dim_head,
+                    heads=attn_heads,
+                    qk_norm=attn_qk_norm,
+                    causal=attn_causal,
+                    use_rotary_emb=attn_use_rotary_emb,
+                    context_len=attn_context_len_layer,
+                    infini=attn_infini,
+                    segment_len=attn_segment_len_layer,
+                )
+                for _ in range(num_blocks)
+            ],
+        )
+        self.cross_transformers = nn.ModuleList(
+            [
+                CrossTransformerBlock(
+                    dim_out,
+                    attn_dim_head,
+                    heads=attn_heads,
+                    qk_norm=attn_qk_norm,
+                    causal=attn_causal,
+                    use_rotary_emb=attn_use_rotary_emb,
+                    context_len=attn_context_len_layer,
+                    infini=attn_infini,
+                    segment_len=attn_segment_len_layer,
+                )
+                for _ in range(num_blocks)
+            ],
+        )
+        if down_block:
+            self.resample_x = (
+                Downsample(dim_out, dim_out)
+                if layer_idx < (n_layers - 1)
+                else Parallel(
+                    nn.Conv1d(dim_out, dim_out, 3, padding=1),
+                    nn.Conv1d(dim_out, dim_out, 1),
+                )
             )
-        self.layers = nn.ModuleList(layers)
+            self.resample_a = (
+                Downsample(dim_out, dim_out)
+                if layer_idx < (n_layers - 1)
+                else Parallel(
+                    nn.Conv1d(dim_out, dim_out, 3, padding=1),
+                    nn.Conv1d(dim_out, dim_out, 1),
+                )
+            )
+        else:
+            self.resample_x = (
+                Upsample(dim_out, dim_out)
+                if layer_idx < (n_layers - 1)
+                else Parallel(
+                    nn.Conv1d(dim_out, dim_out, 3, padding=1),
+                    nn.Conv1d(dim_out, dim_out, 1),
+                )
+            )
+            self.resample_a = (
+                Upsample(dim_out, dim_out)
+                if layer_idx < (n_layers - 1)
+                else Parallel(
+                    nn.Conv1d(dim_out, dim_out, 3, padding=1),
+                    nn.Conv1d(dim_out, dim_out, 1),
+                )
+            )
 
-    def forward(self: "AudioEncoder", x: torch.Tensor) -> torch.Tensor:
-        x = self.init_conv(x)
-
-        # Fixed time embedding (to reuse the same resnet module)
-        b = x.shape[0]
-        t = torch.zeros(b, dtype=torch.long, device=x.device)
-        c = self.time_mlp(t)
-        for init_resnet, resnets, transformers, downsample in self.layers:
-            x = init_resnet(x, c)
-            for resnet, transformer in zip(resnets, transformers):
-                x = resnet(x, c)
-                x = transformer(x)
-            x = downsample(x)
-        return x
+    def forward(
+        self: "UNetBlock",
+        x: torch.Tensor,
+        a: torch.Tensor,
+        c: torch.Tensor,
+        c_a: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        x = self.init_resnet_x(x, c)
+        a = self.init_resnet_a(a, c_a)
+        for resnet_x, resnet_a, transformer, cross_transformer in zip(
+            self.resnets_x,
+            self.resnets_a,
+            self.transformers,
+            self.cross_transformers,
+        ):
+            x = resnet_x(x, c)
+            a = resnet_a(a, c_a)
+            x = transformer(x)
+            x = cross_transformer(x, a)
+        skip_connection = x
+        x = self.resample_x(x)
+        a = self.resample_a(a)
+        return x, a, skip_connection
 
 
 class UNet(nn.Module):
@@ -266,20 +351,7 @@ class UNet(nn.Module):
         self.attn_segment_len = attn_segment_len
 
         self.init_x = CrossEmbedLayer(dim_in_x, dim_h, cross_embed_kernel_sizes)
-        self.audio_encoder = AudioEncoder(
-            dim_in_a,
-            dim_h,
-            dim_h_mult=dim_h_mult,
-            num_layer_blocks=num_layer_blocks,
-            cross_embed_kernel_sizes=cross_embed_kernel_sizes,
-            attn_dim_head=attn_dim_head,
-            attn_heads=attn_heads,
-            attn_qk_norm=attn_qk_norm,
-            attn_causal=attn_causal,
-            attn_use_rotary_emb=attn_use_rotary_emb,
-            attn_infini=attn_infini,
-            attn_segment_len=attn_segment_len,
-        )
+        self.init_a = CrossEmbedLayer(dim_in_a, dim_h, cross_embed_kernel_sizes)
         self.final_resnet = ResidualBlock(dim_h * 2, dim_h, self.dim_cond)
         self.final_conv = zero_init(nn.Conv1d(dim_h, dim_in_x, 1))
 
@@ -309,53 +381,34 @@ class UNet(nn.Module):
             attn_context_len_layer = attn_context_len // (2**i)
             attn_segment_len_layer = attn_segment_len // (2**i)
             down_layers.append(
-                nn.ModuleList(
-                    [
-                        ResidualBlock(
-                            layer_dim_in,
-                            layer_dim_out,
-                            self.dim_cond,
-                        ),
-                        nn.ModuleList(
-                            [
-                                ResidualBlock(
-                                    layer_dim_out,
-                                    layer_dim_out,
-                                    self.dim_cond,
-                                )
-                                for _ in range(num_blocks)
-                            ],
-                        ),
-                        nn.ModuleList(
-                            [
-                                TransformerBlock(
-                                    layer_dim_out,
-                                    attn_dim_head,
-                                    heads=attn_heads,
-                                    qk_norm=attn_qk_norm,
-                                    causal=attn_causal,
-                                    use_rotary_emb=attn_use_rotary_emb,
-                                    context_len=attn_context_len_layer,
-                                    infini=attn_infini,
-                                    segment_len=attn_segment_len_layer,
-                                )
-                                for _ in range(num_blocks)
-                            ],
-                        ),
-                        Downsample(layer_dim_out, layer_dim_out)
-                        if i < (n_layers - 1)
-                        else Parallel(
-                            nn.Conv1d(layer_dim_out, layer_dim_out, 3, padding=1),
-                            nn.Conv1d(layer_dim_out, layer_dim_out, 1),
-                        ),
-                    ],
+                UNetBlock(
+                    layer_dim_in,
+                    layer_dim_out,
+                    self.dim_cond,
+                    i,
+                    n_layers,
+                    True,
+                    num_blocks,
+                    attn_dim_head,
+                    attn_heads,
+                    attn_qk_norm,
+                    attn_causal,
+                    attn_use_rotary_emb,
+                    attn_context_len_layer,
+                    attn_infini,
+                    attn_segment_len_layer,
                 ),
             )
         self.down_layers = nn.ModuleList(down_layers)
 
         # Middle
-        self.middle_resnet1 = ResidualBlock(
-            dims_h[-1] * 2,
+        self.middle_resnet1_x = ResidualBlock(
+            dims_h[-1],
+            dims_h[-1],
+            self.dim_cond,
+        )
+        self.middle_resnet1_a = ResidualBlock(
+            dims_h[-1],
             dims_h[-1],
             self.dim_cond,
         )
@@ -375,7 +428,28 @@ class UNet(nn.Module):
                 for _ in range(num_middle_transformers)
             ],
         )
-        self.middle_resnet2 = ResidualBlock(
+        self.middle_cross_transformer = nn.ModuleList(
+            [
+                CrossTransformerBlock(
+                    dims_h[-1],
+                    attn_dim_head,
+                    heads=attn_heads,
+                    qk_norm=attn_qk_norm,
+                    causal=attn_causal,
+                    use_rotary_emb=attn_use_rotary_emb,
+                    context_len=attn_context_len // (2 ** (n_layers - 1)),
+                    infini=attn_infini,
+                    segment_len=attn_segment_len,
+                )
+                for _ in range(num_middle_transformers)
+            ],
+        )
+        self.middle_resnet2_x = ResidualBlock(
+            dims_h[-1],
+            dims_h[-1],
+            self.dim_cond,
+        )
+        self.middle_resnet2_a = ResidualBlock(
             dims_h[-1],
             dims_h[-1],
             self.dim_cond,
@@ -393,46 +467,22 @@ class UNet(nn.Module):
             attn_context_len_layer = attn_context_len // (2 ** (n_layers - i - 1))
             attn_segment_len_layer = attn_segment_len // (2 ** (n_layers - i - 1))
             up_layers.append(
-                nn.ModuleList(
-                    [
-                        ResidualBlock(
-                            layer_dim_in * 2,
-                            layer_dim_out,
-                            self.dim_cond,
-                        ),
-                        nn.ModuleList(
-                            [
-                                ResidualBlock(
-                                    layer_dim_out,
-                                    layer_dim_out,
-                                    self.dim_cond,
-                                )
-                                for _ in range(num_blocks)
-                            ],
-                        ),
-                        nn.ModuleList(
-                            [
-                                TransformerBlock(
-                                    layer_dim_out,
-                                    attn_dim_head,
-                                    heads=attn_heads,
-                                    qk_norm=attn_qk_norm,
-                                    causal=attn_causal,
-                                    use_rotary_emb=attn_use_rotary_emb,
-                                    context_len=attn_context_len_layer,
-                                    infini=attn_infini,
-                                    segment_len=attn_segment_len_layer,
-                                )
-                                for _ in range(num_blocks)
-                            ],
-                        ),
-                        Upsample(layer_dim_out, layer_dim_out)
-                        if i < (n_layers - 1)
-                        else Parallel(
-                            nn.Conv1d(layer_dim_out, layer_dim_out, 3, padding=1),
-                            nn.Conv1d(layer_dim_out, layer_dim_out, 1),
-                        ),
-                    ],
+                UNetBlock(
+                    layer_dim_in,
+                    layer_dim_out,
+                    self.dim_cond,
+                    i,
+                    n_layers,
+                    False,
+                    num_blocks,
+                    attn_dim_head,
+                    attn_heads,
+                    attn_qk_norm,
+                    attn_causal,
+                    attn_use_rotary_emb,
+                    attn_context_len_layer,
+                    attn_infini,
+                    attn_segment_len_layer,
                 ),
             )
         self.up_layers = nn.ModuleList(up_layers)
@@ -460,7 +510,7 @@ class UNet(nn.Module):
         c: torch.Tensor,
         cond_drop_prob: float = 0.0,
     ) -> torch.Tensor:
-        n = x.shape[-1]
+        b, _, n = x.shape
         if self.attn_infini:
             # Pad to the multiple of attn_segment_len
             segment_len = self.attn_segment_len
@@ -473,7 +523,7 @@ class UNet(nn.Module):
         a = F.pad(a, (0, pad_len), value=0.0)
 
         x = self.init_x(x)
-        a = self.audio_encoder(a)
+        a = self.init_a(a)
 
         r = x.clone()
 
@@ -483,28 +533,26 @@ class UNet(nn.Module):
         c = torch.where(cond_mask, c, null_conds)
         c = self.cond_mlp(c) + self.time_mlp(t)
 
+        # Using fixed time step so we can reuse the modules
+        t_a = torch.zeros(b, dtype=torch.long, device=x.device)
+        c_a = self.time_mlp(t_a)
+
         skip_connections = []
-        for init_down_resnet, down_resnets, down_transformers, downsample in self.down_layers:
-            x = init_down_resnet(x, c)
-            for down_resnet, down_transformer in zip(down_resnets, down_transformers):
-                x = down_resnet(x, c)
-                x = down_transformer(x)
-            skip_connections.append(x)
-            x = downsample(x)
+        for down_layer in self.down_layers:
+            x, a, skip_connection_x = down_layer(x, a, c, c_a)
+            skip_connections.append(skip_connection_x)
 
-        x = torch.cat([x, a], dim=1)
-        x = self.middle_resnet1(x, c)
-        for transformer_block in self.middle_transformer:
-            x = transformer_block(x)
-        x = self.middle_resnet2(x, c)
+        x = self.middle_resnet1_x(x, c)
+        a = self.middle_resnet1_a(a, c_a)
+        for transformer, cross_transformer in zip(self.middle_transformer, self.middle_cross_transformer):
+            x = transformer(x)
+            x = cross_transformer(x, a)
+        x = self.middle_resnet2_x(x, c)
+        a = self.middle_resnet2_a(a, c_a)
 
-        for init_up_resnet, up_resnets, up_transformers, upsample in self.up_layers:
-            x = torch.cat([x, skip_connections.pop()], dim=1)
-            x = init_up_resnet(x, c)
-            for up_resnet, up_transformer in zip(up_resnets, up_transformers):
-                x = up_resnet(x, c)
-                x = up_transformer(x)
-            x = upsample(x)
+        for up_layer, skip_connection in zip(self.up_layers, reversed(skip_connections)):
+            x = torch.cat([x, skip_connection], dim=1)
+            x, a, _ = up_layer(x, a, c, c_a)
 
         x = torch.cat([x, r], dim=1)
         x = self.final_resnet(x, c)
