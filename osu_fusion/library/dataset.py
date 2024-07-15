@@ -76,8 +76,15 @@ class DummyDataset(StreamPerSample):
 
 
 class FullSequenceDataset(StreamPerSample):
+    MAX_LENGTH = 65536
+
     def sample_stream(self: StreamPerSample, map_file: Path) -> Generator[torch.Tensor, None, None]:
-        yield load_tensor(map_file)
+        x, a, c = load_tensor(map_file)
+
+        if x.shape[-1] > self.MAX_LENGTH:
+            return
+
+        yield x[..., : self.MAX_LENGTH], a[..., : self.MAX_LENGTH], c
 
 
 class RandomLengthDataset(StreamPerSample):
