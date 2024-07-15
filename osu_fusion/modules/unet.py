@@ -222,24 +222,6 @@ class AudioEncoder(nn.Module):
                 ),
             )
         self.layers = nn.ModuleList(layers)
-        self.middle_resnet1 = ResidualBlock(dims_h[-1], dims_h[-1], self.dim_cond)
-        self.middle_transformers = nn.Sequential(
-            *[
-                TransformerBlock(
-                    layer_dim_out,
-                    attn_dim_head,
-                    heads=attn_heads,
-                    qk_norm=attn_qk_norm,
-                    causal=attn_causal,
-                    use_rotary_emb=attn_use_rotary_emb,
-                    context_len=attn_context_len // (2 ** (n_layers - 1)),
-                    infini=attn_infini,
-                    segment_len=attn_segment_len // (2 ** (n_layers - 1)),
-                )
-                for _ in range(num_middle_transformers)
-            ],
-        )
-        self.middle_resnet2 = ResidualBlock(dims_h[-1], dims_h[-1], self.dim_cond)
 
     def forward(self: "AudioEncoder", x: torch.Tensor) -> torch.Tensor:
         x = self.init_conv(x)
@@ -254,10 +236,6 @@ class AudioEncoder(nn.Module):
                 x = resnet(x, c)
                 x = transformer(x)
             x = downsample(x)
-
-        x = self.middle_resnet1(x, c)
-        x = self.middle_transformers(x)
-        x = self.middle_resnet2(x, c)
         return x
 
 
