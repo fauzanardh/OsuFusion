@@ -263,6 +263,7 @@ class UNet(nn.Module):
         self.dim_h = dim_h
         self.dim_cond = dim_h * 4
         self.attn_context_len = attn_context_len
+        self.attn_infini = attn_infini
         self.attn_segment_len = attn_segment_len
 
         self.init_x = CrossEmbedLayer(dim_in_x, dim_h, cross_embed_kernel_sizes)
@@ -461,8 +462,14 @@ class UNet(nn.Module):
         cond_drop_prob: float = 0.0,
     ) -> torch.Tensor:
         n = x.shape[-1]
-        segment_len = self.attn_segment_len
-        pad_len = (segment_len - (n % segment_len)) % segment_len
+        if self.attn_infini:
+            # Pad to the multiple of attn_segment_len
+            segment_len = self.attn_segment_len
+            pad_len = (segment_len - (n % segment_len)) % segment_len
+        else:
+            # Pad to the multiple of 2^unet depth
+            depth = len(self.down_layers)
+            pad_len = (2**depth - (n % (2**depth))) % (2**depth)
         x = F.pad(x, (0, pad_len), value=-1.0)
         a = F.pad(a, (0, pad_len), value=0.0)
 
