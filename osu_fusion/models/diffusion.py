@@ -2,7 +2,7 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
-from diffusers import DDPMScheduler
+from diffusers import DDIMScheduler
 from einops import repeat
 from torch.nn import functional as F  # noqa: N812
 from tqdm.auto import tqdm
@@ -33,7 +33,6 @@ class OsuFusion(nn.Module):
         cond_drop_prob: float = 0.25,
         train_timesteps: int = 1000,
         sampling_timesteps: int = 35,
-        dynamic_thresholding_percentile: float = 0.995,
     ) -> None:
         super().__init__()
 
@@ -56,11 +55,9 @@ class OsuFusion(nn.Module):
             attn_segment_len=attn_segment_len,
         )
 
-        self.scheduler = DDPMScheduler(
+        self.scheduler = DDIMScheduler(
             num_train_timesteps=train_timesteps,
             beta_schedule="scaled_linear",
-            # thresholding=True,
-            # dynamic_thresholding_ratio=dynamic_thresholding_percentile,
         )
         self.train_timesteps = train_timesteps
         self.sampling_timesteps = sampling_timesteps
