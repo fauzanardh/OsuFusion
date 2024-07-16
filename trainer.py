@@ -71,36 +71,6 @@ def collate_fn(
     return out_x, out_a, out_c, orig_len
 
 
-def train_step(
-    args: ArgumentParser,
-    accelerator: Accelerator,
-    model: OsuFusion,
-    optimizer: AdamW,
-    scheduler: OneCycleLR,
-    batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-) -> float:
-    orig_len = None
-    if args.full_sequence or args.random_length:
-        x, a, c, orig_len = batch
-    else:
-        x, a, c = batch
-    with accelerator.autocast() and accelerator.accumulate(model):
-        try:
-            loss = model(x, a, c, orig_len)
-        except AssertionError:
-            return None
-    # Skip if loss is NaN
-    if torch.isnan(loss):
-        return loss
-    accelerator.backward(loss)
-    # if accelerator.sync_gradients:
-    #     accelerator.clip_grad_norm_(model.parameters(), 1.0)
-    optimizer.step()
-    optimizer.zero_grad(set_to_none=True)
-    scheduler.step()
-    return loss
-
-
 def sample_step(
     accelerator: Accelerator,
     model: OsuFusion,
@@ -280,30 +250,35 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         disable=not accelerator.is_local_main_process,
     ) as pbar:
         while current_step < args.total_steps:
-            accumulation_loss = 0.0
+            batch_loss = 0.0
             for _ in range(args.gradient_accumulation_steps):
                 batch = next(cycle_dataloader)
-                loss = train_step(args, accelerator, model, optimizer, scheduler, batch)
+                with accelerator.autocast() and accelerator.accumulate(model):
+                    try:
+                        loss = model(*batch)
+                    except AssertionError:
+                        continue
 
-                if loss is None or torch.isnan(loss):
-                    print("NaN loss encountered")
-                    continue
-                accumulation_loss += loss.item()
-            losses.append(accumulation_loss)
+                    accelerator.backward(loss)
+                    optimizer.step()
+                    optimizer.zero_grad(set_to_none=True)
+                    scheduler.step()
+                    batch_loss += loss.item() / args.gradient_accumulation_steps
 
+            losses.append(batch_loss)
             if len(losses) > args.save_every:
                 losses.pop(0)
 
             avg_loss = sum(losses) / len(losses)
             pbar.set_description(
-                f"Steps: {current_step + 1}, loss={accumulation_loss:.5f}, avg_loss={avg_loss:.5f}, lr={scheduler.get_last_lr()[0]:.5f}",  # noqa: E501
+                f"Steps: {current_step + 1}, loss={batch_loss:.5f}, avg_loss={avg_loss:.5f}, lr={scheduler.get_last_lr()[0]:.5f}",  # noqa: E501
             )
             pbar.update()
 
             if accelerator.is_main_process:
                 accelerator.log(
                     {
-                        "loss": accumulation_loss,
+                        "loss": batch_loss,
                         "lr": scheduler.get_last_lr()[0],
                     },
                     step=current_step + 1,
