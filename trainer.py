@@ -272,10 +272,13 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
 
                     accelerator.backward(loss)
                     total_norm += get_total_norm(model.parameters()) / args.gradient_accumulation_steps
+                    batch_loss += loss.item() / args.gradient_accumulation_steps
+
+                    if args.clip_grad_norm > 0.0:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
                     optimizer.step()
                     optimizer.zero_grad(set_to_none=True)
                     scheduler.step()
-                    batch_loss += loss.item() / args.gradient_accumulation_steps
 
             losses.append(batch_loss)
             if len(losses) > args.save_every:
@@ -341,6 +344,7 @@ def main() -> None:
     args.add_argument("--mixed-precision", type=str, default="bf16", choices=["no", "fp16", "bf16"])
     args.add_argument("--gradient-checkpointing", action="store_true")
     args.add_argument("--gradient-accumulation-steps", type=int, default=1)
+    args.add_argument("--clip-grad-norm", type=float, default=0.0)
     args.add_argument("--model-dim", type=int, default=512)
     args.add_argument("--model-attn-heads", type=int, default=8)
     args.add_argument("--model-depth", type=int, default=12)
