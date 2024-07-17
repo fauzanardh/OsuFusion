@@ -261,6 +261,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     ) as pbar:
         while current_step < args.total_steps:
             batch_loss = 0.0
+            total_norm = 0.0
             for _ in range(args.gradient_accumulation_steps):
                 batch = next(cycle_dataloader)
                 with accelerator.autocast() and accelerator.accumulate(model):
@@ -270,6 +271,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                         continue
 
                     accelerator.backward(loss)
+                    total_norm += get_total_norm(model.parameters()) / args.gradient_accumulation_steps
                     optimizer.step()
                     optimizer.zero_grad(set_to_none=True)
                     scheduler.step()
@@ -280,7 +282,6 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                 losses.pop(0)
 
             avg_loss = sum(losses) / len(losses)
-            total_norm = get_total_norm(model.parameters())
             pbar.set_description(
                 f"Steps: {current_step + 1}, loss={batch_loss:.5f}, avg_loss={avg_loss:.5f}, total_norm={total_norm:.5f}, lr={scheduler.get_last_lr()[0]:.5f}",  # noqa: E501
             )
