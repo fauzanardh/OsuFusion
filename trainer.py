@@ -24,6 +24,13 @@ from osu_fusion.models.diffusion import OsuFusion
 from osu_fusion.scripts.dataset_creator import load_audio, normalize_context
 
 
+def get_total_norm(parameters: List[torch.Tensor], norm_type: float = 2.0) -> float:
+    return torch.norm(
+        torch.stack([torch.norm(p.grad.detach(), norm_type) for p in parameters]),
+        norm_type,
+    ).item()
+
+
 def cycle(dataloader: DataLoader) -> Generator[Tuple[torch.Tensor, torch.Tensor, torch.Tensor], None, None]:
     while True:
         for batch in dataloader:
@@ -270,8 +277,9 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                 losses.pop(0)
 
             avg_loss = sum(losses) / len(losses)
+            total_norm = get_total_norm(model.parameters())
             pbar.set_description(
-                f"Steps: {current_step + 1}, loss={batch_loss:.5f}, avg_loss={avg_loss:.5f}, lr={scheduler.get_last_lr()[0]:.5f}",  # noqa: E501
+                f"Steps: {current_step + 1}, loss={batch_loss:.5f}, avg_loss={avg_loss:.5f}, total_norm={total_norm:.5f}, lr={scheduler.get_last_lr()[0]:.5f}",  # noqa: E501
             )
             pbar.update()
 
@@ -279,6 +287,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                 accelerator.log(
                     {
                         "loss": batch_loss,
+                        "total_norm": total_norm,
                         "lr": scheduler.get_last_lr()[0],
                     },
                     step=current_step + 1,
