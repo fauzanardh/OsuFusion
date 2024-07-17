@@ -25,10 +25,12 @@ from osu_fusion.scripts.dataset_creator import load_audio, normalize_context
 
 
 def get_total_norm(parameters: List[torch.Tensor], norm_type: float = 2.0) -> float:
+    grads = [p.grad for p in parameters if p.grad is not None]
+    if len(grads) == 0:
+        return 0.0
     norms = []
-    for p in parameters:
-        if p.grad is not None:
-            norms.append(torch.norm(p.grad.detach(), norm_type))
+    for grad in grads:
+        norms.append(torch.norm(grad.detach(), norm_type))
     return torch.norm(torch.stack(norms), norm_type).item()
 
 
