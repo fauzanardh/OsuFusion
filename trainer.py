@@ -9,11 +9,12 @@ import numpy as np
 import torch
 from accelerate import Accelerator
 from accelerate.utils import ProjectConfiguration
+from bitsandbytes.optim import AdamW8bit
+from diffusers.optimization import get_cosine_with_hard_restarts_schedule_with_warmup as cosine_with_restarts
 from matplotlib import pyplot as plt
 from safetensors.torch import save_file
 from torch.nn import functional as F  # noqa: N812
-from torch.optim import AdamW
-from torch.optim.lr_scheduler import OneCycleLR
+from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
@@ -136,8 +137,8 @@ def save_model_sd(model: OsuFusion, project_dir: Path) -> None:
 
 def save_checkpoint(
     model: OsuFusion,
-    optimizer: AdamW,
-    scheduler: OneCycleLR,
+    optimizer: AdamW8bit,
+    scheduler: LambdaLR,
     current_step: int,
     project_dir: Path,
     is_nan: bool = False,
@@ -168,8 +169,8 @@ def save_checkpoint(
 
 def load_checkpoint(
     model: OsuFusion,
-    optimizer: AdamW,
-    scheduler: OneCycleLR,
+    optimizer: AdamW8bit,
+    scheduler: LambdaLR,
     checkpoint_path: Path,
     reset_steps: bool = False,
 ) -> int:
@@ -211,12 +212,12 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
 
     model = OsuFusion(args.model_dim, attn_infini=False)
     model.unet.set_gradient_checkpointing(args.gradient_checkpointing)
-    optimizer = AdamW(model.parameters(), lr=args.lr)
-    scheduler = OneCycleLR(
+    optimizer = AdamW8bit(model.parameters(), lr=args.lr, optim_bits=32, percentile_clipping=5)
+    scheduler = cosine_with_restarts(
         optimizer,
-        max_lr=args.lr,
-        total_steps=args.total_steps,
-        pct_start=args.pct_start,
+        num_warmup_steps=args.warmup_steps,
+        num_training_steps=args.total_steps,
+        num_cycles=args.num_cycles,
     )
 
     print("Loading dataset...")
@@ -366,7 +367,8 @@ def main() -> None:
     args.add_argument("--total-steps", type=int, default=1000000)
     args.add_argument("--save-every", type=int, default=1000)
     args.add_argument("--max-num-checkpoints", type=int, default=5)
-    args.add_argument("--pct-start", type=float, default=0.002)
+    args.add_argument("--warmup-steps", type=int, default=1000)
+    args.add_argument("--num-cycles", type=int, default=10)
     args.add_argument("--sample-every", type=int, default=1000)
     args.add_argument("--sample-audio", type=Path, default=None)
     args = args.parse_args()
