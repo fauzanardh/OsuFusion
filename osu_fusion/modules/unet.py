@@ -24,6 +24,26 @@ def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
 
+class STEFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx: torch.autograd.Function, x: torch.Tensor) -> torch.Tensor:
+        dtype = x.dtype
+        out = (x > 0.0).to(dtype)
+        return out * 2 - 1  # Scale back to [-1, 1]
+
+    @staticmethod
+    def backward(ctx: torch.autograd.Function, grad: torch.Tensor) -> torch.Tensor:
+        return grad
+
+
+class StraightThroughEstimator(nn.Module):
+    def __init__(self: "StraightThroughEstimator") -> None:
+        super().__init__()
+
+    def forward(self: "StraightThroughEstimator", x: torch.Tensor) -> torch.Tensor:
+        return STEFunction.apply(x)
+
+
 class SinusoidalPositionEmbedding(nn.Module):
     def __init__(self: "SinusoidalPositionEmbedding", dim: int, theta: int = 10000) -> None:
         super().__init__()
@@ -332,6 +352,7 @@ class UNet(nn.Module):
         )
         self.final_resnet = ResidualBlock(dim_h * 2, dim_h, self.dim_cond)
         self.final_conv = zero_init(nn.Conv1d(dim_h, dim_in_x, 1))
+        self.final_ste = StraightThroughEstimator()
 
         self.feature_extractor_a = nn.Linear(dim_h * dim_h_mult[-1] * 2, self.dim_cond)
         self.audio_mlp = nn.Sequential(
@@ -515,4 +536,9 @@ class UNet(nn.Module):
 
         x = torch.cat([x, r], dim=1)
         x = self.final_resnet(x, c)
-        return self.final_conv(x)[:, :, :n]
+        x = torch.tanh(self.final_conv(x)[:, :, :n])
+
+        hit_signals = self.final_ste(x[:, :4, :])
+        cursor_signals = x[:, 4:, :]
+
+        return torch.cat([hit_signals, cursor_signals], dim=1)
