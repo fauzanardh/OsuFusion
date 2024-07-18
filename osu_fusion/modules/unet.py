@@ -6,6 +6,7 @@ import torch.nn as nn
 from einops import rearrange, repeat
 from torch.nn import functional as F  # noqa: N812
 
+from osu_fusion.library.osu.data.encode import HIT_DIM
 from osu_fusion.modules.attention import Attention
 from osu_fusion.modules.residual import ResidualBlock
 from osu_fusion.modules.utils import prob_mask_like
@@ -538,7 +539,7 @@ class UNet(nn.Module):
         x = self.final_resnet(x, c)
         x = torch.tanh(self.final_conv(x)[:, :, :n])
 
-        hit_signals = self.final_ste(x[:, :4, :])
-        cursor_signals = x[:, 4:, :]
+        hit_signals = self.final_ste(x[:, :HIT_DIM, :])
+        cursor_signals = x[:, HIT_DIM:, :]
 
         return torch.cat([hit_signals, cursor_signals], dim=1)

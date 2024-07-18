@@ -21,7 +21,9 @@ BeatmapEncoding = IntEnum(
     ],
     start=0,
 )
-TOTAL_DIM = len(BeatmapEncoding)
+HIT_DIM = 4
+CURSOR_DIM = 2
+TOTAL_DIM = HIT_DIM + CURSOR_DIM
 
 
 def encode_beatmap(beatmap: Beatmap, frame_times: npt.NDArray) -> npt.NDArray:
