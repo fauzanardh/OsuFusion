@@ -6,7 +6,6 @@ import torch.nn as nn
 from einops import rearrange, repeat
 from torch.nn import functional as F  # noqa: N812
 
-from osu_fusion.library.osu.data.encode import HIT_DIM
 from osu_fusion.modules.attention import Attention
 from osu_fusion.modules.residual import ResidualBlock
 from osu_fusion.modules.utils import prob_mask_like
@@ -18,31 +17,6 @@ def zero_init(module: nn.Module) -> nn.Module:
         nn.init.zeros_(module.bias)
 
     return module
-
-
-@torch.jit.script
-def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
-
-
-class STEFunction(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx: torch.autograd.Function, x: torch.Tensor) -> torch.Tensor:
-        dtype = x.dtype
-        out = (x > 0.0).to(dtype)
-        return out * 2 - 1  # Scale back to [-1, 1]
-
-    @staticmethod
-    def backward(ctx: torch.autograd.Function, grad: torch.Tensor) -> torch.Tensor:
-        return grad
-
-
-class StraightThroughEstimator(nn.Module):
-    def __init__(self: "StraightThroughEstimator") -> None:
-        super().__init__()
-
-    def forward(self: "StraightThroughEstimator", x: torch.Tensor) -> torch.Tensor:
-        return STEFunction.apply(x)
 
 
 class SinusoidalPositionEmbedding(nn.Module):
@@ -353,7 +327,6 @@ class UNet(nn.Module):
         )
         self.final_resnet = ResidualBlock(dim_h * 2, dim_h, self.dim_cond)
         self.final_conv = zero_init(nn.Conv1d(dim_h, dim_in_x, 1))
-        self.final_ste = StraightThroughEstimator()
 
         self.feature_extractor_a = nn.Linear(dim_h * dim_h_mult[-1] * 2, self.dim_cond)
         self.audio_mlp = nn.Sequential(
@@ -537,9 +510,5 @@ class UNet(nn.Module):
 
         x = torch.cat([x, r], dim=1)
         x = self.final_resnet(x, c)
-        x = torch.tanh(self.final_conv(x)[:, :, :n])
 
-        hit_signals = self.final_ste(x[:, :HIT_DIM, :])
-        cursor_signals = x[:, HIT_DIM:, :]
-
-        return torch.cat([hit_signals, cursor_signals], dim=1)
+        return torch.tanh(self.final_conv(x)[:, :, :n])
