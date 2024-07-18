@@ -58,6 +58,7 @@ class OsuFusion(nn.Module):
         self.scheduler = DDIMScheduler(
             num_train_timesteps=train_timesteps,
             beta_schedule="scaled_linear",
+            prediction_type="sample",
         )
         self.train_timesteps = train_timesteps
         self.sampling_timesteps = sampling_timesteps
@@ -105,7 +106,7 @@ class OsuFusion(nn.Module):
         pred = self.unet(x_noisy, a, timesteps, c, self.cond_drop_prob)
 
         # Calculate loss
-        loss = F.mse_loss(pred, noise, reduction="none")
+        loss = F.mse_loss(pred, x, reduction="none")
 
         # Create mask for losses to ignore padding
         b, _, n = x.shape
