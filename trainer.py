@@ -34,6 +34,15 @@ def get_total_norm(parameters: List[torch.Tensor], norm_type: float = 2.0) -> fl
     return torch.norm(torch.stack(norms), norm_type).item()
 
 
+def filter_dataset(dataset: List[Path], max_length: int) -> List[Path]:
+    filtered = []
+    for path in tqdm(dataset, desc="Filtering dataset...", smoothing=0.0, dynamic_ncols=True):
+        beatmap = np.load(path)
+        if beatmap["x"].shape[1] <= max_length:
+            filtered.append(path)
+    return filtered
+
+
 def cycle(dataloader: DataLoader) -> Generator[Tuple[torch.Tensor, torch.Tensor, torch.Tensor], None, None]:
     while True:
         for batch in dataloader:
@@ -212,6 +221,8 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
 
     print("Loading dataset...")
     all_maps = list(args.dataset_dir.rglob("*.map.npz"))
+    if args.max_length > 0:
+        all_maps = filter_dataset(all_maps, args.max_length)
     random.shuffle(all_maps)
 
     if args.full_sequence:
@@ -341,6 +352,7 @@ def main() -> None:
     args.add_argument("--reset-steps", action="store_true")
     args.add_argument("--full-sequence", action="store_true")
     args.add_argument("--random-length", action="store_true")
+    args.add_argument("--max-length", type=int, default=0)
     args.add_argument("--mixed-precision", type=str, default="bf16", choices=["no", "fp16", "bf16"])
     args.add_argument("--gradient-checkpointing", action="store_true")
     args.add_argument("--gradient-accumulation-steps", type=int, default=1)
