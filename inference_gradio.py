@@ -81,6 +81,8 @@ def generate_beatmap(
     music_artists: str,
     music_title: str,
     bpm: float,
+    bpm_enable: bool,
+    allow_beat_snap: bool,
     version_name: str,
     batch_size: int,
     cfg: float,
@@ -132,13 +134,17 @@ def generate_beatmap(
         signals = generated.cpu().detach().numpy()
         for i, signal in enumerate(signals):
             metadata.version = f"{metadata.version} - batch {i + 1}_{batch_size}"
-            beatmap = decode_beatmap(metadata, signal, frame_times, bpm if bpm > 0 else None)
+            beatmap = decode_beatmap(metadata, signal, frame_times, bpm if bpm_enable else None, allow_beat_snap)
             mapset_archive.writestr(
                 f"{metadata.artist} - {metadata.title} (OsuFusion) [{metadata.version}].osu",
                 beatmap,
             )
 
     return gr.update(value=mapset_path, visible=True), f"Beatmap generated successfully: {mapset_path}"
+
+
+def update_bpm_interactivity(bpm_enable: bool) -> dict:
+    return gr.Slider(interactive=bpm_enable)
 
 
 # Define the Gradio interface
@@ -173,7 +179,10 @@ def gradio_interface() -> Blocks:
             music_artists = gr.Textbox(label="Music Artists", value="Unknown Artists")
             music_title = gr.Textbox(label="Music Title", value="Unknown Title")
             version_name = gr.Textbox(label="Version Name", value="Unknown Version")
-            bpm = gr.Slider(1, 300, value=-1, step=1, label="BPM")
+            with gr.Column():
+                bpm_enable = gr.Checkbox(label="Enable BPM")
+                allow_beat_snap = gr.Checkbox(value=True, label="Allow Beat Snap")
+                bpm = gr.Slider(1, 300, value=1, step=1, label="BPM", interactive=False)
 
         with gr.Row():
             batch_size = gr.Slider(1, 10, value=1, step=1, label="Batch Size")
@@ -183,6 +192,8 @@ def gradio_interface() -> Blocks:
         generate_button = gr.Button("Generate Beatmap")
         output_file = gr.File(label="Generated Beatmap", interactive=False)
         output_text = gr.Textbox(label="Generation Status")
+
+        bpm_enable.change(update_bpm_interactivity, inputs=[bpm_enable], outputs=[bpm])
 
         generate_button.click(
             generate_beatmap,
@@ -196,6 +207,8 @@ def gradio_interface() -> Blocks:
                 music_artists,
                 music_title,
                 bpm,
+                bpm_enable,
+                allow_beat_snap,
                 version_name,
                 batch_size,
                 cfg,
@@ -210,4 +223,4 @@ def gradio_interface() -> Blocks:
 # Launch the Gradio app
 if __name__ == "__main__":
     app = gradio_interface()
-    app.launch()
+    app.launch(share=True)

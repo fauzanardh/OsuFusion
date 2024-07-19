@@ -101,6 +101,7 @@ def decode_beatmap(  # noqa: C901
     encoded_beatmap: npt.NDArray,
     frame_times: npt.NDArray,
     bpm: Optional[float],
+    allow_beat_snap: bool = True,
 ) -> str:
     cursor_signals = encoded_beatmap[[BeatmapEncoding.CURSOR_X, BeatmapEncoding.CURSOR_Y]]
     cursor_signals = ((cursor_signals + 1) / 2) * np.array([[512], [384]])
@@ -153,6 +154,9 @@ def decode_beatmap(  # noqa: C901
             bpm = 60000 / best_period
             timing_beat_len = 60000 / bpm
             beat_snap, timing_point = get_timings(hit_times, timing_beat_len)
+
+    if not allow_beat_snap:
+        beat_snap = False
 
     beat_length = timing_point.beat_length
     base_slider_vel = SLIDER_MULT * 100 / beat_length
