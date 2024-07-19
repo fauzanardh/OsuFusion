@@ -13,7 +13,7 @@ from osu_fusion.library.osu.data.hit import decode_extents, decode_flips
 
 BEAT_DIVISOR = 16
 SLIDER_MULT = 1.0
-MIN_BPM = 60
+MIN_BPM = 1
 MAX_BPM = 300
 
 

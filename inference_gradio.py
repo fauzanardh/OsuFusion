@@ -81,6 +81,7 @@ def generate_beatmap(
     music_artists: str,
     music_title: str,
     version_name: str,
+    bpm: float,
     batch_size: int,
     cfg: float,
     steps: int,
@@ -114,6 +115,7 @@ def generate_beatmap(
         Path(music_path).name,
         music_title,
         music_artists,
+        bpm if bpm > 0 else None,
         version_name,
         cs,
         ar,
@@ -172,6 +174,7 @@ def gradio_interface() -> Blocks:
             music_artists = gr.Textbox(label="Music Artists", value="Unknown Artists")
             music_title = gr.Textbox(label="Music Title", value="Unknown Title")
             version_name = gr.Textbox(label="Version Name", value="Unknown Version")
+            bpm = gr.Slider(1, 300, value=-1, step=1, label="BPM")
 
         with gr.Row():
             batch_size = gr.Slider(1, 10, value=1, step=1, label="Batch Size")
@@ -193,6 +196,7 @@ def gradio_interface() -> Blocks:
                 sr,
                 music_artists,
                 music_title,
+                bpm,
                 version_name,
                 batch_size,
                 cfg,
