@@ -22,7 +22,6 @@ class Metadata:
     audio_filename: str
     title: str
     artist: str
-    bpm: Optional[float]
     version: str
     cs: float
     ar: float
@@ -97,7 +96,12 @@ def get_timings(hit_times: npt.NDArray, timing_beat_len: float) -> Tuple[bool, T
     return True, TimingPoint(offset, timing_beat_len, None, 4, None)
 
 
-def decode_beatmap(metadata: Metadata, encoded_beatmap: npt.NDArray, frame_times: npt.NDArray) -> str:  # noqa: C901
+def decode_beatmap(  # noqa: C901
+    metadata: Metadata,
+    encoded_beatmap: npt.NDArray,
+    frame_times: npt.NDArray,
+    bpm: Optional[float],
+) -> str:
     cursor_signals = encoded_beatmap[[BeatmapEncoding.CURSOR_X, BeatmapEncoding.CURSOR_Y]]
     cursor_signals = ((cursor_signals + 1) / 2) * np.array([[512], [384]])
 
@@ -127,8 +131,8 @@ def decode_beatmap(metadata: Metadata, encoded_beatmap: npt.NDArray, frame_times
     hos = []
     tps = []
 
-    if metadata.bpm is not None:
-        timing_beat_len = 60000 / metadata.bpm
+    if bpm is not None:
+        timing_beat_len = 60000 / bpm
         hit_times = frame_times[hit_locs]
         beat_snap, timing_point = get_timings(hit_times, timing_beat_len)
     else:

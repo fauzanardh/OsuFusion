@@ -115,7 +115,6 @@ def generate_beatmap(
         Path(music_path).name,
         music_title,
         music_artists,
-        bpm if bpm > 0 else None,
         version_name,
         cs,
         ar,
@@ -133,7 +132,7 @@ def generate_beatmap(
         signals = generated.cpu().detach().numpy()
         for i, signal in enumerate(signals):
             metadata.version = f"{metadata.version} - batch {i + 1}_{batch_size}"
-            beatmap = decode_beatmap(metadata, signal, frame_times)
+            beatmap = decode_beatmap(metadata, signal, frame_times, bpm if bpm > 0 else None)
             mapset_archive.writestr(
                 f"{metadata.artist} - {metadata.title} (OsuFusion) [{metadata.version}].osu",
                 beatmap,
