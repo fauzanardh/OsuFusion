@@ -1,13 +1,20 @@
 from dataclasses import asdict, dataclass
 from functools import partial
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import numpy.typing as npt
+from scipy import signal
 
+from osu_fusion.library.osu.beatmap import TimingPoint
 from osu_fusion.library.osu.data.encode import BeatmapEncoding
 from osu_fusion.library.osu.data.fit_bezier import fit_bezier, segment_length
 from osu_fusion.library.osu.data.hit import decode_extents, decode_flips
+
+BEAT_DIVISOR = 16
+SLIDER_MULT = 1.0
+MIN_BPM = 60
+MAX_BPM = 300
 
 
 @dataclass
@@ -15,6 +22,7 @@ class Metadata:
     audio_filename: str
     title: str
     artist: str
+    bpm: Optional[float]
     version: str
     cs: float
     ar: float
@@ -82,6 +90,13 @@ def add_hit_circle(cursor_signals: npt.NDArray, onset_loc: int, t: float, combo_
     return f"{x},{y},{t},{2**0 + combo_bit},0,0:0:0:0:"
 
 
+def get_timings(hit_times: npt.NDArray, timing_beat_len: float) -> Tuple[bool, TimingPoint]:
+    offsets = hit_times % timing_beat_len
+    hist, bin_edges = np.histogram(offsets, bins=100, range=(0, timing_beat_len))
+    offset = bin_edges[np.argmax(hist)]
+    return True, TimingPoint(offset, timing_beat_len, None, 4, None)
+
+
 def decode_beatmap(metadata: Metadata, encoded_beatmap: npt.NDArray, frame_times: npt.NDArray) -> str:  # noqa: C901
     cursor_signals = encoded_beatmap[[BeatmapEncoding.CURSOR_X, BeatmapEncoding.CURSOR_Y]]
     cursor_signals = ((cursor_signals + 1) / 2) * np.array([[512], [384]])
@@ -109,30 +124,64 @@ def decode_beatmap(metadata: Metadata, encoded_beatmap: npt.NDArray, frame_times
             continue
         slider_ends[onset_idx] = slider_end
 
-    timing_points = []
-    hit_objects = []
+    hos = []
+    tps = []
 
-    slider_ts = []
-    slider_vels = []
+    if metadata.bpm is not None:
+        timing_beat_len = 60000 / metadata.bpm
+        hit_times = frame_times[hit_locs]
+        beat_snap, timing_point = get_timings(hit_times, timing_beat_len)
+    else:
+        hit_times = frame_times[hit_locs]
+        time_diffs = np.diff(hit_times)
+        autocorr = signal.correlate(time_diffs, time_diffs, mode="full")
+        autocorr = autocorr[len(autocorr) // 2 :]
 
+        valid_periods = 60000 / np.arange(MIN_BPM, MAX_BPM + 1)
+        peaks, _ = signal.find_peaks(autocorr, distance=valid_periods.min())
+
+        valid_peaks = peaks[(valid_periods.min() <= peaks) & (peaks <= valid_periods.max())]
+        if len(valid_peaks) == 0:
+            print("Warning: no valid BPM found within the range, disabling beat snap")
+            beat_snap, timing_point = False, TimingPoint(0, 60000 / 200, None, 4, None)
+        else:
+            best_period = valid_peaks[np.argmax(autocorr[valid_peaks])]
+            bpm = 60000 / best_period
+            timing_beat_len = 60000 / bpm
+            beat_snap, timing_point = get_timings(hit_times, timing_beat_len)
+
+    beat_length = timing_point.beat_length
+    base_slider_vel = SLIDER_MULT * 100 / beat_length
+    beat_offset = timing_point.t
+    tps.append(f"{timing_point.t},{timing_point.beat_length},{timing_point.meter},0,0,50,1,0")
+
+    last_up = None
     for hit_loc, new_combo, sustain_end, slider_end in zip(hit_locs, new_combos, sustain_ends, slider_ends):
         t = frame_times[hit_loc]
+        u = frame_times[sustain_end]
         combo_bit = 2**2 if new_combo else 0
 
-        add_hit_circle_ = partial(add_hit_circle, cursor_signals, hit_loc, t, combo_bit)
+        if beat_snap:
+            beat_f_len = beat_length / BEAT_DIVISOR
+            t = round((t - beat_offset) / beat_f_len) * beat_f_len + beat_offset
+            u = round((u - beat_offset) / beat_f_len) * beat_f_len + beat_offset
 
-        if sustain_end == -1:
-            hit_objects.append(add_hit_circle_())
+        if last_up is not None and t <= last_up + 1:
             continue
 
-        u = frame_times[sustain_end]
+        _add_hit_circle = partial(add_hit_circle, cursor_signals, hit_loc, t, combo_bit)
+
+        if sustain_end == -1:
+            hos.append(_add_hit_circle())
+            continue
+
         if u - t < 20:
-            hit_objects.append(add_hit_circle_())
+            hos.append(_add_hit_circle())
             continue
 
         if slider_end == -1:
             # Spinner
-            hit_objects.append(f"256,192,{t},{2**3 + combo_bit},0,{u}")
+            hos.append(f"256,192,{t},{2**3 + combo_bit},0,{u}")
             continue
 
         # Slider
@@ -141,28 +190,24 @@ def decode_beatmap(metadata: Metadata, encoded_beatmap: npt.NDArray, frame_times
 
         if length == 0:
             # zero-length slider
-            hit_objects.append(add_hit_circle_())
+            hos.append(_add_hit_circle())
 
         x1, y1 = control_points[0]
         curve_points = "|".join(f"{x}:{y}" for x, y in control_points[1:])
-        hit_objects.append(f"{x1},{y1},{t},{2**1 + combo_bit},0,B|{curve_points},{num_slides},{length}")
-        slider_ts.append(t)
-        slider_vels.append(length * num_slides / (u - t))
+        hos.append(f"{x1},{y1},{t},{2**1 + combo_bit},0,B|{curve_points},{num_slides},{length}")
 
-    base_slider_vel = (min(slider_vels) * max(slider_vels)) ** 0.5
-    beat_len = 100 / base_slider_vel
+        if len(tps) == 0:
+            print("Warning: inherited timing point added before any uninherited timing points")
+        vel = length * num_slides / (u - t)
+        slider_vel = vel / base_slider_vel
+        if slider_vel > 10 or slider_vel < 0.1:
+            print(f"Warning: slider velocity {slider_vel} is out of bounds, slider will not be good")
+        tps.append(f"{t},{-100/slider_vel},4,0,0,50,0,0")
 
-    # TODO: compute timing points using timing_signals
-    timing_points.append(f"0,{beat_len},4,0,0,50,1,0")
-
-    for t, vel in zip(slider_ts, slider_vels):
-        slider_velocity = vel / base_slider_vel
-        if slider_velocity > 10 or slider_velocity < 0.1:
-            print(f"Warning: slider velocity {slider_velocity} is out of bounds, slider will not be good")
-        timing_points.append(f"{t},{-100/slider_velocity},4,0,0,50,0,0")
+        last_up = u
 
     return map_template.format(
         **asdict(metadata),
-        timing_points="\n".join(timing_points),
-        hit_objects="\n".join(hit_objects),
+        timing_points="\n".join(tps),
+        hit_objects="\n".join(hos),
     )
