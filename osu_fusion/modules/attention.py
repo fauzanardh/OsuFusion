@@ -88,7 +88,7 @@ class Attention(nn.Module):
             return
 
         device_properties = torch.cuda.get_device_properties(torch.device("cuda"))
-        if device_properties.major == 8 and device_properties.minor == 0:
+        if device_properties.major >= 8 and device_properties.minor >= 0:
             self.cuda_config = _config(True, False, False)
         else:
             self.cuda_config = _config(False, True, True)
@@ -103,11 +103,12 @@ class Attention(nn.Module):
         is_cuda, dtype = v.is_cuda, v.dtype
         config = self.cuda_config if is_cuda else self.cpu_config
 
+        qkv_dtype = torch.bfloat16 if self.cuda_config.enable_flash else torch.float16
         with torch.backends.cuda.sdp_kernel(**config._asdict()):
-            q = q.half()
-            k = k.half()
-            v = v.half()
-            attn_mask = attn_mask.half() if attn_mask is not None else None
+            q = q.to(qkv_dtype)
+            k = k.to(qkv_dtype)
+            v = v.to(qkv_dtype)
+            attn_mask = attn_mask.to(qkv_dtype) if attn_mask is not None else None
             q, k, v = (t.contiguous() for t in (q, k, v))
             out = F.scaled_dot_product_attention(
                 q,
