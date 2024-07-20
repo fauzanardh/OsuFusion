@@ -63,6 +63,9 @@ class OsuFusion(nn.Module):
         self.sampling_timesteps = sampling_timesteps
         self.cond_drop_prob = cond_drop_prob
 
+    def set_full_bf16(self: "OsuFusion") -> None:
+        self.unet = self.unet.bfloat16()
+
     @torch.no_grad()
     def sample(
         self: "OsuFusion",

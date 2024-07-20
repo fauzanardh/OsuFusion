@@ -211,6 +211,8 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     )
 
     model = OsuFusion(args.model_dim, attn_infini=False)
+    if args.full_bf16:
+        model.set_full_bf16()
     model.unet.set_gradient_checkpointing(args.gradient_checkpointing)
     optimizer = AdamW8bit(model.parameters(), lr=args.lr, optim_bits=32, percentile_clipping=5)
     scheduler = cosine_with_restarts(
@@ -355,6 +357,7 @@ def main() -> None:
     args.add_argument("--random-length", action="store_true")
     args.add_argument("--max-length", type=int, default=0)
     args.add_argument("--mixed-precision", type=str, default="bf16", choices=["no", "fp16", "bf16"])
+    args.add_argument("--full-bf16", action="store_true")
     args.add_argument("--gradient-checkpointing", action="store_true")
     args.add_argument("--gradient-accumulation-steps", type=int, default=1)
     args.add_argument("--clip-grad-norm", type=float, default=0.0)
