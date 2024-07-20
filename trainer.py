@@ -9,11 +9,11 @@ import numpy as np
 import torch
 from accelerate import Accelerator
 from accelerate.utils import ProjectConfiguration
-from bitsandbytes.optim import AdamW8bit
 from diffusers.optimization import get_cosine_with_hard_restarts_schedule_with_warmup as cosine_with_restarts
 from matplotlib import pyplot as plt
 from safetensors.torch import save_file
 from torch.nn import functional as F  # noqa: N812
+from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
@@ -137,7 +137,7 @@ def save_model_sd(model: OsuFusion, project_dir: Path) -> None:
 
 def save_checkpoint(
     model: OsuFusion,
-    optimizer: AdamW8bit,
+    optimizer: AdamW,
     scheduler: LambdaLR,
     current_step: int,
     project_dir: Path,
@@ -169,7 +169,7 @@ def save_checkpoint(
 
 def load_checkpoint(
     model: OsuFusion,
-    optimizer: AdamW8bit,
+    optimizer: AdamW,
     scheduler: LambdaLR,
     checkpoint_path: Path,
     reset_steps: bool = False,
@@ -214,7 +214,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     if args.full_bf16:
         model.set_full_bf16()
     model.unet.set_gradient_checkpointing(args.gradient_checkpointing)
-    optimizer = AdamW8bit(model.parameters(), lr=args.lr, optim_bits=32, percentile_clipping=5)
+    optimizer = AdamW(model.parameters(), lr=args.lr)
     scheduler = cosine_with_restarts(
         optimizer,
         num_warmup_steps=args.warmup_steps,

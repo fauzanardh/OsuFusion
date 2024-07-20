@@ -1,6 +1,5 @@
 accelerate==0.29.3
 bezier==2023.7.28
-bitsandbytes==0.43.1
 diffusers==0.27.2
 einops==0.7.0
 gradio==4.38.1
