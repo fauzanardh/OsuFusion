@@ -7,7 +7,7 @@ from einops import repeat
 from torch.nn import functional as F  # noqa: N812
 from tqdm.auto import tqdm
 
-from osu_fusion.library.osu.data.encode import TOTAL_DIM
+from osu_fusion.library.osu.data.encode import HIT_DIM, TOTAL_DIM
 from osu_fusion.modules.unet import UNet
 from osu_fusion.scripts.dataset_creator import AUDIO_DIM, CONTEXT_DIM
 
@@ -66,6 +66,12 @@ class OsuFusion(nn.Module):
     def set_full_bf16(self: "OsuFusion") -> None:
         self.unet = self.unet.bfloat16()
 
+    def discretize_hit_features(self: "OsuFusion", x: torch.Tensor) -> torch.Tensor:
+        hit_signals = x[:, :HIT_DIM, :]
+        cursor_signals = x[:, HIT_DIM:, :]
+        hit_signals = (hit_signals > 0.0).to(x.dtype) * 2 - 1
+        return torch.cat([hit_signals, cursor_signals], dim=1)
+
     @torch.no_grad()
     def sample(
         self: "OsuFusion",
@@ -84,7 +90,7 @@ class OsuFusion(nn.Module):
             pred = self.unet.forward_with_cond_scale(x, a, t_batched, c, cond_scale=cond_scale)
             x = self.scheduler.step(pred, t, x).prev_sample
 
-        return x
+        return self.discretize_hit_features(x)
 
     def forward(
         self: "OsuFusion",
