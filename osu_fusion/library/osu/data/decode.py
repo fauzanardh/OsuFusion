@@ -142,7 +142,7 @@ def decode_beatmap(  # noqa: C901
         autocorr = signal.correlate(time_diffs, time_diffs, mode="full")
         autocorr = autocorr[len(autocorr) // 2 :]
 
-        valid_periods = 60000 / np.arange(MIN_BPM, MAX_BPM + 1)
+        valid_periods = 60000 / np.arange(MIN_BPM, MAX_BPM + 1, 0.1)
         peaks, _ = signal.find_peaks(autocorr, distance=valid_periods.min())
 
         valid_peaks = peaks[(valid_periods.min() <= peaks) & (peaks <= valid_periods.max())]
@@ -150,9 +150,15 @@ def decode_beatmap(  # noqa: C901
             print("Warning: no valid BPM found within the range, disabling beat snap")
             beat_snap, timing_point = False, TimingPoint(0, 60000 / 200, None, 4, None)
         else:
-            best_period = valid_peaks[np.argmax(autocorr[valid_peaks])]
-            bpm = 60000 / best_period
-            timing_beat_len = 60000 / bpm
+            peak_scores = []
+            for peak in valid_peaks:
+                score = autocorr[peak]
+                for harmonic in [0.5, 2, 3]:
+                    harmonic_peak = int(peak * harmonic)
+                    if 0 <= harmonic_peak < len(autocorr):
+                        score += autocorr[harmonic_peak] * 0.5  # Weight harmonics less
+                peak_scores.append(score)
+            timing_beat_len = valid_peaks[np.argmax(peak_scores)]
             beat_snap, timing_point = get_timings(hit_times, timing_beat_len)
 
     if not allow_beat_snap:
