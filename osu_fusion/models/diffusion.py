@@ -111,7 +111,7 @@ class OsuFusion(nn.Module):
         )
         x_noisy = self.scheduler.add_noise(x, noise, timesteps)
 
-        pred = self.unet(x_noisy, a, timesteps, c, self.cond_drop_prob)
+        pred = self.unet(x_noisy, a, timesteps, c, cond_drop_prob=self.cond_drop_prob)
 
         # Calculate loss
         loss = F.mse_loss(pred, noise, reduction="none")
