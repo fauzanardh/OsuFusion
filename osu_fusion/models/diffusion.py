@@ -30,7 +30,7 @@ class OsuFusion(nn.Module):
         attn_context_len: int = 8192,
         attn_infini: bool = True,
         attn_segment_len: int = 1024,
-        cond_drop_prob: float = 0.25,
+        cond_drop_prob: float = 0.5,
         train_timesteps: int = 1000,
         sampling_timesteps: int = 35,
     ) -> None:
