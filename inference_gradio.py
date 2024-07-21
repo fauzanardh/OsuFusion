@@ -180,8 +180,8 @@ def gradio_interface() -> Blocks:
             music_title = gr.Textbox(label="Music Title", value="Unknown Title")
             version_name = gr.Textbox(label="Version Name", value="Unknown Version")
             with gr.Column():
-                bpm_enable = gr.Checkbox(label="Enable BPM")
-                allow_beat_snap = gr.Checkbox(value=True, label="Allow Beat Snap")
+                bpm_enable = gr.Checkbox(value=False, label="Enable BPM")
+                allow_beat_snap = gr.Checkbox(value=False, label="Allow Beat Snap")
                 bpm = gr.Slider(1, 300, value=1, step=1, label="BPM", interactive=False)
 
         with gr.Row():
