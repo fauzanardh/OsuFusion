@@ -65,7 +65,7 @@ class Attention(nn.Module):
         use_rotary_emb: bool = True,
         context_len: int = 8192,
         infini: bool = True,
-        segment_len: int = 256,
+        segment_len: int = 1024,
     ) -> None:
         super().__init__()
         assert not version.parse(torch.__version__) < version.parse("2.0.0"), "sdpa requires torch>=2.0.0"

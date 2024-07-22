@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -8,7 +8,7 @@ from torch.nn import functional as F  # noqa: N812
 from tqdm.auto import tqdm
 
 from osu_fusion.library.osu.data.encode import HIT_DIM, TOTAL_DIM
-from osu_fusion.modules.unet import UNet
+from osu_fusion.modules.dit import DiT
 from osu_fusion.scripts.dataset_creator import AUDIO_DIM, CONTEXT_DIM
 
 MINIMUM_LENGTH = 1024
@@ -18,12 +18,11 @@ class OsuFusion(nn.Module):
     def __init__(
         self: "OsuFusion",
         dim_h: int,
-        dim_h_mult: Tuple[int] = (1, 2, 3, 4),
-        num_layer_blocks: Tuple[int] = (3, 3, 3, 3),
-        num_middle_transformers: int = 3,
-        cross_embed_kernel_sizes: Tuple[int] = (3, 7, 15),
-        attn_dim_head: int = 64,
+        dim_h_mult: int = 4,
+        patch_size: int = 2,
+        depth: int = 12,
         attn_heads: int = 8,
+        attn_dim_head: int = 64,
         attn_qk_norm: bool = True,
         attn_causal: bool = False,
         attn_use_rotary_emb: bool = True,
@@ -36,17 +35,16 @@ class OsuFusion(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.unet = UNet(
+        self.dit = DiT(
             dim_in_x=TOTAL_DIM,
             dim_in_a=AUDIO_DIM,
             dim_in_c=CONTEXT_DIM,
             dim_h=dim_h,
             dim_h_mult=dim_h_mult,
-            num_layer_blocks=num_layer_blocks,
-            num_middle_transformers=num_middle_transformers,
-            cross_embed_kernel_sizes=cross_embed_kernel_sizes,
-            attn_dim_head=attn_dim_head,
+            patch_size=patch_size,
+            depth=depth,
             attn_heads=attn_heads,
+            attn_dim_head=attn_dim_head,
             attn_qk_norm=attn_qk_norm,
             attn_causal=attn_causal,
             attn_use_rotary_emb=attn_use_rotary_emb,
@@ -64,7 +62,7 @@ class OsuFusion(nn.Module):
         self.cond_drop_prob = cond_drop_prob
 
     def set_full_bf16(self: "OsuFusion") -> None:
-        self.unet = self.unet.bfloat16()
+        self.dit = self.dit.bfloat16()
 
     def discretize_hit_features(self: "OsuFusion", x: torch.Tensor) -> torch.Tensor:
         hit_signals = x[:, :HIT_DIM, :]
@@ -87,7 +85,7 @@ class OsuFusion(nn.Module):
         self.scheduler.set_timesteps(self.sampling_timesteps)
         for t in tqdm(self.scheduler.timesteps, desc="sampling loop time step", dynamic_ncols=True):
             t_batched = repeat(t, "... -> b ...", b=b).long().to(device)
-            pred = self.unet.forward_with_cond_scale(x, a, t_batched, c, cond_scale=cond_scale)
+            pred = self.dit.forward_with_cond_scale(x, a, t_batched, c, cond_scale=cond_scale)
             x = self.scheduler.step(pred, t, x).prev_sample
 
         return self.discretize_hit_features(x)
@@ -111,7 +109,7 @@ class OsuFusion(nn.Module):
         )
         x_noisy = self.scheduler.add_noise(x, noise, timesteps)
 
-        pred = self.unet(x_noisy, a, timesteps, c, cond_drop_prob=self.cond_drop_prob)
+        pred = self.dit(x_noisy, a, timesteps, c, cond_drop_prob=self.cond_drop_prob)
 
         # Calculate loss
         loss = F.mse_loss(pred, noise, reduction="none")

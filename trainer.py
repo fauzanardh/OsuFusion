@@ -213,7 +213,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     model = OsuFusion(args.model_dim, attn_infini=False)
     if args.full_bf16:
         model.set_full_bf16()
-    model.unet.set_gradient_checkpointing(args.gradient_checkpointing)
+    model.dit.set_gradient_checkpointing(args.gradient_checkpointing)
     optimizer = AdamW(model.parameters(), lr=args.lr)
     scheduler = cosine_with_restarts(
         optimizer,
@@ -362,8 +362,6 @@ def main() -> None:
     args.add_argument("--gradient-accumulation-steps", type=int, default=1)
     args.add_argument("--clip-grad-norm", type=float, default=0.0)
     args.add_argument("--model-dim", type=int, default=512)
-    args.add_argument("--model-attn-heads", type=int, default=8)
-    args.add_argument("--model-depth", type=int, default=12)
     args.add_argument("--lr", type=float, default=1e-5)
     args.add_argument("--batch-size", type=int, default=4)
     args.add_argument("--num-workers", type=int, default=2)
