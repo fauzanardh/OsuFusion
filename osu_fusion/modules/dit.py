@@ -233,7 +233,6 @@ class DiT(nn.Module):
 
         self.init_xa = nn.Conv1d(dim_in_x + dim_in_a, dim_in_x, 1)
         self.patchify = PatchEmbedding(dim_in_x, dim_h, patch_size)
-        self.unpatchify = Unpatchify(dim_in_x, patch_size)
 
         self.mlp_time = nn.Sequential(
             SinusoidalPositionEmbedding(dim_h),
@@ -348,5 +347,5 @@ class DiT(nn.Module):
             x = block(x, c)
 
         x = self.final(x, c)
-        x = self.unpatchify(x)
+        x = rearrange(x, "b n (p d) -> b d (n p)", p=self.patch_size)
         return x[:, :, :n]
