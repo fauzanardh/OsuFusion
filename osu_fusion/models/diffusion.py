@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -19,8 +19,8 @@ class OsuFusion(nn.Module):
         self: "OsuFusion",
         dim_h: int,
         dim_h_mult: int = 4,
-        patch_size: int = 2,
         depth: int = 12,
+        cross_embed_kernel_sizes: Tuple[int] = (3, 7, 15),
         attn_heads: int = 8,
         attn_dim_head: int = 64,
         attn_qk_norm: bool = True,
@@ -41,8 +41,8 @@ class OsuFusion(nn.Module):
             dim_in_c=CONTEXT_DIM,
             dim_h=dim_h,
             dim_h_mult=dim_h_mult,
-            patch_size=patch_size,
             depth=depth,
+            cross_embed_kernel_sizes=cross_embed_kernel_sizes,
             attn_heads=attn_heads,
             attn_dim_head=attn_dim_head,
             attn_qk_norm=attn_qk_norm,

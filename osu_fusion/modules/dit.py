@@ -60,30 +60,6 @@ class FeedForward(nn.Sequential):
         )
 
 
-class PatchEmbedding(nn.Module):
-    def __init__(self: "PatchEmbedding", dim_in: int, dim_emb: int, patch_size: int) -> None:
-        super().__init__()
-        self.patch_size = patch_size
-        self.proj = nn.Conv1d(dim_in, dim_emb, patch_size, stride=patch_size)
-
-    def forward(self: "PatchEmbedding", x: torch.Tensor) -> torch.Tensor:
-        assert x.shape[-1] % self.patch_size == 0, "Input sequence length must be divisible by the patch size"
-        return rearrange(self.proj(x), "b d n -> b n d")
-
-
-class Unpatchify(nn.Module):
-    def __init__(self: "Unpatchify", dim: int, patch_size: int) -> None:
-        super().__init__()
-        self.dim = dim
-        self.patch_size = patch_size
-
-        self.proj = nn.Conv1d(dim, dim, patch_size, stride=1, padding=patch_size // 2)
-
-    def forward(self: "Unpatchify", x: torch.Tensor) -> torch.Tensor:
-        x = rearrange(x, "b n (p d) -> b d (n p)", p=self.patch_size)
-        return self.proj(x)
-
-
 class MultiHeadRMSNorm(nn.Module):
     def __init__(self: "MultiHeadRMSNorm", dim: int, heads: int) -> None:
         super().__init__()
@@ -95,14 +71,14 @@ class MultiHeadRMSNorm(nn.Module):
 
 
 class FinalLayer(nn.Module):
-    def __init__(self: "FinalLayer", dim_h: int, patch_size: int, dim_out: int) -> None:
+    def __init__(self: "FinalLayer", dim_h: int) -> None:
         super().__init__()
         self.norm = nn.LayerNorm(dim_h, elementwise_affine=False, eps=1e-6)
         self.modulation = nn.Sequential(
             nn.SiLU(),
             nn.Linear(dim_h, dim_h * 2, bias=True),
         )
-        self.linear = nn.Linear(dim_h, patch_size * dim_out)
+        self.linear = nn.Linear(dim_h, dim_h)
 
     def forward(self: "FinalLayer", x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
         shift, scale = self.modulation(c).chunk(2, dim=1)
@@ -211,8 +187,8 @@ class DiT(nn.Module):
         dim_in_c: int,
         dim_h: int,
         dim_h_mult: int = 4,
-        patch_size: int = 2,
         depth: int = 12,
+        cross_embed_kernel_sizes: Tuple[int] = (3, 7, 15),
         attn_heads: int = 8,
         attn_dim_head: int = 64,
         attn_qk_norm: bool = True,
@@ -224,26 +200,31 @@ class DiT(nn.Module):
     ) -> None:
         super().__init__()
         self.dim_in_x = dim_in_x
-        self.patch_size = patch_size
-        self.attn_context_len = attn_context_len // patch_size
+        self.attn_context_len = attn_context_len
         self.attn_infini = attn_infini
         self.attn_segment_len = attn_segment_len
 
-        self.feature_extractor_a = nn.Linear(dim_in_a * 2, dim_h)
-
-        self.init_xa = nn.Conv1d(dim_in_x + dim_in_a, dim_in_x, 1)
-        self.patchify = PatchEmbedding(dim_in_x, dim_h, patch_size)
+        self.preprocess = CrossEmbedLayer(dim_in_x + dim_in_a, dim_h, cross_embed_kernel_sizes)
+        self.postprocess = nn.Conv1d(dim_h, dim_in_x, 1, bias=False)
 
         self.mlp_time = nn.Sequential(
             SinusoidalPositionEmbedding(dim_h),
-            FeedForward(dim_h, dim_h_mult),
+            nn.Linear(dim_h, dim_h, bias=False),
+            nn.SiLU(),
+            nn.Linear(dim_h, dim_h, bias=False),
         )
         self.mlp_cond = nn.Sequential(
             nn.Linear(dim_in_c, dim_h),  # TODO: Better conditional embedding
-            FeedForward(dim_h, dim_h_mult),
+            nn.SiLU(),
+            nn.Linear(dim_h, dim_h),
         )
         self.null_cond = nn.Parameter(torch.randn(dim_h))
-        self.mlp_audio = FeedForward(dim_h, dim_h_mult)
+        self.feature_extractor_a = nn.Linear(dim_in_a * 2, dim_h)
+        self.mlp_audio = nn.Sequential(
+            nn.Linear(dim_h, dim_h),
+            nn.SiLU(),
+            nn.Linear(dim_h, dim_h),
+        )
         self.blocks = nn.ModuleList(
             [
                 DiTBlock(
@@ -261,7 +242,7 @@ class DiT(nn.Module):
                 for _ in range(depth)
             ],
         )
-        self.final = FinalLayer(dim_h, self.patch_size, dim_in_x)
+        self.final = FinalLayer(dim_h)
 
         self.initialize_weights()
 
@@ -275,10 +256,10 @@ class DiT(nn.Module):
         self.apply(_basic_init)
 
         # Initialize embedders
-        nn.init.normal_(self.mlp_time[1][0].weight, std=0.02)
-        nn.init.normal_(self.mlp_time[1][2].weight, std=0.02)
-        nn.init.normal_(self.mlp_cond[1][0].weight, std=0.02)
-        nn.init.normal_(self.mlp_cond[1][2].weight, std=0.02)
+        nn.init.normal_(self.mlp_time[1].weight, std=0.02)
+        nn.init.normal_(self.mlp_time[3].weight, std=0.02)
+        nn.init.normal_(self.mlp_cond[0].weight, std=0.02)
+        nn.init.normal_(self.mlp_cond[2].weight, std=0.02)
         nn.init.normal_(self.mlp_audio[0].weight, std=0.02)
         nn.init.normal_(self.mlp_audio[2].weight, std=0.02)
 
@@ -290,8 +271,9 @@ class DiT(nn.Module):
         # Zero-out final layer
         nn.init.zeros_(self.final.modulation[1].weight)
         nn.init.zeros_(self.final.modulation[1].bias)
-        nn.init.zeros_(self.final.linear.weight)
-        nn.init.zeros_(self.final.linear.bias)
+
+        # Zero-out postprocess
+        nn.init.zeros_(self.postprocess.weight)
 
     def set_gradient_checkpointing(self: "DiT", value: bool) -> None:
         for name, module in self.named_modules():
@@ -316,25 +298,21 @@ class DiT(nn.Module):
         c: torch.Tensor,
         cond_drop_prob: float = 0.0,
     ) -> torch.Tensor:
+        n = x.shape[-1]
+        if self.attn_infini:
+            # Pad to the nearest multiple of segment length
+            pad_len = (self.attn_segment_len - n % self.attn_segment_len) % self.attn_segment_len
+            x = F.pad(x, (0, pad_len), value=-1.0)
+            a = F.pad(a, (0, pad_len), value=0.0)
+
+        x = self.preprocess(torch.cat([x, a], dim=1))
+        x = rearrange(x, "b d n -> b n d")
+
         # Statistic audio features pooling
         mean_features = a.mean(dim=-1)
         std_features = a.std(dim=-1)
         h_a = torch.cat([mean_features, std_features], dim=1)
         h_a = self.feature_extractor_a(h_a)
-
-        n = x.shape[-1]
-        if self.attn_infini:
-            # Pad to the nearest multiple of segment length
-            pad_len = (self.attn_segment_len - n % self.attn_segment_len) % self.attn_segment_len
-        else:
-            # Pad to the closest multiple of patch size
-            pad_len = (self.patch_size - n % self.patch_size) % self.patch_size
-
-        x = F.pad(x, (0, pad_len), value=-1.0)
-        a = F.pad(a, (0, pad_len), value=0.0)
-
-        x = self.init_xa(torch.cat([x, a], dim=1))
-        x = self.patchify(x)
 
         cond_mask = prob_mask_like((x.shape[0],), 1.0 - cond_drop_prob, device=x.device)
         cond_mask = rearrange(cond_mask, "b -> b 1")
@@ -347,5 +325,5 @@ class DiT(nn.Module):
             x = block(x, c)
 
         x = self.final(x, c)
-        x = rearrange(x, "b n (p d) -> b d (n p)", p=self.patch_size)
-        return x[:, :, :n]
+        x = rearrange(x, "b n d -> b d n")
+        return self.postprocess(x[:, :, :n])
