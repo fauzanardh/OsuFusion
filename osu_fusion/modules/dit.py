@@ -174,7 +174,7 @@ class DiTBlock(nn.Module):
 
     def forward(self: "DiTBlock", x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
         if self.training and self.gradient_checkpointing:
-            return torch.utils.checkpoint.checkpoint(self.forward_body, x, c, use_reentrant=True)
+            return torch.utils.checkpoint.checkpoint(self.forward_body, x, c, use_reentrant=False)
         else:
             return self.forward_body(x, c)
 
