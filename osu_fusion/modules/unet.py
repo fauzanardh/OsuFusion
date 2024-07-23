@@ -345,7 +345,7 @@ class UNet(nn.Module):
             nn.SiLU(),
             nn.Linear(self.dim_cond, self.dim_cond),
         )
-        self.null_cond = nn.Parameter(torch.randn(dim_in_c))
+        self.null_cond = nn.Parameter(torch.randn(self.dim_cond))
 
         # Downsample
         dims_h = tuple((dim_h * mult) for mult in dim_h_mult)
@@ -461,7 +461,6 @@ class UNet(nn.Module):
         a: torch.Tensor,
         t: torch.Tensor,
         c: torch.Tensor,
-        skip_cond_prep: bool = False,
         cond_drop_prob: float = 0.0,
     ) -> torch.Tensor:
         n = x.shape[-1]
@@ -485,6 +484,7 @@ class UNet(nn.Module):
         cond_mask = prob_mask_like((x.shape[0],), 1.0 - cond_drop_prob, device=x.device)
         cond_mask = rearrange(cond_mask, "b -> b 1")
         null_conds = repeat(self.null_cond, "d -> b d", b=x.shape[0])
+        c = self.cond_mlp(c)
         c = torch.where(cond_mask, c, null_conds)
 
         # Statistic audio features pooling
@@ -493,7 +493,7 @@ class UNet(nn.Module):
         h_a = torch.cat([mean_features, std_features], dim=1)
         h_a = self.feature_extractor_a(h_a)
 
-        c = self.cond_mlp(c) + self.time_mlp(t) + self.audio_mlp(h_a)
+        c = c + self.time_mlp(t) + self.audio_mlp(h_a)
 
         skip_connections = []
         for down_layer in self.down_layers:
