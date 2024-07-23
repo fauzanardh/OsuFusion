@@ -200,7 +200,6 @@ class DiT(nn.Module):
     ) -> None:
         super().__init__()
         self.dim_in_x = dim_in_x
-        self.attn_context_len = attn_context_len
         self.attn_infini = attn_infini
         self.attn_segment_len = attn_segment_len
 
@@ -235,7 +234,7 @@ class DiT(nn.Module):
                     attn_qk_norm=attn_qk_norm,
                     attn_causal=attn_causal,
                     attn_use_rotary_emb=attn_use_rotary_emb,
-                    attn_context_len=self.attn_context_len,
+                    attn_context_len=attn_context_len,
                     attn_infini=attn_infini,
                     attn_segment_len=attn_segment_len,
                 )
