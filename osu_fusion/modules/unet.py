@@ -446,27 +446,14 @@ class UNet(nn.Module):
                 module.gradient_checkpointing = value
                 print(f"Set gradient checkpointing to {value} for {name}")
 
-    def forward_with_cond_scale(
-        self: "UNet",
-        x: torch.Tensor,
-        a: torch.Tensor,
-        t: torch.Tensor,
-        c: torch.Tensor,
-        cond_scale: float = 1.0,
-    ) -> torch.Tensor:
-        if cond_scale != 1.0:
-            null_conds = repeat(self.null_cond, "d -> b d", b=x.shape[0])
-            x = torch.cat([x, x], dim=0)
-            a = torch.cat([a, a], dim=0)
-            t = torch.cat([t, t], dim=0)
-            c = torch.cat([c, null_conds], dim=0)
+    def forward_with_cond_scale(self: "UNet", *args: List, cond_scale: float = 1.0, **kwargs: Dict) -> torch.Tensor:
+        logits = self(*args, **kwargs)
 
-        logits = self.forward(x, a, t, c, skip_cond_prep=True)
         if cond_scale == 1.0:
             return logits
 
-        cond_logits, uncond_logits = logits.chunk(2, dim=0)
-        return uncond_logits + (cond_logits - uncond_logits) * cond_scale
+        null_logits = self(*args, **kwargs, cond_drop_prob=1.0)
+        return null_logits + (logits - null_logits) * cond_scale
 
     def forward(
         self: "UNet",
@@ -495,11 +482,10 @@ class UNet(nn.Module):
         r = x.clone()
 
         # Prepare condition
-        if not skip_cond_prep:
-            cond_mask = prob_mask_like((x.shape[0],), 1.0 - cond_drop_prob, device=x.device)
-            cond_mask = rearrange(cond_mask, "b -> b 1")
-            null_conds = repeat(self.null_cond, "d -> b d", b=x.shape[0])
-            c = torch.where(cond_mask, c, null_conds)
+        cond_mask = prob_mask_like((x.shape[0],), 1.0 - cond_drop_prob, device=x.device)
+        cond_mask = rearrange(cond_mask, "b -> b 1")
+        null_conds = repeat(self.null_cond, "d -> b d", b=x.shape[0])
+        c = torch.where(cond_mask, c, null_conds)
 
         # Statistic audio features pooling
         mean_features = a.mean(dim=-1)
