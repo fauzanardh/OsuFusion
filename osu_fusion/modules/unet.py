@@ -122,9 +122,7 @@ class TransformerBlock(nn.Module):
         )
         self.linear = nn.Linear(dim_head * heads, dim_in)
 
-        self.gradient_checkpointing = False
-
-    def forward_body(self: "TransformerBlock", x: torch.Tensor) -> torch.Tensor:
+    def forward(self: "TransformerBlock", x: torch.Tensor) -> torch.Tensor:
         x = rearrange(x, "b d n -> b n d")
         q = rearrange(self.to_q(x), "b n (h d) -> b h n d", h=self.heads)
 
@@ -140,12 +138,6 @@ class TransformerBlock(nn.Module):
         out = self.attn(q, k, v)
         out = rearrange(out, "b h n d -> b n (h d)")
         return rearrange(x + self.linear(out), "b n d -> b d n")
-
-    def forward(self: "TransformerBlock", x: torch.Tensor) -> torch.Tensor:
-        if self.training and self.gradient_checkpointing:
-            return torch.utils.checkpoint.checkpoint(self.forward_body, x, use_reentrant=True)
-        else:
-            return self.forward_body(x)
 
 
 class UnetBlock(nn.Module):
@@ -209,12 +201,20 @@ class UnetBlock(nn.Module):
                 )
             )
 
-    def forward(self: "UnetBlock", x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+        self.gradient_checkpointing = False
+
+    def forward_body(self: "UnetBlock", x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
         x = self.init_resnet(x, c)
         for resnet, transformer in zip(self.resnets, self.transformers):
             x = resnet(x, c)
             x = transformer(x)
         return self.sampler(x), x
+
+    def forward(self: "UnetBlock", x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+        if self.training and self.gradient_checkpointing:
+            return torch.utils.checkpoint.checkpoint(self.forward_body, x, c, use_reentrant=True)
+        else:
+            return self.forward_body(x, c)
 
 
 class AudioEncoder(nn.Module):
