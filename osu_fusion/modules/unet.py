@@ -93,6 +93,7 @@ class TransformerBlock(nn.Module):
         dim_in: int,
         dim_head: int,
         heads: int,
+        kv_heads: int,
         qk_norm: bool = True,
         causal: bool = False,
         use_rotary_emb: bool = True,
@@ -102,11 +103,13 @@ class TransformerBlock(nn.Module):
     ) -> None:
         super().__init__()
         self.heads = heads
+        self.kv_heads = kv_heads
         self.qk_norm = qk_norm
 
-        self.to_qkv = nn.Linear(dim_in, dim_head * heads * 3, bias=False)
+        self.to_q = nn.Linear(dim_in, dim_head * heads, bias=False)
+        self.to_kv = nn.Linear(dim_in, dim_head * kv_heads * 2, bias=False)
         self.q_norm = MultiHeadRMSNorm(dim_head, heads) if qk_norm else None
-        self.k_norm = MultiHeadRMSNorm(dim_head, heads) if qk_norm else None
+        self.k_norm = MultiHeadRMSNorm(dim_head, kv_heads) if qk_norm else None
 
         self.attn = Attention(
             dim_head,
@@ -123,13 +126,16 @@ class TransformerBlock(nn.Module):
 
     def forward_body(self: "TransformerBlock", x: torch.Tensor) -> torch.Tensor:
         x = rearrange(x, "b d n -> b n d")
+        q = rearrange(self.to_q(x), "b n (h d) -> b h n d", h=self.heads)
 
-        q, k, v = self.to_qkv(x).chunk(3, dim=-1)
-        q, k, v = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q, k, v))
-
+        k, v = self.to_kv(x).chunk(2, dim=-1)
+        k, v = (rearrange(t, "b n (h d) -> b h n d", h=self.kv_heads) for t in (k, v))
         if self.qk_norm:
             q = self.q_norm(q)
             k = self.k_norm(k)
+
+        # GQA
+        k, v = (repeat(t, "b h n d -> b (r h) n d", r=self.heads // self.kv_heads) for t in (k, v))
 
         out = self.attn(q, k, v)
         out = rearrange(out, "b h n d -> b n (h d)")
@@ -154,6 +160,7 @@ class UnetBlock(nn.Module):
         down_block: bool,
         attn_dim_head: int,
         attn_heads: int,
+        attn_kv_heads: int,
         attn_qk_norm: bool,
         attn_causal: bool,
         attn_use_rotary_emb: bool,
@@ -172,6 +179,7 @@ class UnetBlock(nn.Module):
                     dim_out,
                     attn_dim_head,
                     heads=attn_heads,
+                    kv_heads=attn_kv_heads,
                     qk_norm=attn_qk_norm,
                     causal=attn_causal,
                     use_rotary_emb=attn_use_rotary_emb,
@@ -219,6 +227,7 @@ class AudioEncoder(nn.Module):
         cross_embed_kernel_sizes: Tuple[int] = (3, 7, 15),
         attn_dim_head: int = 64,
         attn_heads: int = 8,
+        attn_kv_heads: int = 2,
         attn_qk_norm: bool = True,
         attn_causal: bool = False,
         attn_use_rotary_emb: bool = True,
@@ -261,6 +270,7 @@ class AudioEncoder(nn.Module):
                     True,
                     attn_dim_head,
                     attn_heads,
+                    attn_kv_heads,
                     attn_qk_norm,
                     attn_causal,
                     attn_use_rotary_emb,
@@ -294,8 +304,9 @@ class UNet(nn.Module):
         num_layer_blocks: Tuple[int] = (3, 3, 3, 3),
         num_middle_transformers: int = 3,
         cross_embed_kernel_sizes: Tuple[int] = (3, 7, 15),
-        attn_dim_head: int = 32,
+        attn_dim_head: int = 64,
         attn_heads: int = 8,
+        attn_kv_heads: int = 2,
         attn_qk_norm: bool = True,
         attn_causal: bool = False,
         attn_use_rotary_emb: bool = True,
@@ -319,6 +330,7 @@ class UNet(nn.Module):
             cross_embed_kernel_sizes=cross_embed_kernel_sizes,
             attn_dim_head=attn_dim_head,
             attn_heads=attn_heads,
+            attn_kv_heads=attn_kv_heads,
             attn_qk_norm=attn_qk_norm,
             attn_causal=attn_causal,
             attn_use_rotary_emb=attn_use_rotary_emb,
@@ -328,7 +340,7 @@ class UNet(nn.Module):
         self.final_resnet = ResidualBlock(dim_h * 2, dim_h, self.dim_cond)
         self.final_conv = zero_init(nn.Conv1d(dim_h, dim_in_x, 1))
 
-        self.feature_extractor_a = nn.Linear(dim_h * dim_h_mult[-1] * 2, self.dim_cond)
+        self.feature_extractor_a = nn.Linear(dim_in_a * 2, self.dim_cond)
         self.audio_mlp = nn.Sequential(
             nn.Linear(self.dim_cond, self.dim_cond),
             nn.SiLU(),
@@ -370,6 +382,7 @@ class UNet(nn.Module):
                     True,
                     attn_dim_head,
                     attn_heads,
+                    attn_kv_heads,
                     attn_qk_norm,
                     attn_causal,
                     attn_use_rotary_emb,
@@ -392,6 +405,7 @@ class UNet(nn.Module):
                     dims_h[-1],
                     attn_dim_head,
                     heads=attn_heads,
+                    kv_heads=attn_kv_heads,
                     qk_norm=attn_qk_norm,
                     causal=attn_causal,
                     use_rotary_emb=attn_use_rotary_emb,
@@ -430,6 +444,7 @@ class UNet(nn.Module):
                     False,
                     attn_dim_head,
                     attn_heads,
+                    attn_kv_heads,
                     attn_qk_norm,
                     attn_causal,
                     attn_use_rotary_emb,
@@ -463,6 +478,12 @@ class UNet(nn.Module):
         c: torch.Tensor,
         cond_drop_prob: float = 0.0,
     ) -> torch.Tensor:
+        # Statistic audio features pooling
+        mean_features = a.mean(dim=-1)
+        std_features = a.std(dim=-1)
+        h_a = torch.cat([mean_features, std_features], dim=1)
+        h_a = self.feature_extractor_a(h_a)
+
         n = x.shape[-1]
         if self.attn_infini:
             # Pad to the multiple of attn_segment_len
@@ -486,12 +507,6 @@ class UNet(nn.Module):
         null_conds = repeat(self.null_cond, "d -> b d", b=x.shape[0])
         c = self.cond_mlp(c)
         c = torch.where(cond_mask, c, null_conds)
-
-        # Statistic audio features pooling
-        mean_features = a.mean(dim=-1)
-        std_features = a.std(dim=-1)
-        h_a = torch.cat([mean_features, std_features], dim=1)
-        h_a = self.feature_extractor_a(h_a)
 
         c = c + self.time_mlp(t) + self.audio_mlp(h_a)
 
