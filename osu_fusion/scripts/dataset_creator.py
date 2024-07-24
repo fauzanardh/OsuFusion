@@ -66,6 +66,18 @@ def normalize_context(context: npt.NDArray) -> npt.NDArray:
     return context
 
 
+def unnormalize_context(context: npt.NDArray) -> npt.NDArray:
+    # unnormalized CS, AR, OD, HP from [-1, 1] to [0, 10]
+    context[0] = (context[0] + 1) * 5
+    context[1] = (context[1] + 1) * 5
+    context[2] = (context[2] + 1) * 5
+    context[3] = (context[3] + 1) * 5
+    # unnormalized SR from [-1, 1] to [0, 20]
+    context[4] = (context[4] + 1) * 10
+
+    return context
+
+
 def get_lock(path: Path) -> LockBase:
     return _global_lock.setdefault(str(path), Lock())
 

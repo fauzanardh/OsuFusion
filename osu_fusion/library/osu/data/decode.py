@@ -102,6 +102,7 @@ def decode_beatmap(  # noqa: C901
     frame_times: npt.NDArray,
     bpm: Optional[float],
     allow_beat_snap: bool = True,
+    verbose: bool = True,
 ) -> str:
     cursor_signals = encoded_beatmap[[BeatmapEncoding.CURSOR_X, BeatmapEncoding.CURSOR_Y]]
     cursor_signals = ((cursor_signals + 1) / 2) * np.array([[512], [384]])
@@ -137,29 +138,33 @@ def decode_beatmap(  # noqa: C901
         hit_times = frame_times[hit_locs]
         beat_snap, timing_point = get_timings(hit_times, timing_beat_len)
     else:
-        hit_times = frame_times[hit_locs]
-        time_diffs = np.diff(hit_times)
-        autocorr = signal.correlate(time_diffs, time_diffs, mode="full")
-        autocorr = autocorr[len(autocorr) // 2 :]
+        if allow_beat_snap:
+            hit_times = frame_times[hit_locs]
+            time_diffs = np.diff(hit_times)
+            autocorr = signal.correlate(time_diffs, time_diffs, mode="full")
+            autocorr = autocorr[len(autocorr) // 2 :]
 
-        valid_periods = 60000 / np.arange(MIN_BPM, MAX_BPM + 1, 0.1)
-        peaks, _ = signal.find_peaks(autocorr, distance=valid_periods.min())
+            valid_periods = 60000 / np.arange(MIN_BPM, MAX_BPM + 1, 0.1)
+            peaks, _ = signal.find_peaks(autocorr, distance=valid_periods.min())
 
-        valid_peaks = peaks[(valid_periods.min() <= peaks) & (peaks <= valid_periods.max())]
-        if len(valid_peaks) == 0:
-            print("Warning: no valid BPM found within the range, disabling beat snap")
-            beat_snap, timing_point = False, TimingPoint(0, 60000 / 200, None, 4, None)
+            valid_peaks = peaks[(valid_periods.min() <= peaks) & (peaks <= valid_periods.max())]
+            if len(valid_peaks) == 0:
+                if verbose:
+                    print("Warning: no valid BPM found within the range, disabling beat snap")
+                beat_snap, timing_point = False, TimingPoint(0, 60000 / 200, None, 4, None)
+            else:
+                peak_scores = []
+                for peak in valid_peaks:
+                    score = autocorr[peak]
+                    for harmonic in [0.5, 2, 3]:
+                        harmonic_peak = int(peak * harmonic)
+                        if 0 <= harmonic_peak < len(autocorr):
+                            score += autocorr[harmonic_peak] * 0.5  # Weight harmonics less
+                    peak_scores.append(score)
+                timing_beat_len = valid_peaks[np.argmax(peak_scores)]
+                beat_snap, timing_point = get_timings(hit_times, timing_beat_len)
         else:
-            peak_scores = []
-            for peak in valid_peaks:
-                score = autocorr[peak]
-                for harmonic in [0.5, 2, 3]:
-                    harmonic_peak = int(peak * harmonic)
-                    if 0 <= harmonic_peak < len(autocorr):
-                        score += autocorr[harmonic_peak] * 0.5  # Weight harmonics less
-                peak_scores.append(score)
-            timing_beat_len = valid_peaks[np.argmax(peak_scores)]
-            beat_snap, timing_point = get_timings(hit_times, timing_beat_len)
+            beat_snap, timing_point = False, TimingPoint(0, 60000 / 200, None, 4, None)
 
     if not allow_beat_snap:
         beat_snap = False
@@ -210,11 +215,11 @@ def decode_beatmap(  # noqa: C901
         curve_points = "|".join(f"{x}:{y}" for x, y in control_points[1:])
         hos.append(f"{x1},{y1},{t},{2**1 + combo_bit},0,B|{curve_points},{num_slides},{length}")
 
-        if len(tps) == 0:
+        if len(tps) == 0 and verbose:
             print("Warning: inherited timing point added before any uninherited timing points")
         vel = length * num_slides / (u - t)
         slider_vel = vel / base_slider_vel
-        if slider_vel > 10 or slider_vel < 0.1:
+        if (slider_vel > 10 or slider_vel < 0.1) and verbose:
             print(f"Warning: slider velocity {slider_vel} is out of bounds, slider will not be good")
         tps.append(f"{t},{-100/slider_vel},4,0,0,50,0,0")
 
