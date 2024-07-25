@@ -2,7 +2,7 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
-from einops import repeat
+from einops import rearrange, repeat
 from torch.nn import functional as F  # noqa: N812
 from torchdiffeq import odeint
 from tqdm.auto import tqdm
@@ -105,12 +105,13 @@ class OsuFusion(nn.Module):
 
         noise = torch.randn_like(x, device=x.device)
         times = torch.rand(x.shape[0], device=x.device)
+        padded_times = rearrange(times, "b -> b () ()")
 
-        t = cosmap(times)
+        t = cosmap(padded_times)
         x_noisy = t * x + (1 - t) * noise
 
         flow = x - noise
-        pred = self.unet(x_noisy, a, t, c, cond_drop_prob=self.cond_drop_prob)
+        pred = self.unet(x_noisy, a, times, c, cond_drop_prob=self.cond_drop_prob)
 
         # Calculate loss
         loss = F.mse_loss(pred, flow, reduction="none")
