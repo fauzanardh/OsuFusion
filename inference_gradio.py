@@ -1,6 +1,6 @@
 import tempfile
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Union
 from zipfile import ZipFile
 
 import gradio as gr
@@ -15,10 +15,11 @@ from sanitize_filename import sanitize
 
 from osu_fusion.library.osu.data.decode import Metadata, decode_beatmap
 from osu_fusion.library.osu.data.encode import TOTAL_DIM
-
-# Import necessary functions and classes from your original script
-from osu_fusion.models.diffusion import OsuFusion
+from osu_fusion.models.diffusion import OsuFusion as DiffusionOsuFusion
+from osu_fusion.models.rectified_flow import OsuFusion as RectifiedFlowOsuFusion
 from osu_fusion.scripts.dataset_creator import HOP_LENGTH, N_FFT, SR, load_audio, normalize_context
+
+Model = Union[DiffusionOsuFusion, RectifiedFlowOsuFusion]
 
 # Global variables to store the model and accelerator
 global_model = None
@@ -26,14 +27,15 @@ global_accelerator = None
 global_temp_dir = tempfile.TemporaryDirectory()
 
 
-def create_model_from_checkpoint(model_path: str) -> OsuFusion:
+def create_model_from_checkpoint(model_path: str, model_type: str) -> Model:
     if model_path.endswith(".pt"):
         checkpoint = torch.load(model_path)
         state_dict = checkpoint["model_state_dict"]
     else:
         state_dict = load_file(model_path)
 
-    model = OsuFusion(128, attn_infini=False)
+    model_class = DiffusionOsuFusion if model_type == "diffusion" else RectifiedFlowOsuFusion
+    model = model_class(128, attn_infini=False)
     model.load_state_dict(state_dict)
     return model.eval()
 
@@ -63,7 +65,7 @@ def create_input(
     return x, audio, context
 
 
-def load_model(model_path: str, mixed_precision: str) -> str:
+def load_model(model_path: str, model_type: str, mixed_precision: str) -> str:
     global global_model, global_accelerator
     global_accelerator = Accelerator(mixed_precision=mixed_precision)
     global_model = create_model_from_checkpoint(model_path)
@@ -154,6 +156,7 @@ def gradio_interface() -> Blocks:
 
         with gr.Row():
             model_path = gr.Textbox(label="Model Path")
+            model_type = gr.Dropdown(["diffusion", "rectified-flow"], value="diffusion", label="Model Type")
             mixed_precision = gr.Dropdown(["no", "fp16", "bf16"], value="no", label="Mixed Precision")
 
         load_button = gr.Button("Load Model")
@@ -161,7 +164,7 @@ def gradio_interface() -> Blocks:
 
         load_button.click(
             load_model,
-            inputs=[model_path, mixed_precision],
+            inputs=[model_path, model_type, mixed_precision],
             outputs=load_output,
         )
 

@@ -2,14 +2,18 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
-from diffusers import DDIMScheduler
 from einops import repeat
 from torch.nn import functional as F  # noqa: N812
+from torchdiffeq import odeint
 from tqdm.auto import tqdm
 
 from osu_fusion.library.osu.data.encode import HIT_DIM, TOTAL_DIM
 from osu_fusion.modules.unet import UNet
 from osu_fusion.scripts.dataset_creator import AUDIO_DIM, CONTEXT_DIM
+
+
+def cosmap(t: torch.Tensor) -> torch.Tensor:
+    return 1.0 - (1.0 / (torch.tan(torch.pi / 2 * t) + 1))
 
 
 class OsuFusion(nn.Module):
@@ -30,8 +34,7 @@ class OsuFusion(nn.Module):
         attn_infini: bool = True,
         attn_segment_len: int = 1024,
         cond_drop_prob: float = 0.5,
-        train_timesteps: int = 1000,
-        sampling_timesteps: int = 35,
+        sampling_timesteps: int = 16,
     ) -> None:
         super().__init__()
 
@@ -55,12 +58,7 @@ class OsuFusion(nn.Module):
             attn_segment_len=attn_segment_len,
         )
 
-        self.scheduler = DDIMScheduler(
-            num_train_timesteps=train_timesteps,
-            beta_schedule="scaled_linear",
-        )
-        self.train_timesteps = train_timesteps
-        self.sampling_timesteps = sampling_timesteps
+        self.sample_timesteps = sampling_timesteps
         self.cond_drop_prob = cond_drop_prob
 
     def set_full_bf16(self: "OsuFusion") -> None:
@@ -78,19 +76,23 @@ class OsuFusion(nn.Module):
         a: torch.Tensor,
         c: torch.Tensor,
         x: Optional[torch.Tensor] = None,
-        cond_scale: float = 7.0,
+        cond_scale: float = 2.0,
     ) -> torch.Tensor:
         (b, _, n), device = a.shape, a.device
         if x is None:
             x = torch.randn((b, TOTAL_DIM, n), device=device)
 
-        self.scheduler.set_timesteps(self.sampling_timesteps)
-        for t in tqdm(self.scheduler.timesteps, desc="sampling loop time step", dynamic_ncols=True):
-            t_batched = repeat(t, "... -> b ...", b=b).long().to(device)
-            pred = self.unet.forward_with_cond_scale(x, a, t_batched, c, cond_scale=cond_scale)
-            x = self.scheduler.step(pred, t, x).prev_sample
+        times = torch.linspace(0.0, 1.0, self.sample_timesteps, device=device)
+        with tqdm(desc="sampling loop time step", dynamic_ncols=True) as pbar:
 
-        return self.discretize_hit_features(x)
+            def ode_fn(t: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+                t_batched = repeat(t, "... -> b ...", b=b)
+                out = self.unet.forward_with_cond_scale(x, a, t_batched, c, cond_scale=cond_scale)
+                pbar.update(1)
+                return out
+
+            trajectory = odeint(ode_fn, x, times, method="midpoint", rtol=1e-5, atol=1e-5)
+        return self.discretize_hit_features(trajectory[-1])
 
     def forward(
         self: "OsuFusion",
@@ -102,19 +104,16 @@ class OsuFusion(nn.Module):
         assert x.shape[-1] == a.shape[-1], "x and a must have the same number of sequence length"
 
         noise = torch.randn_like(x, device=x.device)
-        timesteps = torch.randint(
-            0,
-            self.scheduler.config.num_train_timesteps,
-            (x.shape[0],),
-            dtype=torch.int64,
-            device=x.device,
-        )
-        x_noisy = self.scheduler.add_noise(x, noise, timesteps)
+        times = torch.rand(x.shape[0], device=x.device)
 
-        pred = self.unet(x_noisy, a, timesteps, c, cond_drop_prob=self.cond_drop_prob)
+        t = cosmap(times)
+        x_noisy = t * x + (1 - t) * noise
+
+        flow = x - noise
+        pred = self.unet(x_noisy, a, t, c, cond_drop_prob=self.cond_drop_prob)
 
         # Calculate loss
-        loss = F.mse_loss(pred, noise, reduction="none")
+        loss = F.mse_loss(pred, flow, reduction="none")
 
         # Create mask for losses to ignore padding
         b, _, n = x.shape

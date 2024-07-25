@@ -3,7 +3,7 @@ import random
 import shutil
 from argparse import ArgumentParser
 from pathlib import Path
-from typing import Generator, List, Tuple
+from typing import Generator, List, Tuple, Union
 
 import numpy as np
 import torch
@@ -21,8 +21,11 @@ from tqdm.auto import tqdm
 import wandb
 from osu_fusion.library.dataset import FullSequenceDataset, RandomLengthDataset, SubsequenceDataset
 from osu_fusion.library.osu.data.encode import TOTAL_DIM
-from osu_fusion.models.diffusion import OsuFusion
+from osu_fusion.models.diffusion import OsuFusion as DiffusionOsuFusion
+from osu_fusion.models.rectified_flow import OsuFusion as RectifiedFlowOsuFusion
 from osu_fusion.scripts.dataset_creator import load_audio, normalize_context
+
+Model = Union[DiffusionOsuFusion, RectifiedFlowOsuFusion]
 
 
 def get_total_norm(parameters: List[torch.Tensor], norm_type: float = 2.0) -> float:
@@ -93,7 +96,7 @@ def collate_fn(
 
 def sample_step(
     accelerator: Accelerator,
-    model: OsuFusion,
+    model: Model,
     audio_path: Path,
     step: int,
 ) -> torch.Tensor:
@@ -130,13 +133,13 @@ def sample_step(
     plt.close(fig)
 
 
-def save_model_sd(model: OsuFusion, project_dir: Path) -> None:
+def save_model_sd(model: Model, project_dir: Path) -> None:
     model_sd = model.state_dict()
     save_file(model_sd, project_dir / "model.safetensors")
 
 
 def save_checkpoint(
-    model: OsuFusion,
+    model: Model,
     optimizer: AdamW,
     scheduler: LambdaLR,
     current_step: int,
@@ -168,7 +171,7 @@ def save_checkpoint(
 
 
 def load_checkpoint(
-    model: OsuFusion,
+    model: Model,
     optimizer: AdamW,
     scheduler: LambdaLR,
     checkpoint_path: Path,
@@ -210,7 +213,8 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         project_name="OsuFusion",
     )
 
-    model = OsuFusion(args.model_dim, attn_infini=False)
+    model_class = DiffusionOsuFusion if args.model_type == "diffusion" else RectifiedFlowOsuFusion
+    model = model_class(args.model_dim, attn_infini=False)
     if args.full_bf16:
         model.set_full_bf16()
     model.unet.set_gradient_checkpointing(args.gradient_checkpointing)
@@ -351,6 +355,7 @@ def main() -> None:
     args = ArgumentParser()
     args.add_argument("--project-dir", type=Path)
     args.add_argument("--dataset-dir", type=Path)
+    args.add_argument("--model-type", type=str, default="diffusion", choices=["diffusion", "rectified-flow"])
     args.add_argument("--resume", type=Path, default=None)
     args.add_argument("--reset-steps", action="store_true")
     args.add_argument("--full-sequence", action="store_true")
