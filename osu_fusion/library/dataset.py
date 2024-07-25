@@ -9,7 +9,7 @@ from rosu_pp_py import Beatmap as RosuBeatmap
 from rosu_pp_py import Difficulty as RosuDifficulty
 from torch.utils.data import IterableDataset
 
-from osu_fusion.library.augment import add_cursor_noise, flip_cursor_horizontal, flip_cursor_vertical
+from osu_fusion.library.augment import flip_cursor_horizontal, flip_cursor_vertical
 from osu_fusion.library.osu.data.decode import Metadata, decode_beatmap
 from osu_fusion.library.osu.data.encode import TOTAL_DIM
 from osu_fusion.scripts.dataset_creator import (
@@ -77,9 +77,8 @@ class StreamPerSample(IterableDataset):
         self.dataset = kwargs.pop("dataset")
         self.sample_density = kwargs.pop("sample_density", 1.0)
         self.segment_sr = kwargs.pop("segment_sr", True)
-        self.flip_horizontal_prob = kwargs.pop("flip_horizontal_prob", 0.25)
-        self.flip_vertical_prob = kwargs.pop("flip_vertical_prob", 0.25)
-        self.noise_injection_prob = kwargs.pop("noise_injection_prob", 0.5)
+        self.flip_horizontal_prob = kwargs.pop("flip_horizontal_prob", 0.5)
+        self.flip_vertical_prob = kwargs.pop("flip_vertical_prob", 0.5)
 
         if not (0 < self.sample_density <= 1):
             msg = "sample_density must be between 0 and 1"
@@ -112,8 +111,6 @@ class StreamPerSample(IterableDataset):
                     x = flip_cursor_horizontal(x)
                 if random.random() < self.flip_vertical_prob:
                     x = flip_cursor_vertical(x)
-                if random.random() < self.noise_injection_prob:
-                    x = add_cursor_noise(x)
                 yield x, a, c
 
         # Randomize the dataset order for each epoch
