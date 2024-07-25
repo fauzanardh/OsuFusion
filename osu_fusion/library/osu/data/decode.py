@@ -219,6 +219,7 @@ def decode_beatmap(  # noqa: C901
             print("Warning: inherited timing point added before any uninherited timing points")
         vel = length * num_slides / (u - t)
         slider_vel = vel / base_slider_vel
+        slider_vel = 1 if slider_vel == 0 else slider_vel
         if (slider_vel > 10 or slider_vel < 0.1) and verbose:
             print(f"Warning: slider velocity {slider_vel} is out of bounds, slider will not be good")
         tps.append(f"{t},{-100/slider_vel},4,0,0,50,0,0")
