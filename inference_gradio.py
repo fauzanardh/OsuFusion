@@ -68,7 +68,7 @@ def create_input(
 def load_model(model_path: str, model_type: str, mixed_precision: str) -> str:
     global global_model, global_accelerator
     global_accelerator = Accelerator(mixed_precision=mixed_precision)
-    global_model = create_model_from_checkpoint(model_path)
+    global_model = create_model_from_checkpoint(model_path, model_type)
     global_model = global_accelerator.prepare(global_model)
     return "Model loaded successfully!"
 
