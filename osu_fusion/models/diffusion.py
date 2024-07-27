@@ -58,7 +58,7 @@ class OsuFusion(nn.Module):
         self.scheduler = DDIMScheduler(
             num_train_timesteps=train_timesteps,
             beta_schedule="linear",
-            clip_samples=False,
+            clip_sample=False,
             rescale_betas_zero_snr=True,
         )
         self.train_timesteps = train_timesteps
