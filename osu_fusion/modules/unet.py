@@ -140,9 +140,9 @@ class TransformerBlock(nn.Module):
         return rearrange(x + self.linear(out), "b n d -> b d n")
 
 
-class UnetBlock(nn.Module):
+class UNetBlock(nn.Module):
     def __init__(
-        self: "UnetBlock",
+        self: "UNetBlock",
         dim_in: int,
         dim_out: int,
         dim_cond: Optional[int],
@@ -161,14 +161,14 @@ class UnetBlock(nn.Module):
         attn_segment_len: int,
     ) -> None:
         super().__init__()
-        self.init_resnet = ResidualBlock(dim_in if down_block else dim_in * 2, dim_out, dim_cond)
+        self.init_resnet = ResidualBlock(dim_in if down_block else dim_in + dim_out, dim_in, dim_cond)
         self.resnets = nn.ModuleList(
-            [ResidualBlock(dim_out, dim_out, dim_cond) for _ in range(num_blocks)],
+            [ResidualBlock(dim_in if down_block else dim_in + dim_out, dim_in, dim_cond) for _ in range(num_blocks)],
         )
         self.transformers = nn.ModuleList(
             [
                 TransformerBlock(
-                    dim_out,
+                    dim_in,
                     attn_dim_head,
                     heads=attn_heads,
                     kv_heads=attn_kv_heads,
@@ -184,37 +184,60 @@ class UnetBlock(nn.Module):
         )
         if down_block:
             self.sampler = (
-                Downsample(dim_out, dim_out)
+                Downsample(dim_in, dim_out)
                 if layer_idx < (num_layers - 1)
                 else Parallel(
-                    nn.Conv1d(dim_out, dim_out, 3, padding=1),
-                    nn.Conv1d(dim_out, dim_out, 1),
+                    nn.Conv1d(dim_in, dim_out, 3, padding=1),
+                    nn.Conv1d(dim_in, dim_out, 1),
                 )
             )
         else:
             self.sampler = (
-                Upsample(dim_out, dim_out)
+                Upsample(dim_in, dim_out)
                 if layer_idx < (num_layers - 1)
                 else Parallel(
-                    nn.Conv1d(dim_out, dim_out, 3, padding=1),
-                    nn.Conv1d(dim_out, dim_out, 1),
+                    nn.Conv1d(dim_in, dim_out, 3, padding=1),
+                    nn.Conv1d(dim_in, dim_out, 1),
                 )
             )
 
         self.gradient_checkpointing = False
 
-    def forward_body(self: "UnetBlock", x: torch.Tensor, c: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward_body(
+        self: "UNetBlock",
+        x: torch.Tensor,
+        c: Optional[torch.Tensor] = None,
+        skip_inputs: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        skips = []
+
+        if skip_inputs is not None:
+            assert (
+                len(skip_inputs) == len(self.resnets) + 1
+            ), f"Expected {len(self.resnets) + 1} skip inputs, got {len(skip_inputs)}"
+            x = torch.cat([x, skip_inputs[0]], dim=1)
         x = self.init_resnet(x, c)
-        for resnet, transformer in zip(self.resnets, self.transformers):
+        skips.append(x)
+
+        for i, (resnet, transformer) in enumerate(zip(self.resnets, self.transformers)):
+            if skip_inputs is not None:
+                x = torch.cat([x, skip_inputs[i + 1]], dim=1)
             x = resnet(x, c)
             x = transformer(x)
-        return self.sampler(x), x
+            skips.append(x)
 
-    def forward(self: "UnetBlock", x: torch.Tensor, c: Optional[torch.Tensor] = None) -> torch.Tensor:
+        return self.sampler(x), skips
+
+    def forward(
+        self: "UNetBlock",
+        x: torch.Tensor,
+        c: Optional[torch.Tensor] = None,
+        skip_inputs: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         if self.training and self.gradient_checkpointing:
-            return torch.utils.checkpoint.checkpoint(self.forward_body, x, c, use_reentrant=True)
+            return torch.utils.checkpoint.checkpoint(self.forward_body, x, c, skip_inputs, use_reentrant=True)
         else:
-            return self.forward_body(x, c)
+            return self.forward_body(x, c=c, skip_inputs=skip_inputs)
 
 
 class AudioEncoder(nn.Module):
@@ -260,7 +283,7 @@ class AudioEncoder(nn.Module):
             attn_context_len_layer = attn_context_len // (2**i)
             attn_segment_len_layer = attn_segment_len // (2**i)
             layers.append(
-                UnetBlock(
+                UNetBlock(
                     layer_dim_in,
                     layer_dim_out,
                     None,
@@ -367,7 +390,7 @@ class UNet(nn.Module):
             attn_context_len_layer = attn_context_len // (2**i)
             attn_segment_len_layer = attn_segment_len // (2**i)
             down_layers.append(
-                UnetBlock(
+                UNetBlock(
                     layer_dim_in,
                     layer_dim_out,
                     self.dim_cond,
@@ -429,7 +452,7 @@ class UNet(nn.Module):
             attn_context_len_layer = attn_context_len // (2 ** (n_layers - i - 1))
             attn_segment_len_layer = attn_segment_len // (2 ** (n_layers - i - 1))
             up_layers.append(
-                UnetBlock(
+                UNetBlock(
                     layer_dim_in,
                     layer_dim_out,
                     self.dim_cond,
@@ -505,10 +528,10 @@ class UNet(nn.Module):
 
         c = c + self.time_mlp(t) + self.audio_mlp(h_a)
 
-        skip_connections = []
+        skips_connections = []
         for down_layer in self.down_layers:
-            x, skip = down_layer(x, c)
-            skip_connections.append(skip)
+            x, skips = down_layer(x, c)
+            skips_connections.append(skips)
 
         x = torch.cat([x, a], dim=1)
         x = self.middle_resnet1(x, c)
@@ -516,8 +539,8 @@ class UNet(nn.Module):
             x = transformer_block(x)
         x = self.middle_resnet2(x, c)
 
-        for up_layer, skip in zip(self.up_layers, reversed(skip_connections)):
-            x, _ = up_layer(torch.cat([x, skip], dim=1), c)
+        for up_layer, skips in zip(self.up_layers, reversed(skips_connections)):
+            x, _ = up_layer(x, c=c, skip_inputs=skips)
 
         x = torch.cat([x, r], dim=1)
         x = self.final_resnet(x, c)
