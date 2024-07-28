@@ -1,5 +1,5 @@
 import math
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -145,7 +145,7 @@ class UnetBlock(nn.Module):
         self: "UnetBlock",
         dim_in: int,
         dim_out: int,
-        dim_cond: int,
+        dim_cond: Optional[int],
         layer_idx: int,
         num_layers: int,
         num_blocks: int,
@@ -203,14 +203,14 @@ class UnetBlock(nn.Module):
 
         self.gradient_checkpointing = False
 
-    def forward_body(self: "UnetBlock", x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+    def forward_body(self: "UnetBlock", x: torch.Tensor, c: Optional[torch.Tensor] = None) -> torch.Tensor:
         x = self.init_resnet(x, c)
         for resnet, transformer in zip(self.resnets, self.transformers):
             x = resnet(x, c)
             x = transformer(x)
         return self.sampler(x), x
 
-    def forward(self: "UnetBlock", x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+    def forward(self: "UnetBlock", x: torch.Tensor, c: Optional[torch.Tensor] = None) -> torch.Tensor:
         if self.training and self.gradient_checkpointing:
             return torch.utils.checkpoint.checkpoint(self.forward_body, x, c, use_reentrant=True)
         else:
@@ -263,7 +263,7 @@ class AudioEncoder(nn.Module):
                 UnetBlock(
                     layer_dim_in,
                     layer_dim_out,
-                    self.dim_cond,
+                    None,
                     i,
                     n_layers,
                     num_blocks,
@@ -283,13 +283,8 @@ class AudioEncoder(nn.Module):
 
     def forward(self: "AudioEncoder", x: torch.Tensor) -> torch.Tensor:
         x = self.init_conv(x)
-
-        # Fixed time embedding (to reuse the same resnet module)
-        b = x.shape[0]
-        t = torch.zeros(b, dtype=torch.long, device=x.device)
-        c = self.time_mlp(t)
         for layer in self.layers:
-            x, _ = layer(x, c)
+            x, _ = layer(x)
         return x
 
 

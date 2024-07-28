@@ -55,14 +55,16 @@ class ResidualBlock(nn.Module):
         self: "ResidualBlock",
         dim_in: int,
         dim_out: int,
-        dim_cond: int,
+        dim_cond: Optional[int] = None,
     ) -> None:
         super().__init__()
+        self.has_cond = dim_cond is not None
 
-        self.mlp = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(dim_cond, dim_out * 2),
-        )
+        if self.has_cond:
+            self.mlp = nn.Sequential(
+                nn.SiLU(),
+                nn.Linear(dim_cond, dim_out * 2),
+            )
         self.block1 = Block(dim_in, dim_out)
         self.block2 = Block(dim_out, dim_out)
 
@@ -72,11 +74,14 @@ class ResidualBlock(nn.Module):
     def forward(
         self: "ResidualBlock",
         x: torch.Tensor,
-        c: torch.Tensor,
+        c: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        c = self.mlp(c)
-        c = rearrange(c, "b d -> b d 1")
-        scale_shift = c.chunk(2, dim=1)
+        if self.has_cond:
+            c = self.mlp(c)
+            c = rearrange(c, "b d -> b d 1")
+            scale_shift = c.chunk(2, dim=1)
+        else:
+            scale_shift = None
 
         h = self.block1(x, scale_shift=scale_shift)
         h = self.block2(h)
