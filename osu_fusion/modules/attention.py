@@ -245,37 +245,3 @@ class Attention(nn.Module):
             causal_mask.masked_fill_(causal_mask == 1, float("-inf"))
             attn_mask = causal_mask if attn_mask is None else attn_mask + causal_mask
         return self.forward_sdpa(q, k, v, attn_mask=attn_mask)
-
-
-class MultiHeadAttention(nn.Module):
-    def __init__(
-        self: "MultiHeadAttention",
-        dim: int,
-        dim_head: int = 32,
-        heads: int = 8,
-        causal: bool = True,
-        use_rotary_emb: bool = True,
-    ) -> None:
-        super().__init__()
-        self.heads = heads
-
-        inner_dim = dim_head * heads
-        self.to_qkv = nn.Linear(dim, inner_dim * 3, 1, bias=False)
-        self.rotary_emb = RotaryPositionEmbedding(dim_head) if use_rotary_emb else None
-        self.attention = Attention(causal=causal)
-        self.to_out = nn.Linear(inner_dim, dim, 1)
-
-    def forward(
-        self: "MultiHeadAttention",
-        x: torch.Tensor,
-    ) -> torch.Tensor:
-        q, k, v = self.to_qkv(x).chunk(3, dim=-2)
-        q, k, v = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q, k, v))
-        if self.rotary_emb is not None:
-            q, k = self.rotary_emb(q, k)
-
-        out = self.attention(q, k, v)
-        out = rearrange(out, "b h n d -> b n (h d)")
-
-        out = self.to_out(out)
-        return out
