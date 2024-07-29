@@ -121,7 +121,7 @@ def sample_step(
     torch.set_rng_state(current_rng_state)
 
     model.eval()
-    with torch.no_grad() and accelerator.autocast():
+    with accelerator.autocast():
         generated = model.sample(a, c, x, cond_scale=1.0)
     model.train()
 

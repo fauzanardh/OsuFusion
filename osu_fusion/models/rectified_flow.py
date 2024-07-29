@@ -64,7 +64,7 @@ class OsuFusion(nn.Module):
     def set_full_bf16(self: "OsuFusion") -> None:
         self.unet = self.unet.bfloat16()
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def sample(
         self: "OsuFusion",
         a: torch.Tensor,
