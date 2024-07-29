@@ -132,7 +132,7 @@ def sample_step(
         figsize=(w, h * 8),
         sharex=True,
     )
-    for feature, ax in zip(generated[0].cpu(), axs):
+    for feature, ax in zip(generated[0].cpu().to(torch.float32), axs):
         ax.plot(feature)
 
     accelerator.log({"generated": wandb.Image(fig)}, step=step)
