@@ -25,6 +25,7 @@ from osu_fusion.models.diffusion import OsuFusion as DiffusionOsuFusion
 from osu_fusion.models.rectified_flow import OsuFusion as RectifiedFlowOsuFusion
 from osu_fusion.scripts.dataset_creator import load_audio, normalize_context
 
+wandb.require("core")
 Model = Union[DiffusionOsuFusion, RectifiedFlowOsuFusion]
 
 
