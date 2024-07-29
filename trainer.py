@@ -104,14 +104,20 @@ def sample_step(
     # CS, AR, OD, HP, SR
     c = normalize_context(np.array([4.0, 9.5, 9.5, 4.0, 6.0], dtype=np.float32))
 
-    a = torch.from_numpy(a).unsqueeze(0).to(accelerator.device)
-    c = torch.from_numpy(c).unsqueeze(0).to(accelerator.device)
+    dtype = torch.float32
+    if accelerator.mixed_precision == "fp16":
+        dtype = torch.float16
+    elif accelerator.mixed_precision == "bf16":
+        dtype = torch.bfloat16
+
+    a = torch.from_numpy(a).unsqueeze(0).to(device=accelerator.device, dtype=dtype)
+    c = torch.from_numpy(c).unsqueeze(0).to(device=accelerator.device, dtype=dtype)
 
     b, _, n = a.shape
 
     current_rng_state = torch.get_rng_state()
     torch.manual_seed(0)
-    x = torch.randn((b, TOTAL_DIM, n), device=accelerator.device)
+    x = torch.randn((b, TOTAL_DIM, n), device=accelerator.device, dtype=dtype)
     torch.set_rng_state(current_rng_state)
 
     model.eval()
