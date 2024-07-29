@@ -8,7 +8,7 @@ from typing import Generator, List, Tuple, Union
 import numpy as np
 import torch
 from accelerate import Accelerator
-from accelerate.utils import ProjectConfiguration
+from accelerate.utils import FP8RecipeKwargs, ProjectConfiguration
 from diffusers.optimization import get_cosine_with_hard_restarts_schedule_with_warmup as cosine_with_restarts
 from matplotlib import pyplot as plt
 from safetensors.torch import save_file
@@ -206,6 +206,10 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     print("Initializing...")
     # Add your own API key here or set it as an environment variable
     # os.environ["WANDB_API_KEY"] = ""
+    if args.mixed_precision == "fp8":
+        accelerate_kwargs = [FP8RecipeKwargs(backend="msamp", optimization_level="O1")]
+    else:
+        accelerate_kwargs = None
     accelerator = Accelerator(
         mixed_precision=args.mixed_precision,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
@@ -214,6 +218,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
             automatic_checkpoint_naming=True,
         ),
         log_with="wandb",
+        kwargs_handlers=accelerate_kwargs,
     )
     accelerator.init_trackers(
         project_name="OsuFusion",
@@ -367,7 +372,7 @@ def main() -> None:
     args.add_argument("--full-sequence", action="store_true")
     args.add_argument("--random-length", action="store_true")
     args.add_argument("--max-length", type=int, default=0)
-    args.add_argument("--mixed-precision", type=str, default="bf16", choices=["no", "fp16", "bf16"])
+    args.add_argument("--mixed-precision", type=str, default="bf16", choices=["no", "fp16", "bf16", "fp8"])
     args.add_argument("--full-bf16", action="store_true")
     args.add_argument("--gradient-checkpointing", action="store_true")
     args.add_argument("--gradient-accumulation-steps", type=int, default=1)
