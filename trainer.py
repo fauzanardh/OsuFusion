@@ -206,10 +206,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     print("Initializing...")
     # Add your own API key here or set it as an environment variable
     # os.environ["WANDB_API_KEY"] = ""
-    if args.mixed_precision == "fp8":
-        accelerate_kwargs = [FP8RecipeKwargs(backend="msamp", optimization_level="O1")]
-    else:
-        accelerate_kwargs = None
+    accelerate_kwargs = [FP8RecipeKwargs(backend="msamp", opt_level="O1")] if args.mixed_precision == "fp8" else None
     accelerator = Accelerator(
         mixed_precision=args.mixed_precision,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
