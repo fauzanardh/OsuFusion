@@ -35,16 +35,6 @@ class SinusoidalPositionEmbedding(nn.Module):
         return emb
 
 
-class FourierFeatureTransform(nn.Module):
-    def __init__(self: "FourierFeatureTransform", dim_in: int, mapping_size: int, scale: int = 5) -> None:
-        super().__init__()
-        self.weight = nn.Parameter(torch.randn(dim_in, mapping_size) * scale, requires_grad=False)
-
-    def forward(self: "FourierFeatureTransform", x: torch.Tensor) -> torch.Tensor:
-        x = torch.cat([torch.sin(x @ self.weight), torch.cos(x @ self.weight)], dim=-1)
-        return x
-
-
 class CrossEmbedLayer(nn.Module):
     def __init__(self: "CrossEmbedLayer", dim: int, dim_out: int, kernel_sizes: Tuple[int]) -> None:
         super().__init__()
@@ -380,9 +370,8 @@ class UNet(nn.Module):
             nn.SiLU(),
             nn.Linear(self.dim_cond, self.dim_cond),
         )
-        self.cond_transform = FourierFeatureTransform(dim_in_c, self.dim_cond // 2)
         self.cond_mlp = nn.Sequential(
-            nn.Linear(self.dim_cond, self.dim_cond),
+            nn.Linear(dim_in_c, self.dim_cond),
             nn.SiLU(),
             nn.Linear(self.dim_cond, self.dim_cond),
         )
@@ -534,10 +523,10 @@ class UNet(nn.Module):
         cond_mask = prob_mask_like((x.shape[0],), 1.0 - cond_drop_prob, device=x.device)
         cond_mask = rearrange(cond_mask, "b -> b 1")
         null_conds = repeat(self.null_cond, "d -> b d", b=x.shape[0])
-        c = self.cond_transform(c)
+        c = self.cond_mlp(c)
         c = torch.where(cond_mask, c, null_conds)
 
-        c = self.cond_mlp(c) + self.time_mlp(t) + self.audio_mlp(h_a)
+        c = c + self.time_mlp(t) + self.audio_mlp(h_a)
 
         skips_connections = []
         for down_layer in self.down_layers:
