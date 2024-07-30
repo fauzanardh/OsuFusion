@@ -1,5 +1,4 @@
 from dataclasses import asdict, dataclass
-from functools import partial
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -84,16 +83,44 @@ def slider_decoder(
     return length, control_points
 
 
-def add_hit_circle(cursor_signals: npt.NDArray, onset_loc: int, t: float, combo_bit: int) -> str:
-    x, y = cursor_signals[:, onset_loc].round().astype(int)
-    return f"{x},{y},{t},{2**0 + combo_bit},0,0:0:0:0:"
-
-
 def get_timings(hit_times: npt.NDArray, timing_beat_len: float) -> Tuple[bool, TimingPoint]:
     offsets = hit_times % timing_beat_len
     hist, bin_edges = np.histogram(offsets, bins=100, range=(0, timing_beat_len))
     offset = bin_edges[np.argmax(hist)]
     return True, TimingPoint(offset, timing_beat_len, None, 4, None)
+
+
+def calculate_timing_point(
+    hit_times: npt.NDArray,
+    allow_beat_snap: bool,
+    verbose: bool = True,
+) -> Tuple[bool, TimingPoint]:
+    if not allow_beat_snap:
+        return False, TimingPoint(0, 60000 / 200, None, 4, None)
+
+    time_diffs = np.diff(hit_times)
+    autocorr = signal.correlate(time_diffs, time_diffs, mode="full")
+    autocorr = autocorr[len(autocorr) // 2 :]
+
+    valid_periods = 60000 / np.arange(MIN_BPM, MAX_BPM + 1, 0.1)
+    peaks, _ = signal.find_peaks(autocorr, distance=valid_periods.min())
+
+    valid_peaks = peaks[(valid_periods.min() <= peaks) & (peaks <= valid_periods.max())]
+    if len(valid_peaks) == 0:
+        if verbose:
+            print("Warning: no valid BPM found within the range, disabling beat snap")
+        return False, TimingPoint(0, 60000 / 200, None, 4, None)
+
+    peak_scores = autocorr[valid_peaks]
+    timing_beat_len = valid_peaks[np.argmax(peak_scores)]
+    return get_timings(hit_times, timing_beat_len)
+
+
+def snap_to_beat(t: float, u: float, beat_offset: float, beat_length: float) -> Tuple[float, float]:
+    beat_f_len = beat_length / BEAT_DIVISOR
+    t = round((t - beat_offset) / beat_f_len) * beat_f_len + beat_offset
+    u = round((u - beat_offset) / beat_f_len) * beat_f_len + beat_offset
+    return t, u
 
 
 def decode_beatmap(  # noqa: C901
@@ -109,62 +136,27 @@ def decode_beatmap(  # noqa: C901
 
     hit_locs = decode_flips(encoded_beatmap[BeatmapEncoding.HIT])
     loc2idx = np.full_like(frame_times, -1, dtype=int)
-    for i, onset_idx in enumerate(hit_locs):
-        loc2idx[onset_idx] = i
+    loc2idx[hit_locs] = np.arange(len(hit_locs))
 
-    new_combos = [False] * len(hit_locs)
-    for combo_locs in decode_flips(encoded_beatmap[BeatmapEncoding.COMBO]):
-        new_combos[loc2idx[combo_locs]] = True
+    new_combos = np.zeros(len(hit_locs), dtype=bool)
+    new_combos[loc2idx[decode_flips(encoded_beatmap[BeatmapEncoding.COMBO])]] = True
 
-    sustain_ends = [-1] * len(hit_locs)
-    for sustain_start, sustain_end in zip(*decode_extents(encoded_beatmap[BeatmapEncoding.SUSTAIN])):
-        onset_idx = loc2idx[sustain_start]
-        if onset_idx == -1:
-            continue
-        sustain_ends[onset_idx] = sustain_end
+    sustain_starts, sustain_ends = decode_extents(encoded_beatmap[BeatmapEncoding.SUSTAIN])
+    slider_starts, slider_ends = decode_extents(encoded_beatmap[BeatmapEncoding.SLIDER])
 
-    slider_ends = [-1] * len(hit_locs)
-    for slider_start, slider_end in zip(*decode_extents(encoded_beatmap[BeatmapEncoding.SLIDER])):
-        onset_idx = loc2idx[slider_start]
-        if onset_idx == -1:
-            continue
-        slider_ends[onset_idx] = slider_end
+    sustain_ends_mapped = np.full(len(hit_locs), -1, dtype=int)
+    slider_ends_mapped = np.full(len(hit_locs), -1, dtype=int)
+    sustain_ends_mapped[loc2idx[sustain_starts]] = sustain_ends
+    slider_ends_mapped[loc2idx[slider_starts]] = slider_ends
 
     hos = []
     tps = []
 
+    hit_times = frame_times[hit_locs]
     if bpm is not None:
-        timing_beat_len = 60000 / bpm
-        hit_times = frame_times[hit_locs]
-        beat_snap, timing_point = get_timings(hit_times, timing_beat_len)
+        beat_snap, timing_point = get_timings(hit_times, 60000 / bpm)
     else:
-        if allow_beat_snap:
-            hit_times = frame_times[hit_locs]
-            time_diffs = np.diff(hit_times)
-            autocorr = signal.correlate(time_diffs, time_diffs, mode="full")
-            autocorr = autocorr[len(autocorr) // 2 :]
-
-            valid_periods = 60000 / np.arange(MIN_BPM, MAX_BPM + 1, 0.1)
-            peaks, _ = signal.find_peaks(autocorr, distance=valid_periods.min())
-
-            valid_peaks = peaks[(valid_periods.min() <= peaks) & (peaks <= valid_periods.max())]
-            if len(valid_peaks) == 0:
-                if verbose:
-                    print("Warning: no valid BPM found within the range, disabling beat snap")
-                beat_snap, timing_point = False, TimingPoint(0, 60000 / 200, None, 4, None)
-            else:
-                peak_scores = []
-                for peak in valid_peaks:
-                    score = autocorr[peak]
-                    for harmonic in [0.5, 2, 3]:
-                        harmonic_peak = int(peak * harmonic)
-                        if 0 <= harmonic_peak < len(autocorr):
-                            score += autocorr[harmonic_peak] * 0.5  # Weight harmonics less
-                    peak_scores.append(score)
-                timing_beat_len = valid_peaks[np.argmax(peak_scores)]
-                beat_snap, timing_point = get_timings(hit_times, timing_beat_len)
-        else:
-            beat_snap, timing_point = False, TimingPoint(0, 60000 / 200, None, 4, None)
+        beat_snap, timing_point = calculate_timing_point(hit_times, allow_beat_snap, verbose)
 
     if not allow_beat_snap:
         beat_snap = False
@@ -174,33 +166,38 @@ def decode_beatmap(  # noqa: C901
     beat_offset = timing_point.t
     tps.append(f"{timing_point.t},{timing_point.beat_length},{timing_point.meter},0,0,50,1,0")
 
-    last_up = None
-    for hit_loc, new_combo, sustain_end, slider_end in zip(hit_locs, new_combos, sustain_ends, slider_ends):
+    for hit_loc, new_combo, sustain_end, slider_end in zip(
+        hit_locs,
+        new_combos,
+        sustain_ends_mapped,
+        slider_ends_mapped,
+    ):
+        x, y = cursor_signals[:, hit_loc].round().astype(int)
         t = frame_times[hit_loc]
         u = frame_times[sustain_end]
         combo_bit = 2**2 if new_combo else 0
 
         if beat_snap:
-            beat_f_len = beat_length / BEAT_DIVISOR
-            t = round((t - beat_offset) / beat_f_len) * beat_f_len + beat_offset
-            u = round((u - beat_offset) / beat_f_len) * beat_f_len + beat_offset
-
-        if last_up is not None and t <= last_up + 1:
-            continue
-
-        _add_hit_circle = partial(add_hit_circle, cursor_signals, hit_loc, t, combo_bit)
+            t, u = snap_to_beat(t, u, beat_offset, beat_length)
 
         if sustain_end == -1:
-            hos.append(_add_hit_circle())
+            # No sustain
+            hos.append(f"{x},{y},{t},{2**0 + combo_bit},0,0:0:0:0:")
             continue
 
-        if u - t < 20:
-            hos.append(_add_hit_circle())
+        if sustain_end - hit_loc < 4:
+            # Sustain too short
+            hos.append(f"{x},{y},{t},{2**0 + combo_bit},0,0:0:0:0:")
             continue
 
         if slider_end == -1:
             # Spinner
             hos.append(f"256,192,{t},{2**3 + combo_bit},0,{u}")
+            continue
+
+        if slider_end - hit_loc < 4:
+            # Slider too short
+            hos.append(f"{x},{y},{t},{2**0 + combo_bit},0,0:0:0:0:")
             continue
 
         # Slider
@@ -209,22 +206,18 @@ def decode_beatmap(  # noqa: C901
 
         if length == 0:
             # zero-length slider
-            hos.append(_add_hit_circle())
+            hos.append(f"{x},{y},{t},{2**0 + combo_bit},0,0:0:0:0:")
 
         x1, y1 = control_points[0]
         curve_points = "|".join(f"{x}:{y}" for x, y in control_points[1:])
         hos.append(f"{x1},{y1},{t},{2**1 + combo_bit},0,B|{curve_points},{num_slides},{length}")
 
-        if len(tps) == 0 and verbose:
-            print("Warning: inherited timing point added before any uninherited timing points")
         vel = length * num_slides / (u - t)
         slider_vel = vel / base_slider_vel
         slider_vel = 1 if slider_vel == 0 else slider_vel
         if (slider_vel > 10 or slider_vel < 0.1) and verbose:
             print(f"Warning: slider velocity {slider_vel} is out of bounds, slider will not be good")
         tps.append(f"{t},{-100/slider_vel},4,0,0,50,0,0")
-
-        last_up = u
 
     return map_template.format(
         **asdict(metadata),
