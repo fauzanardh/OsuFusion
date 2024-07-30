@@ -21,6 +21,8 @@ from osu_fusion.scripts.dataset_creator import HOP_LENGTH, N_FFT, SR, load_audio
 
 Model = Union[DiffusionOsuFusion, RectifiedFlowOsuFusion]
 
+VERSION_TEMPLATE = "{version_name} - batch {batch_number}_{batch_size}"
+
 # Global variables to store the model and accelerator
 global_model = None
 global_accelerator = None
@@ -49,18 +51,19 @@ def create_input(
     sr: float,
     batch_size: int,
     device: torch.device,
+    dtype: torch.dtype,
 ) -> torch.Tensor:
     audio = load_audio(audio_path)
     context = normalize_context(np.array([cs, ar, od, hp, sr], dtype=np.float32))
 
-    audio = torch.from_numpy(audio).to(device)
-    context = torch.from_numpy(context).to(device)
+    audio = torch.from_numpy(audio).to(device=device, dtype=dtype)
+    context = torch.from_numpy(context).to(device=device, dtype=dtype)
 
     audio = repeat(audio, "d n -> b d n", b=batch_size)
     context = repeat(context, "c -> b c", b=batch_size)
 
     n = audio.shape[-1]
-    x = torch.randn((batch_size, TOTAL_DIM, n), device=device)
+    x = torch.randn((batch_size, TOTAL_DIM, n), device=device, dtype=dtype)
 
     return x, audio, context
 
@@ -70,6 +73,14 @@ def load_model(model_path: str, model_type: str, mixed_precision: str) -> str:
     global_accelerator = Accelerator(mixed_precision=mixed_precision)
     global_model = create_model_from_checkpoint(model_path, model_type)
     global_model = global_accelerator.prepare(global_model)
+
+    model_dtype = torch.float32
+    if global_accelerator.mixed_precision == "fp16":
+        model_dtype = torch.float16
+    elif global_accelerator.mixed_precision == "bf16":
+        model_dtype = torch.bfloat16
+    global_model = global_model.to(dtype=model_dtype)
+
     return "Model loaded successfully!"
 
 
@@ -97,6 +108,11 @@ def generate_beatmap(
         return None, "Error: Model not loaded. Please load the model first."
 
     device = global_accelerator.device
+    dtype = torch.float32
+    if global_accelerator.mixed_precision == "fp16":
+        dtype = torch.float16
+    elif global_accelerator.mixed_precision == "bf16":
+        dtype = torch.bfloat16
     x, audio, context = create_input(
         music_path,
         cs,
@@ -106,10 +122,10 @@ def generate_beatmap(
         sr,
         batch_size,
         device,
+        dtype,
     )
 
-    with global_accelerator.autocast():
-        generated = global_model.sample(audio, context, x, cond_scale=cfg)
+    generated = global_model.sample(audio, context, x, cond_scale=cfg)
 
     frame_times = (
         librosa.frames_to_time(np.arange(generated.shape[-1]), sr=SR, hop_length=HOP_LENGTH, n_fft=N_FFT) * 1000
@@ -135,7 +151,11 @@ def generate_beatmap(
 
         signals = generated.cpu().detach().numpy()
         for i, signal in enumerate(signals):
-            metadata.version = f"{metadata.version} - batch {i + 1}_{batch_size}"
+            metadata.version = VERSION_TEMPLATE.format(
+                version_name=version_name,
+                batch_number=i + 1,
+                batch_size=batch_size,
+            )
             beatmap = decode_beatmap(metadata, signal, frame_times, bpm if bpm_enable else None, allow_beat_snap)
             mapset_archive.writestr(
                 f"{metadata.artist} - {metadata.title} (OsuFusion) [{metadata.version}].osu",
