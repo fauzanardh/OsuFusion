@@ -102,18 +102,28 @@ def calculate_timing_point(
     autocorr = signal.correlate(time_diffs, time_diffs, mode="full")
     autocorr = autocorr[len(autocorr) // 2 :]
 
-    valid_periods = 60000 / np.arange(MIN_BPM, MAX_BPM + 1, 0.1)
+    valid_periods = 60000 / np.arange(MIN_BPM, MAX_BPM + 1, 1)
     peaks, _ = signal.find_peaks(autocorr, distance=valid_periods.min())
 
-    valid_peaks = peaks[(valid_periods.min() <= peaks) & (peaks <= valid_periods.max())]
+    valid_peaks = peaks[(valid_periods.min() * 0.95 <= peaks) & (peaks <= valid_periods.max() * 1.05)]
     if len(valid_peaks) == 0:
         if verbose:
             print("Warning: no valid BPM found within the range, disabling beat snap")
         return False, TimingPoint(0, 60000 / 200, None, 4, None)
 
-    peak_scores = autocorr[valid_peaks]
-    timing_beat_len = valid_peaks[np.argmax(peak_scores)]
-    return get_timings(hit_times, timing_beat_len)
+    best_peak = valid_peaks[np.argmax(autocorr[valid_peaks])]
+    initial_bpm = 60000 / best_peak
+
+    fine_tune_range = np.linspace(initial_bpm * 0.95, initial_bpm * 1.05, 1000)
+    fine_tune_scores = np.zeros_like(fine_tune_range)
+    for i, bpm in enumerate(fine_tune_range):
+        beat_length = 60000 / bpm
+        phase = hit_times % beat_length
+        hist, _ = np.histogram(phase, bins=100, range=(0, beat_length))
+        fine_tune_scores[i] = np.max(hist)
+
+    best_bpm = fine_tune_range[np.argmax(fine_tune_scores)]
+    return get_timings(hit_times, 60000 / best_bpm)
 
 
 def snap_to_beat(t: float, u: float, beat_offset: float, beat_length: float) -> Tuple[float, float]:
@@ -123,7 +133,7 @@ def snap_to_beat(t: float, u: float, beat_offset: float, beat_length: float) -> 
     return t, u
 
 
-def decode_beatmap(  # noqa: C901
+def decode_beatmap(
     metadata: Metadata,
     encoded_beatmap: npt.NDArray,
     frame_times: npt.NDArray,
@@ -157,9 +167,6 @@ def decode_beatmap(  # noqa: C901
         beat_snap, timing_point = get_timings(hit_times, 60000 / bpm)
     else:
         beat_snap, timing_point = calculate_timing_point(hit_times, allow_beat_snap, verbose)
-
-    if not allow_beat_snap:
-        beat_snap = False
 
     beat_length = timing_point.beat_length
     base_slider_vel = SLIDER_MULT * 100 / beat_length
