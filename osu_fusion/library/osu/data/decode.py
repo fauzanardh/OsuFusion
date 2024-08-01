@@ -133,7 +133,7 @@ def snap_to_beat(t: float, u: float, beat_offset: float, beat_length: float) -> 
     return t, u
 
 
-def decode_beatmap(
+def decode_beatmap(  # noqa: C901
     metadata: Metadata,
     encoded_beatmap: npt.NDArray,
     frame_times: npt.NDArray,
@@ -146,18 +146,26 @@ def decode_beatmap(
 
     hit_locs = decode_flips(encoded_beatmap[BeatmapEncoding.HIT])
     loc2idx = np.full_like(frame_times, -1, dtype=int)
-    loc2idx[hit_locs] = np.arange(len(hit_locs))
+    for i, onset_idx in enumerate(hit_locs):
+        loc2idx[onset_idx] = i
 
-    new_combos = np.zeros(len(hit_locs), dtype=bool)
-    new_combos[loc2idx[decode_flips(encoded_beatmap[BeatmapEncoding.COMBO])]] = True
+    new_combos = [False] * len(hit_locs)
+    for combo_locs in decode_flips(encoded_beatmap[BeatmapEncoding.COMBO]):
+        new_combos[loc2idx[combo_locs]] = True
 
-    sustain_starts, sustain_ends = decode_extents(encoded_beatmap[BeatmapEncoding.SUSTAIN])
-    slider_starts, slider_ends = decode_extents(encoded_beatmap[BeatmapEncoding.SLIDER])
+    sustain_ends = [-1] * len(hit_locs)
+    for sustain_start, sustain_end in zip(*decode_extents(encoded_beatmap[BeatmapEncoding.SUSTAIN])):
+        onset_idx = loc2idx[sustain_start]
+        if onset_idx == -1:
+            continue
+        sustain_ends[onset_idx] = sustain_end
 
-    sustain_ends_mapped = np.full(len(hit_locs), -1, dtype=int)
-    slider_ends_mapped = np.full(len(hit_locs), -1, dtype=int)
-    sustain_ends_mapped[loc2idx[sustain_starts]] = sustain_ends
-    slider_ends_mapped[loc2idx[slider_starts]] = slider_ends
+    slider_ends = [-1] * len(hit_locs)
+    for slider_start, slider_end in zip(*decode_extents(encoded_beatmap[BeatmapEncoding.SLIDER])):
+        onset_idx = loc2idx[slider_start]
+        if onset_idx == -1:
+            continue
+        slider_ends[onset_idx] = slider_end
 
     hos = []
     tps = []
@@ -173,12 +181,7 @@ def decode_beatmap(
     beat_offset = timing_point.t
     tps.append(f"{timing_point.t},{timing_point.beat_length},{timing_point.meter},0,0,50,1,0")
 
-    for hit_loc, new_combo, sustain_end, slider_end in zip(
-        hit_locs,
-        new_combos,
-        sustain_ends_mapped,
-        slider_ends_mapped,
-    ):
+    for hit_loc, new_combo, sustain_end, slider_end in zip(hit_locs, new_combos, sustain_ends, slider_ends):
         x, y = cursor_signals[:, hit_loc].round().astype(int)
         t = frame_times[hit_loc]
         u = frame_times[sustain_end]
