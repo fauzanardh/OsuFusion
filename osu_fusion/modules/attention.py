@@ -125,18 +125,19 @@ class Attention(nn.Module):
         memory: Optional[torch.Tensor] = None,
         norm_term: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        if memory is None or norm_term is None:
-            return torch.zeros_like(q, device=q.device)
+        with torch.autocast(device_type=q.device.type, dtype=torch.float32):
+            if memory is None or norm_term is None:
+                return torch.zeros_like(q, device=q.device)
 
-        q = F.elu(q) + 1.0
+            q = F.elu(q) + 1.0
 
-        memory = torch.matmul(q, memory)
-        norm_term = torch.matmul(
-            q,
-            rearrange(norm_term, "b h 1 d -> b h d 1"),
-        )
+            memory = torch.matmul(q, memory)
+            norm_term = torch.matmul(
+                q,
+                rearrange(norm_term, "b h 1 d -> b h d 1"),
+            )
 
-        return memory / (norm_term + 1e-6)
+            return memory / (norm_term + 1e-6)
 
     def _update_memory(
         self: "Attention",
@@ -145,19 +146,20 @@ class Attention(nn.Module):
         memory: Optional[torch.Tensor] = None,
         norm_term: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        k = F.elu(k) + 1.0
+        with torch.autocast(device_type=k.device.type, dtype=torch.float32):
+            k = F.elu(k) + 1.0
 
-        if memory is not None:
-            memory = memory + torch.matmul(rearrange(k, "b h n d -> b h d n"), v)
-        else:
-            memory = torch.matmul(rearrange(k, "b h n d -> b h d n"), v)
+            if memory is not None:
+                memory = memory + torch.matmul(rearrange(k, "b h n d -> b h d n"), v)
+            else:
+                memory = torch.matmul(rearrange(k, "b h n d -> b h d n"), v)
 
-        if norm_term is not None:  # noqa: SIM108
-            norm_term = norm_term + k.sum(dim=-2, keepdim=True)
-        else:
-            norm_term = k.sum(dim=-2, keepdim=True)
+            if norm_term is not None:
+                norm_term = norm_term + k.sum(dim=-2, keepdim=True)
+            else:
+                norm_term = k.sum(dim=-2, keepdim=True)
 
-        return memory, norm_term
+            return memory, norm_term
 
     def forward_infini(
         self: "Attention",
@@ -215,8 +217,7 @@ class Attention(nn.Module):
             q, k = self.rotary_emb(q, k)
 
         if self.infini:
-            with torch.autocast(device_type=q.device.type, dtype=torch.float32):
-                return self.forward_infini(q, k, v)
+            return self.forward_infini(q, k, v)
 
         if self.causal:
             causal_mask = torch.triu(torch.ones(q.shape[-2], k.shape[-2], device=q.device), diagonal=1)
