@@ -348,6 +348,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                         current_step,
                         args.project_dir,
                     )
+                    delete_old_checkpoints(args.project_dir, args.max_num_checkpoints)
 
             if (
                 (current_step + 1) % args.sample_every == 0
