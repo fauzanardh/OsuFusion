@@ -330,7 +330,7 @@ class UNet(nn.Module):
         attn_use_rotary_emb: bool = True,
         attn_context_len: int = 8192,
         attn_infini: bool = True,
-        attn_segment_len: int = 1024,
+        attn_segment_len: int = 8192,
     ) -> None:
         super().__init__()
         self.dim_h = dim_h
