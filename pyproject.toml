@@ -12,5 +12,6 @@ classifiers = [
 [tool.ruff]
 target-version = "py39"
 select = ["E", "W", "F", "B", "N", "ANN", "COM", "C4", "EM", "SIM", "RUF", "C90"]
+ignore = ["N803", "N806"]
 task-tags = ["TODO", "FIXME"]
 line-length = 120
