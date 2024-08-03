@@ -429,7 +429,7 @@ class UNet(nn.Module):
                     use_rotary_emb=attn_use_rotary_emb,
                     context_len=attn_context_len // (2 ** (n_layers - 1)),
                     infini=attn_infini,
-                    segment_len=attn_segment_len,
+                    segment_len=attn_context_len // (2 ** (n_layers - 1)),
                 )
                 for _ in range(num_middle_transformers)
             ],

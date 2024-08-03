@@ -1,5 +1,5 @@
 from collections import namedtuple
-from typing import List, Optional, Tuple
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -35,7 +35,7 @@ class RotaryPositionEmbedding(nn.Module):
             self._seq_len_cached = seq_len
             t = torch.arange(
                 seq_len,
-                dtype=torch.float32,
+                dtype=x.dtype,
                 device=x.device,
             )
             t *= self.scale_base / seq_len
@@ -65,7 +65,7 @@ class Attention(nn.Module):
         use_rotary_emb: bool = True,
         context_len: int = 8192,
         infini: bool = True,
-        segment_len: int = 256,
+        segment_len: int = 8192,
     ) -> None:
         super().__init__()
         assert not version.parse(torch.__version__) < version.parse("2.0.0"), "sdpa requires torch>=2.0.0"
@@ -164,7 +164,6 @@ class Attention(nn.Module):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        padding_data: Optional[Tuple[int, List[int]]] = None,
     ) -> torch.Tensor:
         n_segments = q.shape[-2] // self.segment_len  # Assume sequence length is divisible by segment length
         q, k, v = (rearrange(t, "b h (s n) d -> b h s n d", s=n_segments) for t in (q, k, v))
@@ -178,28 +177,14 @@ class Attention(nn.Module):
             k_segment = k[:, :, idx, :, :]
             v_segment = v[:, :, idx, :, :]
 
-            attn_mask = None
-            # I hate this, but it's the only way I can think of to handle padding
-            if padding_data is not None:
-                total_next_segment = total_segment_processed + self.segment_len
-                # Create an attention mask for the padding
-                # pad_idx is the start of the padding, and padding_data[0] is the length of the padding
-                attn_mask = torch.zeros(q_segment.shape[-2], k_segment.shape[-2], device=q.device)
-                for pad_idx in padding_data[1]:
-                    if total_segment_processed <= pad_idx < total_next_segment:
-                        attn_mask[
-                            :,
-                            pad_idx - total_segment_processed : pad_idx - total_segment_processed + padding_data[0],
-                        ] = float("-inf")
-
             # Add causal mask
+            attn_mask = None
             if self.causal:
-                causal_mask = torch.triu(
+                attn_mask = torch.triu(
                     torch.ones(q_segment.shape[-2], k_segment.shape[-2], device=q_segment.device),
                     diagonal=1,
                 )
-                causal_mask.masked_fill_(causal_mask == 1, float("-inf"))
-                attn_mask = causal_mask if attn_mask is None else attn_mask + causal_mask
+                attn_mask.masked_fill_(attn_mask == 1, float("-inf"))
 
             memory_output = self._retrieve_from_memory(q_segment, memory, norm_term)
             updated_memory, updated_norm_term = self._update_memory(
@@ -225,23 +210,15 @@ class Attention(nn.Module):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        padding_data: Optional[Tuple[int, int]] = None,
     ) -> torch.Tensor:
         if self.use_rotary_emb:
             q, k = self.rotary_emb(q, k)
 
         if self.infini:
             with torch.autocast(device_type=q.device.type, dtype=torch.float32):
-                return self.forward_infini(q, k, v, padding_data=padding_data)
-
-        attn_mask = None
-        if padding_data is not None:
-            for pad_idx in padding_data[1]:
-                attn_mask = torch.zeros(q.shape[-2], k.shape[-2], device=q.device)
-                attn_mask[:, pad_idx : pad_idx + padding_data[0]] = float("-inf")
+                return self.forward_infini(q, k, v)
 
         if self.causal:
             causal_mask = torch.triu(torch.ones(q.shape[-2], k.shape[-2], device=q.device), diagonal=1)
             causal_mask.masked_fill_(causal_mask == 1, float("-inf"))
-            attn_mask = causal_mask if attn_mask is None else attn_mask + causal_mask
-        return self.forward_sdpa(q, k, v, attn_mask=attn_mask)
+        return self.forward_sdpa(q, k, v, attn_mask=causal_mask)
