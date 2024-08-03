@@ -219,6 +219,7 @@ class Attention(nn.Module):
         if self.infini:
             return self.forward_infini(q, k, v)
 
+        causal_mask = None
         if self.causal:
             causal_mask = torch.triu(torch.ones(q.shape[-2], k.shape[-2], device=q.device), diagonal=1)
             causal_mask.masked_fill_(causal_mask == 1, float("-inf"))
