@@ -187,22 +187,6 @@ def save_peft_checkpoint(
     torch.cuda.empty_cache()
 
 
-def load_peft(
-    model: Model,
-    checkpoint_path: Path,
-) -> PeftModel:
-    print(f"Loading checkpoint from {checkpoint_path}...")
-    custom_module_mapping = {nn.Conv1d: LoraConv1d}
-    config = LoraConfig(
-        r=32,
-        lora_alpha=32,
-        target_modules=["to_q", "to_kv", "block1.proj", "block2.proj"],
-    )
-    config._register_custom_module(custom_module_mapping)
-    model = PeftModel.from_pretrained(model, checkpoint_path, config=config)
-    return model
-
-
 def load_peft_checkpoint(
     optimizer: AdamW,
     scheduler: LambdaLR,
@@ -244,17 +228,14 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     model.unet.set_gradient_checkpointing(args.gradient_checkpointing)
     load_model_from_sd(model, args.model_path)
 
-    if args.resume:
-        model = load_peft(model, args.resume)
-    else:
-        custom_module_mapping = {nn.Conv1d: LoraConv1d}
-        lora_config = LoraConfig(
-            r=32,
-            lora_alpha=32,
-            target_modules=["to_q", "to_kv", "block1.proj", "block2.proj"],
-        )
-        lora_config._register_custom_module(custom_module_mapping)
-        model = get_peft_model(model, lora_config)
+    custom_module_mapping = {nn.Conv1d: LoraConv1d}
+    lora_config = LoraConfig(
+        r=32,
+        lora_alpha=32,
+        target_modules=["to_q", "to_kv", "block1.proj", "block2.proj"],
+    )
+    lora_config._register_custom_module(custom_module_mapping)
+    model = get_peft_model(model, lora_config)
 
     optimizer = AdamW(model.parameters(), lr=args.lr)
     scheduler = cosine_with_restarts(
