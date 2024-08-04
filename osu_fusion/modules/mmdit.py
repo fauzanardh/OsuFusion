@@ -6,7 +6,7 @@ import torch.nn as nn
 from einops import pack, rearrange, repeat, unpack
 from torch.nn import functional as F  # noqa: N812
 
-from osu_fusion.modules.attention import Attention
+from osu_fusion.modules.attention import Attend
 from osu_fusion.modules.utils import prob_mask_like
 
 
@@ -101,7 +101,7 @@ class JointAttention(nn.Module):
         self.q_a_norm = MultiHeadRMSNorm(self.dim_head, heads) if qk_norm else None
         self.k_a_norm = MultiHeadRMSNorm(self.dim_head, heads) if qk_norm else None
 
-        self.attn = Attention(
+        self.attn = Attend(
             self.dim_head,
             heads=heads,
             causal=causal,

@@ -56,9 +56,9 @@ class RotaryPositionEmbedding(nn.Module):
         )
 
 
-class Attention(nn.Module):
+class Attend(nn.Module):
     def __init__(
-        self: "Attention",
+        self: "Attend",
         dim_head: int,
         heads: int = 8,
         causal: bool = False,
@@ -94,7 +94,7 @@ class Attention(nn.Module):
             self.cuda_config = _config(False, True, True)
 
     def forward_sdpa(
-        self: "Attention",
+        self: "Attend",
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
@@ -120,7 +120,7 @@ class Attention(nn.Module):
         return out.to(dtype)
 
     def _retrieve_from_memory(
-        self: "Attention",
+        self: "Attend",
         q: torch.Tensor,
         memory: Optional[torch.Tensor] = None,
         norm_term: Optional[torch.Tensor] = None,
@@ -140,7 +140,7 @@ class Attention(nn.Module):
             return memory / (norm_term + 1e-6)
 
     def _update_memory(
-        self: "Attention",
+        self: "Attend",
         k: torch.Tensor,
         v: torch.Tensor,
         memory: Optional[torch.Tensor] = None,
@@ -162,7 +162,7 @@ class Attention(nn.Module):
             return memory, norm_term
 
     def forward_infini(
-        self: "Attention",
+        self: "Attend",
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
@@ -208,7 +208,7 @@ class Attention(nn.Module):
         return out
 
     def forward(
-        self: "Attention",
+        self: "Attend",
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,

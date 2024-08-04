@@ -4,9 +4,10 @@ from typing import Dict, List, Optional, Tuple
 import torch
 import torch.nn as nn
 from einops import rearrange, repeat
+from einops.layers.torch import Rearrange
 from torch.nn import functional as F  # noqa: N812
 
-from osu_fusion.modules.attention import Attention
+from osu_fusion.modules.attention import Attend
 from osu_fusion.modules.residual import ResidualBlock
 from osu_fusion.modules.utils import prob_mask_like
 
@@ -54,6 +55,15 @@ class CrossEmbedLayer(nn.Module):
         return torch.cat([conv(x) for conv in self.convs], dim=1)
 
 
+class Residual(nn.Module):
+    def __init__(self: "Residual", fn: callable) -> None:
+        super().__init__()
+        self.fn = fn
+
+    def forward(self: "Residual", x: torch.Tensor, **kwargs: Dict) -> torch.Tensor:
+        return self.fn(x, **kwargs) + x
+
+
 class Upsample(nn.Sequential):
     def __init__(self: "Upsample", dim_in: int, dim_out: int) -> None:
         super().__init__(
@@ -87,9 +97,9 @@ class MultiHeadRMSNorm(nn.Module):
         return F.normalize(x, dim=-1) * self.gamma * self.scale
 
 
-class TransformerBlock(nn.Module):
+class Attention(nn.Module):
     def __init__(
-        self: "TransformerBlock",
+        self: "Attention",
         dim_in: int,
         dim_head: int,
         heads: int,
@@ -111,7 +121,7 @@ class TransformerBlock(nn.Module):
         self.q_norm = MultiHeadRMSNorm(dim_head, heads) if qk_norm else None
         self.k_norm = MultiHeadRMSNorm(dim_head, kv_heads) if qk_norm else None
 
-        self.attn = Attention(
+        self.attn = Attend(
             dim_head,
             heads=heads,
             causal=causal,
@@ -122,8 +132,7 @@ class TransformerBlock(nn.Module):
         )
         self.linear = nn.Linear(dim_head * heads, dim_in)
 
-    def forward(self: "TransformerBlock", x: torch.Tensor) -> torch.Tensor:
-        x = rearrange(x, "b d n -> b n d")
+    def forward(self: "Attention", x: torch.Tensor) -> torch.Tensor:
         q = rearrange(self.to_q(x), "b n (h d) -> b h n d", h=self.heads)
 
         k, v = self.to_kv(x).chunk(2, dim=-1)
@@ -137,7 +146,17 @@ class TransformerBlock(nn.Module):
 
         out = self.attn(q, k, v)
         out = rearrange(out, "b h n d -> b n (h d)")
-        return rearrange(x + self.linear(out), "b n d -> b d n")
+        return x + self.linear(out)
+
+
+class FeedForward(nn.Sequential):
+    def __init__(self: "FeedForward", dim: int, dim_mult: int = 2) -> None:
+        inner_dim = dim * dim_mult
+        super().__init__(
+            nn.Linear(dim, inner_dim),
+            nn.SiLU(),
+            nn.Linear(inner_dim, dim),
+        )
 
 
 class UNetBlock(nn.Module):
@@ -171,17 +190,22 @@ class UNetBlock(nn.Module):
         )
         self.transformers = nn.ModuleList(
             [
-                TransformerBlock(
-                    dim_in,
-                    attn_dim_head,
-                    heads=attn_heads,
-                    kv_heads=attn_kv_heads,
-                    qk_norm=attn_qk_norm,
-                    causal=attn_causal,
-                    use_rotary_emb=attn_use_rotary_emb,
-                    context_len=attn_context_len,
-                    infini=attn_infini,
-                    segment_len=attn_segment_len,
+                nn.Sequential(
+                    Rearrange("b d n -> b n d"),
+                    Attention(
+                        dim_in,
+                        attn_dim_head,
+                        heads=attn_heads,
+                        kv_heads=attn_kv_heads,
+                        qk_norm=attn_qk_norm,
+                        causal=attn_causal,
+                        use_rotary_emb=attn_use_rotary_emb,
+                        context_len=attn_context_len,
+                        infini=attn_infini,
+                        segment_len=attn_segment_len,
+                    ),
+                    Residual(FeedForward(dim_in)),
+                    Rearrange("b n d -> b d n"),
                 )
                 for _ in range(num_blocks)
             ],
@@ -428,17 +452,22 @@ class UNet(nn.Module):
         )
         self.middle_transformer = nn.ModuleList(
             [
-                TransformerBlock(
-                    dims_h[-1],
-                    attn_dim_head,
-                    heads=attn_heads,
-                    kv_heads=attn_kv_heads,
-                    qk_norm=attn_qk_norm,
-                    causal=attn_causal,
-                    use_rotary_emb=attn_use_rotary_emb,
-                    context_len=attn_context_len // (2 ** (n_layers - 1)),
-                    infini=attn_infini,
-                    segment_len=attn_context_len // (2 ** (n_layers - 1)),
+                nn.Sequential(
+                    Rearrange("b d n -> b n d"),
+                    Attention(
+                        dims_h[-1],
+                        attn_dim_head,
+                        heads=attn_heads,
+                        kv_heads=attn_kv_heads,
+                        qk_norm=attn_qk_norm,
+                        causal=attn_causal,
+                        use_rotary_emb=attn_use_rotary_emb,
+                        context_len=attn_context_len // (2 ** (n_layers - 1)),
+                        infini=attn_infini,
+                        segment_len=attn_segment_len // (2 ** (n_layers - 1)),
+                    ),
+                    Residual(FeedForward(dims_h[-1])),
+                    Rearrange("b n d -> b d n"),
                 )
                 for _ in range(num_middle_transformers)
             ],
