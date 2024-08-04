@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 from accelerate import Accelerator
 from accelerate.utils import FP8RecipeKwargs, ProjectConfiguration
-from diffusers.optimization import get_cosine_with_hard_restarts_schedule_with_warmup as cosine_with_restarts
+from diffusers.optimization import get_constant_schedule_with_warmup
 from matplotlib import pyplot as plt
 from peft import LoraConfig, PeftModel, get_peft_model
 from safetensors.torch import load_file, save_file
@@ -238,11 +238,9 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     model = get_peft_model(model, lora_config)
 
     optimizer = AdamW(model.parameters(), lr=args.lr)
-    scheduler = cosine_with_restarts(
+    scheduler = get_constant_schedule_with_warmup(
         optimizer,
         num_warmup_steps=args.warmup_steps,
-        num_training_steps=args.total_steps,
-        num_cycles=args.num_cycles,
     )
 
     current_step = load_peft_checkpoint(optimizer, scheduler, args.resume, args.reset_steps) if args.resume else 0
@@ -396,7 +394,6 @@ def main() -> None:
     args.add_argument("--save-every", type=int, default=1000)
     args.add_argument("--max-num-checkpoints", type=int, default=5)
     args.add_argument("--warmup-steps", type=int, default=1000)
-    args.add_argument("--num-cycles", type=int, default=10)
     args.add_argument("--sample-every", type=int, default=1000)
     args.add_argument("--sample-audio", type=Path, default=None)
     args = args.parse_args()

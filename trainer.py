@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from accelerate import Accelerator
 from accelerate.utils import FP8RecipeKwargs, ProjectConfiguration
-from diffusers.optimization import get_cosine_with_hard_restarts_schedule_with_warmup as cosine_with_restarts
+from diffusers.optimization import get_constant_schedule_with_warmup
 from matplotlib import pyplot as plt
 from safetensors.torch import save_file
 from torch.nn import functional as F  # noqa: N812
@@ -228,11 +228,9 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         model.set_full_bf16()
     model.unet.set_gradient_checkpointing(args.gradient_checkpointing)
     optimizer = AdamW(model.parameters(), lr=args.lr)
-    scheduler = cosine_with_restarts(
+    scheduler = get_constant_schedule_with_warmup(
         optimizer,
         num_warmup_steps=args.warmup_steps,
-        num_training_steps=args.total_steps,
-        num_cycles=args.num_cycles,
     )
 
     print("Loading dataset...")
@@ -386,7 +384,6 @@ def main() -> None:
     args.add_argument("--save-every", type=int, default=1000)
     args.add_argument("--max-num-checkpoints", type=int, default=5)
     args.add_argument("--warmup-steps", type=int, default=1000)
-    args.add_argument("--num-cycles", type=int, default=10)
     args.add_argument("--sample-every", type=int, default=1000)
     args.add_argument("--sample-audio", type=Path, default=None)
     args = args.parse_args()
