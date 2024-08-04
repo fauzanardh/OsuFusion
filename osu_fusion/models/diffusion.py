@@ -59,7 +59,6 @@ class OsuFusion(nn.Module):
             num_train_timesteps=train_timesteps,
             beta_schedule="linear",
             timestep_spacing="linspace",
-            rescale_betas_zero_snr=True,
         )
         self.train_timesteps = train_timesteps
         self.sampling_timesteps = sampling_timesteps
