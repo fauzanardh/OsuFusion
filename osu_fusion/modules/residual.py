@@ -55,16 +55,21 @@ class ResidualBlock(nn.Module):
         self: "ResidualBlock",
         dim_in: int,
         dim_out: int,
+        dim_time: Optional[int] = None,
         dim_cond: Optional[int] = None,
     ) -> None:
         super().__init__()
+        self.has_time_cond = dim_time is not None
         self.has_cond = dim_cond is not None
 
-        if self.has_cond:
-            self.mlp = nn.Sequential(
+        self.mlp = (
+            nn.Sequential(
                 nn.SiLU(),
-                nn.Linear(dim_cond, dim_out * 2),
+                nn.Linear(int(dim_time) + int(dim_cond), dim_out * 2),
             )
+            if dim_time or dim_cond
+            else None
+        )
         self.block1 = Block(dim_in, dim_out)
         self.block2 = Block(dim_out, dim_out)
 
@@ -74,14 +79,16 @@ class ResidualBlock(nn.Module):
     def forward(
         self: "ResidualBlock",
         x: torch.Tensor,
+        t: Optional[torch.Tensor] = None,
         c: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        if self.has_cond:
-            c = self.mlp(c)
-            c = rearrange(c, "b d -> b d 1")
-            scale_shift = c.chunk(2, dim=1)
-        else:
-            scale_shift = None
+        scale_shift = None
+        if self.mlp is not None and (self.has_time_cond or self.has_cond):
+            cond_emb = tuple(filter(lambda tensor: tensor is not None, (t, c)))
+            cond_emb = torch.cat(cond_emb, dim=-1)
+            cond_emb = self.mlp(cond_emb)
+            cond_emb = rearrange(cond_emb, "b c -> b c 1")
+            scale_shift = cond_emb.chunk(2, dim=1)
 
         h = self.block1(x, scale_shift=scale_shift)
         h = self.block2(h)

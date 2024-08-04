@@ -145,6 +145,7 @@ class UNetBlock(nn.Module):
         self: "UNetBlock",
         dim_in: int,
         dim_out: int,
+        dim_time: Optional[int],
         dim_cond: Optional[int],
         layer_idx: int,
         num_layers: int,
@@ -161,9 +162,12 @@ class UNetBlock(nn.Module):
         attn_segment_len: int,
     ) -> None:
         super().__init__()
-        self.init_resnet = ResidualBlock(dim_in if down_block else dim_in + dim_out, dim_in, dim_cond)
+        self.init_resnet = ResidualBlock(dim_in if down_block else dim_in + dim_out, dim_in, dim_time, dim_cond)
         self.resnets = nn.ModuleList(
-            [ResidualBlock(dim_in if down_block else dim_in + dim_out, dim_in, dim_cond) for _ in range(num_blocks)],
+            [
+                ResidualBlock(dim_in if down_block else dim_in + dim_out, dim_in, dim_time, dim_cond)
+                for _ in range(num_blocks)
+            ],
         )
         self.transformers = nn.ModuleList(
             [
@@ -206,6 +210,7 @@ class UNetBlock(nn.Module):
     def forward_body(
         self: "UNetBlock",
         x: torch.Tensor,
+        t: Optional[torch.Tensor] = None,
         c: Optional[torch.Tensor] = None,
         skip_inputs: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
@@ -216,13 +221,13 @@ class UNetBlock(nn.Module):
                 len(skip_inputs) == len(self.resnets) + 1
             ), f"Expected {len(self.resnets) + 1} skip inputs, got {len(skip_inputs)}"
             x = torch.cat([x, skip_inputs[0]], dim=1)
-        x = self.init_resnet(x, c)
+        x = self.init_resnet(x, t, c)
         skips.append(x)
 
         for i, (resnet, transformer) in enumerate(zip(self.resnets, self.transformers)):
             if skip_inputs is not None:
                 x = torch.cat([x, skip_inputs[i + 1]], dim=1)
-            x = resnet(x, c)
+            x = resnet(x, t, c)
             x = transformer(x)
             skips.append(x)
 
@@ -231,13 +236,14 @@ class UNetBlock(nn.Module):
     def forward(
         self: "UNetBlock",
         x: torch.Tensor,
+        t: Optional[torch.Tensor] = None,
         c: Optional[torch.Tensor] = None,
         skip_inputs: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if self.training and self.gradient_checkpointing:
-            return torch.utils.checkpoint.checkpoint(self.forward_body, x, c, skip_inputs, use_reentrant=True)
+            return torch.utils.checkpoint.checkpoint(self.forward_body, x, t, c, skip_inputs, use_reentrant=True)
         else:
-            return self.forward_body(x, c=c, skip_inputs=skip_inputs)
+            return self.forward_body(x, t, c, skip_inputs=skip_inputs)
 
 
 class AudioEncoder(nn.Module):
@@ -260,15 +266,15 @@ class AudioEncoder(nn.Module):
     ) -> None:
         super().__init__()
         self.dim_h = dim_h
-        self.dim_cond = dim_h * 4
+        self.dim_emb = dim_h * 4
         self.attn_context_len = attn_context_len
 
         self.init_conv = CrossEmbedLayer(dim_in, dim_h, cross_embed_kernel_sizes)
         self.time_mlp = nn.Sequential(
-            SinusoidalPositionEmbedding(self.dim_cond),
-            nn.Linear(self.dim_cond, self.dim_cond),
+            SinusoidalPositionEmbedding(self.dim_emb),
+            nn.Linear(self.dim_emb, self.dim_emb),
             nn.SiLU(),
-            nn.Linear(self.dim_cond, self.dim_cond),
+            nn.Linear(self.dim_emb, self.dim_emb),
         )
 
         dims_h = tuple((dim_h * mult) for mult in dim_h_mult)
@@ -286,6 +292,7 @@ class AudioEncoder(nn.Module):
                 UNetBlock(
                     layer_dim_in,
                     layer_dim_out,
+                    None,
                     None,
                     i,
                     n_layers,
@@ -334,7 +341,7 @@ class UNet(nn.Module):
     ) -> None:
         super().__init__()
         self.dim_h = dim_h
-        self.dim_cond = dim_h * 4
+        self.dim_emb = dim_h * 4
         self.attn_context_len = attn_context_len
         self.attn_infini = attn_infini
         self.attn_segment_len = attn_segment_len
@@ -355,27 +362,27 @@ class UNet(nn.Module):
             attn_infini=attn_infini,
             attn_segment_len=attn_segment_len,
         )
-        self.final_resnet = ResidualBlock(dim_h * 2, dim_h, self.dim_cond)
+        self.final_resnet = ResidualBlock(dim_h * 2, dim_h, self.dim_emb, self.dim_emb)
         self.final_conv = zero_init(nn.Conv1d(dim_h, dim_in_x, 1))
 
-        self.feature_extractor_a = nn.Linear(dim_in_a * 2, self.dim_cond)
+        self.feature_extractor_a = nn.Linear(dim_in_a * 2, self.dim_emb)
         self.audio_mlp = nn.Sequential(
-            nn.Linear(self.dim_cond, self.dim_cond),
+            nn.Linear(self.dim_emb, self.dim_emb),
             nn.SiLU(),
-            nn.Linear(self.dim_cond, self.dim_cond),
+            nn.Linear(self.dim_emb, self.dim_emb),
         )
         self.time_mlp = nn.Sequential(
-            SinusoidalPositionEmbedding(self.dim_cond),
-            nn.Linear(self.dim_cond, self.dim_cond),
+            SinusoidalPositionEmbedding(self.dim_emb),
+            nn.Linear(self.dim_emb, self.dim_emb),
             nn.SiLU(),
-            nn.Linear(self.dim_cond, self.dim_cond),
+            nn.Linear(self.dim_emb, self.dim_emb),
         )
         self.cond_mlp = nn.Sequential(
-            nn.Linear(dim_in_c, self.dim_cond),
+            nn.Linear(dim_in_c, self.dim_emb),
             nn.SiLU(),
-            nn.Linear(self.dim_cond, self.dim_cond),
+            nn.Linear(self.dim_emb, self.dim_emb),
         )
-        self.null_cond = nn.Parameter(torch.randn(self.dim_cond))
+        self.null_cond = nn.Parameter(torch.randn(self.dim_emb))
 
         # Downsample
         dims_h = tuple((dim_h * mult) for mult in dim_h_mult)
@@ -393,7 +400,8 @@ class UNet(nn.Module):
                 UNetBlock(
                     layer_dim_in,
                     layer_dim_out,
-                    self.dim_cond,
+                    self.dim_emb,
+                    self.dim_emb,
                     i,
                     n_layers,
                     num_blocks,
@@ -415,7 +423,8 @@ class UNet(nn.Module):
         self.middle_resnet1 = ResidualBlock(
             dims_h[-1] * 2,
             dims_h[-1],
-            self.dim_cond,
+            self.dim_emb,
+            self.dim_emb,
         )
         self.middle_transformer = nn.ModuleList(
             [
@@ -437,7 +446,8 @@ class UNet(nn.Module):
         self.middle_resnet2 = ResidualBlock(
             dims_h[-1],
             dims_h[-1],
-            self.dim_cond,
+            self.dim_emb,
+            self.dim_emb,
         )
 
         # Upsample
@@ -455,7 +465,8 @@ class UNet(nn.Module):
                 UNetBlock(
                     layer_dim_in,
                     layer_dim_out,
-                    self.dim_cond,
+                    self.dim_emb,
+                    self.dim_emb,
                     i,
                     n_layers,
                     num_blocks,
@@ -516,6 +527,7 @@ class UNet(nn.Module):
 
         x = self.init_x(x)
         a = self.audio_encoder(a)
+        t = self.time_mlp(t)
 
         r = x.clone()
 
@@ -526,23 +538,23 @@ class UNet(nn.Module):
         c = self.cond_mlp(c)
         c = torch.where(cond_mask, c, null_conds)
 
-        c = c + self.time_mlp(t) + self.audio_mlp(h_a)
+        c = c + self.audio_mlp(h_a)
 
         skips_connections = []
         for down_layer in self.down_layers:
-            x, skips = down_layer(x, c)
+            x, skips = down_layer(x, t, c)
             skips_connections.append(skips)
 
         x = torch.cat([x, a], dim=1)
-        x = self.middle_resnet1(x, c)
+        x = self.middle_resnet1(x, t, c)
         for transformer_block in self.middle_transformer:
             x = transformer_block(x)
-        x = self.middle_resnet2(x, c)
+        x = self.middle_resnet2(x, t, c)
 
         for up_layer, skips in zip(self.up_layers, reversed(skips_connections)):
-            x, _ = up_layer(x, c=c, skip_inputs=skips)
+            x, _ = up_layer(x, t, c, skip_inputs=skips)
 
         x = torch.cat([x, r], dim=1)
-        x = self.final_resnet(x, c)
+        x = self.final_resnet(x, t, c)
 
         return self.final_conv(x)[:, :, :n]
