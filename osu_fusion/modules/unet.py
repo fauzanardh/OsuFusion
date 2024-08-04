@@ -4,7 +4,6 @@ from typing import Dict, List, Optional, Tuple
 import torch
 import torch.nn as nn
 from einops import rearrange, repeat
-from einops.layers.torch import Rearrange
 from torch.nn import functional as F  # noqa: N812
 
 from osu_fusion.modules.attention import Attend
@@ -159,6 +158,43 @@ class FeedForward(nn.Sequential):
         )
 
 
+class TransformerBlock(nn.Module):
+    def __init__(
+        self: "TransformerBlock",
+        dim: int,
+        ff_mult: int = 2,
+        attn_dim_head: int = 64,
+        attn_heads: int = 8,
+        attn_kv_heads: int = 2,
+        attn_qk_norm: bool = True,
+        attn_causal: bool = False,
+        attn_use_rotary_emb: bool = True,
+        attn_context_len: int = 8192,
+        attn_infini: bool = True,
+        attn_segment_len: int = 1024,
+    ) -> None:
+        super().__init__()
+        self.attn = Attention(
+            dim,
+            attn_dim_head,
+            attn_heads,
+            attn_kv_heads,
+            attn_qk_norm,
+            attn_causal,
+            attn_use_rotary_emb,
+            attn_context_len,
+            attn_infini,
+            attn_segment_len,
+        )
+        self.ff = FeedForward(dim, ff_mult)
+
+    def forward(self: "TransformerBlock", x: torch.Tensor) -> torch.Tensor:
+        x = rearrange(x, "b d n -> b n d")
+        x = self.attn(x)
+        x = self.ff(x) + x
+        return rearrange(x, "b n d -> b d n")
+
+
 class UNetBlock(nn.Module):
     def __init__(
         self: "UNetBlock",
@@ -190,22 +226,17 @@ class UNetBlock(nn.Module):
         )
         self.transformers = nn.ModuleList(
             [
-                nn.Sequential(
-                    Rearrange("b d n -> b n d"),
-                    Attention(
-                        dim_in,
-                        attn_dim_head,
-                        heads=attn_heads,
-                        kv_heads=attn_kv_heads,
-                        qk_norm=attn_qk_norm,
-                        causal=attn_causal,
-                        use_rotary_emb=attn_use_rotary_emb,
-                        context_len=attn_context_len,
-                        infini=attn_infini,
-                        segment_len=attn_segment_len,
-                    ),
-                    Residual(FeedForward(dim_in)),
-                    Rearrange("b n d -> b d n"),
+                TransformerBlock(
+                    dim_in,
+                    attn_dim_head=attn_dim_head,
+                    attn_heads=attn_heads,
+                    attn_kv_heads=attn_kv_heads,
+                    attn_qk_norm=attn_qk_norm,
+                    attn_causal=attn_causal,
+                    attn_use_rotary_emb=attn_use_rotary_emb,
+                    attn_context_len=attn_context_len,
+                    attn_infini=attn_infini,
+                    attn_segment_len=attn_segment_len,
                 )
                 for _ in range(num_blocks)
             ],
@@ -452,22 +483,17 @@ class UNet(nn.Module):
         )
         self.middle_transformer = nn.ModuleList(
             [
-                nn.Sequential(
-                    Rearrange("b d n -> b n d"),
-                    Attention(
-                        dims_h[-1],
-                        attn_dim_head,
-                        heads=attn_heads,
-                        kv_heads=attn_kv_heads,
-                        qk_norm=attn_qk_norm,
-                        causal=attn_causal,
-                        use_rotary_emb=attn_use_rotary_emb,
-                        context_len=attn_context_len // (2 ** (n_layers - 1)),
-                        infini=attn_infini,
-                        segment_len=attn_segment_len // (2 ** (n_layers - 1)),
-                    ),
-                    Residual(FeedForward(dims_h[-1])),
-                    Rearrange("b n d -> b d n"),
+                TransformerBlock(
+                    dims_h[-1],
+                    attn_dim_head=attn_dim_head,
+                    attn_heads=attn_heads,
+                    attn_kv_heads=attn_kv_heads,
+                    attn_qk_norm=attn_qk_norm,
+                    attn_causal=attn_causal,
+                    attn_use_rotary_emb=attn_use_rotary_emb,
+                    attn_context_len=attn_context_len // (2 ** (n_layers - 1)),
+                    attn_infini=attn_infini,
+                    attn_segment_len=attn_segment_len // (2 ** (n_layers - 1)),
                 )
                 for _ in range(num_middle_transformers)
             ],
