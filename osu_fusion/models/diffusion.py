@@ -16,7 +16,7 @@ class OsuFusion(nn.Module):
     def __init__(
         self: "OsuFusion",
         dim_h: int,
-        dim_h_mult: Tuple[int] = (1, 2, 4, 8),
+        dim_h_mult: Tuple[int] = (1, 2, 3, 4),
         num_layer_blocks: Tuple[int] = (3, 3, 3, 3),
         num_middle_transformers: int = 3,
         cross_embed_kernel_sizes: Tuple[int] = (3, 7, 15),
