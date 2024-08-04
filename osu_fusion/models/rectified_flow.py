@@ -77,7 +77,7 @@ class OsuFusion(nn.Module):
             x = torch.randn((b, TOTAL_DIM, n), device=device)
 
         times = torch.linspace(0.0, 1.0, self.sample_timesteps, device=device)
-        with tqdm(desc="sampling loop time step", dynamic_ncols=True) as pbar:
+        with tqdm(total=(self.sample_timesteps - 1) * 2, desc="sampling loop time step", dynamic_ncols=True) as pbar:
 
             def ode_fn(t: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
                 t_batched = repeat(t, "... -> b ...", b=b)
@@ -117,7 +117,4 @@ class OsuFusion(nn.Module):
             for i, orig in enumerate(orig_len):
                 mask[i, orig:] = 0.0
         mask = repeat(mask, "b n -> b d n", d=TOTAL_DIM)
-
-        # Using mean instead of sum because if the sequence length is big
-        # the intermediate loss values can be very big
-        return (loss * mask).mean() / mask.mean()
+        return (loss * mask).sum() / mask.sum()

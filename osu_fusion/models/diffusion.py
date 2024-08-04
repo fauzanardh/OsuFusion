@@ -58,6 +58,7 @@ class OsuFusion(nn.Module):
         self.scheduler = DDIMScheduler(
             num_train_timesteps=train_timesteps,
             beta_schedule="linear",
+            timestep_spacing="linspace",
             rescale_betas_zero_snr=True,
         )
         self.train_timesteps = train_timesteps
@@ -118,7 +119,4 @@ class OsuFusion(nn.Module):
             for i, orig in enumerate(orig_len):
                 mask[i, orig:] = 0.0
         mask = repeat(mask, "b n -> b d n", d=TOTAL_DIM)
-
-        # Using mean instead of sum because if the sequence length is big
-        # the intermediate loss values can be very big
-        return (loss * mask).mean() / mask.mean()
+        return (loss * mask).sum() / mask.sum()
