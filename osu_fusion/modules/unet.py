@@ -54,15 +54,6 @@ class CrossEmbedLayer(nn.Module):
         return torch.cat([conv(x) for conv in self.convs], dim=1)
 
 
-class Residual(nn.Module):
-    def __init__(self: "Residual", fn: callable) -> None:
-        super().__init__()
-        self.fn = fn
-
-    def forward(self: "Residual", x: torch.Tensor, **kwargs: Dict) -> torch.Tensor:
-        return self.fn(x, **kwargs) + x
-
-
 class Upsample(nn.Sequential):
     def __init__(self: "Upsample", dim_in: int, dim_out: int) -> None:
         super().__init__(
