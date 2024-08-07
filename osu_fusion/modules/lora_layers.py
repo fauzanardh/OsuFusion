@@ -1,5 +1,6 @@
 import math
 import warnings
+from copy import deepcopy
 from typing import Dict, List, Optional, Union
 
 import torch
@@ -7,6 +8,7 @@ import torch.nn as nn
 from peft.tuners.lora import LoraLayer
 from peft.tuners.lora.dora import DoraLinearLayer
 from peft.tuners.tuners_utils import check_adapters_to_merge
+from peft.utils.integrations import dequantize_module_weight, gather_params_ctx
 from torch.nn import functional as F  # noqa: N812
 
 
@@ -22,6 +24,37 @@ class DoraConv1dLayer(DoraLinearLayer):
         # the following is needed to have compatibility with the 3D weight tensors of Conv1D
         weight_norm = weight.norm(p=2, dim=(1, 2), keepdim=True).transpose(1, 0)
         return weight_norm
+
+    def update_layer(
+        self: "DoraConv1dLayer",
+        *,
+        base_layer: nn.Conv1d,
+        lora_A: torch.Tensor,
+        lora_B: torch.Tensor,
+        scaling: float,
+        place_on_cpu: bool = False,
+    ) -> None:
+        # temporarily convert fp16 to fp32, as fp16 can cause trouble on CPU with PyTorch < 2.2
+        dtype_is_fp16 = lora_A.dtype == torch.float16
+        if dtype_is_fp16:
+            lora_A = lora_A.float()
+            lora_B = lora_B.float()
+
+        with gather_params_ctx(base_layer.parameters()):
+            if base_layer.__class__.__name__ == "Linear4bit":
+                base_layer = deepcopy(base_layer)
+
+            weight = dequantize_module_weight(base_layer)
+            lora_weight = torch.mm(lora_B.flatten(start_dim=1), lora_A.flatten(start_dim=1))
+            lora_weight = lora_weight.reshape(weight.shape)
+
+            if dtype_is_fp16:
+                lora_weight = lora_weight.half()
+            weight_norm = self.get_weight_norm(weight.to(lora_A.device), lora_weight, scaling)
+
+        if place_on_cpu:
+            weight_norm = weight_norm.to("cpu")
+        self.weight = nn.Parameter(weight_norm, requires_grad=True)
 
     def forward(
         self: "DoraConv1dLayer",

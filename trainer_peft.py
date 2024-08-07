@@ -232,6 +232,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     lora_config = LoraConfig(
         r=32,
         lora_alpha=32,
+        use_dora=True,
         target_modules=["attn.to_q", "attn.to_kv", "attn.linear", "block1.proj", "block2.proj"],
     )
     lora_config._register_custom_module(custom_module_mapping)
