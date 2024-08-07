@@ -232,7 +232,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     lora_config = LoraConfig(
         r=32,
         lora_alpha=32,
-        target_modules=["to_q", "to_kv", "block1.proj", "block2.proj"],
+        target_modules=["attn.to_q", "attn.to_kv", "attn.linear", "block1.proj", "block2.proj"],
     )
     lora_config._register_custom_module(custom_module_mapping)
     model = get_peft_model(model, lora_config)
