@@ -144,7 +144,7 @@ def sample_step(
 
 
 def load_model(model: Model, model_path: Path) -> None:
-    if model_path.endswith(".pt"):
+    if str(model_path).endswith(".pt"):
         checkpoint = torch.load(model_path)
         state_dict = checkpoint["model_state_dict"]
     else:
