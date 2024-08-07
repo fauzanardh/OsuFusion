@@ -143,9 +143,13 @@ def sample_step(
     plt.close(fig)
 
 
-def load_model_from_sd(model: Model, model_path: Path) -> None:
-    sd = load_file(model_path)
-    model.load_state_dict(sd)
+def load_model(model: Model, model_path: Path) -> None:
+    if model_path.endswith(".pt"):
+        checkpoint = torch.load(model_path)
+        state_dict = checkpoint["model_state_dict"]
+    else:
+        state_dict = load_file(model_path)
+    model.load_state_dict(state_dict)
 
 
 def get_latest_loras_checkpoint(project_dir: Path) -> Path:
@@ -226,7 +230,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     if args.full_bf16:
         model.set_full_bf16()
     model.unet.set_gradient_checkpointing(args.gradient_checkpointing)
-    load_model_from_sd(model, args.model_path)
+    load_model(model, args.model_path)
 
     custom_module_mapping = {nn.Conv1d: LoraConv1d}
     lora_config = LoraConfig(
