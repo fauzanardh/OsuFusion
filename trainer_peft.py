@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 from accelerate import Accelerator
 from accelerate.utils import FP8RecipeKwargs, ProjectConfiguration
-from diffusers.optimization import get_constant_schedule_with_warmup
+from diffusers.optimization import get_cosine_schedule_with_warmup
 from matplotlib import pyplot as plt
 from peft import LoraConfig, PeftModel, get_peft_model
 from safetensors.torch import load_file, save_file
@@ -238,9 +238,11 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     model = get_peft_model(model, lora_config)
 
     optimizer = AdamW(model.parameters(), lr=args.lr)
-    scheduler = get_constant_schedule_with_warmup(
+    scheduler = get_cosine_schedule_with_warmup(
         optimizer,
+        num_training_steps=args.total_steps,
         num_warmup_steps=args.warmup_steps,
+        num_cycles=0.5,  # half cosine (reach 0 at the end)
     )
 
     current_step = load_peft_checkpoint(optimizer, scheduler, args.resume, args.reset_steps) if args.resume else 0

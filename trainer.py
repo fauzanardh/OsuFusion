@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from accelerate import Accelerator
 from accelerate.utils import FP8RecipeKwargs, ProjectConfiguration
-from diffusers.optimization import get_constant_schedule_with_warmup
+from diffusers.optimization import get_cosine_schedule_with_warmup
 from matplotlib import pyplot as plt
 from safetensors.torch import save_file
 from torch.nn import functional as F  # noqa: N812
@@ -228,9 +228,11 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         model.set_full_bf16()
     model.unet.set_gradient_checkpointing(args.gradient_checkpointing)
     optimizer = AdamW(model.parameters(), lr=args.lr)
-    scheduler = get_constant_schedule_with_warmup(
+    scheduler = get_cosine_schedule_with_warmup(
         optimizer,
+        num_training_steps=args.total_steps,
         num_warmup_steps=args.warmup_steps,
+        num_cycles=0.5,  # half cosine (reach 0 at the end)
     )
 
     print("Loading dataset...")
