@@ -31,6 +31,22 @@ class SinusoidalPositionEmbedding(nn.Module):
         return emb
 
 
+# Taken from
+# https://github.com/crowsonkb/v-diffusion-jax/blob/master/diffusion/models/danbooru_128.py#L8
+class LearnedSinusoidalPositionEmbedding(nn.Module):
+    def __init__(self: "LearnedSinusoidalPositionEmbedding", dim: int) -> torch.Tensor:
+        super().__init__()
+        assert (dim % 2) == 0
+        half_dim = dim // 2
+        self.weights = nn.Parameter(torch.randn(half_dim))
+
+    def forward(self: "LearnedSinusoidalPositionEmbedding", x: torch.Tensor) -> torch.Tensor:
+        x = rearrange(x, "b -> b 1")
+        freqs = x * rearrange(self.weights, "d -> 1 d") * 2 * math.pi
+        fouriered = torch.cat((freqs.sin(), freqs.cos()), dim=-1)
+        return fouriered
+
+
 class CrossEmbedLayer(nn.Module):
     def __init__(self: "CrossEmbedLayer", dim: int, dim_out: int, kernel_sizes: Tuple[int]) -> None:
         super().__init__()
@@ -207,7 +223,7 @@ class DiT(nn.Module):
         self.postprocess = nn.Conv1d(dim_h, dim_in_x, 1, bias=False)
 
         self.mlp_time = nn.Sequential(
-            SinusoidalPositionEmbedding(dim_h),
+            LearnedSinusoidalPositionEmbedding(dim_h),
             nn.Linear(dim_h, dim_h, bias=False),
             nn.SiLU(),
             nn.Linear(dim_h, dim_h, bias=False),

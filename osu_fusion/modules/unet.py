@@ -35,6 +35,23 @@ class SinusoidalPositionEmbedding(nn.Module):
         return emb
 
 
+# Taken from
+# https://github.com/crowsonkb/v-diffusion-jax/blob/master/diffusion/models/danbooru_128.py#L8
+class LearnedSinusoidalPositionEmbedding(nn.Module):
+    def __init__(self: "LearnedSinusoidalPositionEmbedding", dim: int) -> torch.Tensor:
+        super().__init__()
+        assert (dim % 2) == 0
+        half_dim = dim // 2
+        self.weights = nn.Parameter(torch.randn(half_dim))
+
+    def forward(self: "LearnedSinusoidalPositionEmbedding", x: torch.Tensor) -> torch.Tensor:
+        x = rearrange(x, "b -> b 1")
+        freqs = x * rearrange(self.weights, "d -> 1 d") * 2 * math.pi
+        fouriered = torch.cat((freqs.sin(), freqs.cos()), dim=-1)
+        fouriered = torch.cat((x, fouriered), dim=-1)
+        return fouriered
+
+
 class CrossEmbedLayer(nn.Module):
     def __init__(self: "CrossEmbedLayer", dim: int, dim_out: int, kernel_sizes: Tuple[int]) -> None:
         super().__init__()
@@ -316,12 +333,6 @@ class AudioEncoder(nn.Module):
         self.attn_context_len = attn_context_len
 
         self.init_conv = CrossEmbedLayer(dim_in, dim_h, cross_embed_kernel_sizes)
-        self.time_mlp = nn.Sequential(
-            SinusoidalPositionEmbedding(self.dim_emb),
-            nn.Linear(self.dim_emb, self.dim_emb),
-            nn.SiLU(),
-            nn.Linear(self.dim_emb, self.dim_emb),
-        )
 
         dims_h = tuple((dim_h * mult) for mult in dim_h_mult)
         dims_h = (dim_h, *dims_h)
@@ -418,7 +429,7 @@ class UNet(nn.Module):
             nn.Linear(self.dim_emb, self.dim_emb),
         )
         self.time_mlp = nn.Sequential(
-            SinusoidalPositionEmbedding(self.dim_emb),
+            LearnedSinusoidalPositionEmbedding(self.dim_emb),
             nn.Linear(self.dim_emb, self.dim_emb),
             nn.SiLU(),
             nn.Linear(self.dim_emb, self.dim_emb),

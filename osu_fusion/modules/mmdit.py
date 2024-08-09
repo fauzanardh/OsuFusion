@@ -31,6 +31,22 @@ class SinusoidalPositionEmbedding(nn.Module):
         return emb
 
 
+# Taken from
+# https://github.com/crowsonkb/v-diffusion-jax/blob/master/diffusion/models/danbooru_128.py#L8
+class LearnedSinusoidalPositionEmbedding(nn.Module):
+    def __init__(self: "LearnedSinusoidalPositionEmbedding", dim: int) -> torch.Tensor:
+        super().__init__()
+        assert (dim % 2) == 0
+        half_dim = dim // 2
+        self.weights = nn.Parameter(torch.randn(half_dim))
+
+    def forward(self: "LearnedSinusoidalPositionEmbedding", x: torch.Tensor) -> torch.Tensor:
+        x = rearrange(x, "b -> b 1")
+        freqs = x * rearrange(self.weights, "d -> 1 d") * 2 * math.pi
+        fouriered = torch.cat((freqs.sin(), freqs.cos()), dim=-1)
+        return fouriered
+
+
 class FeedForward(nn.Sequential):
     def __init__(self: "FeedForward", dim: int, dim_mult: int = 4) -> None:
         inner_dim = dim * dim_mult
@@ -293,7 +309,7 @@ class MMDiT(nn.Module):
         self.feature_extractor_a = nn.Linear(dim_in_a * 2, dim_h)
         self.mlp_a = FeedForward(dim_h, dim_mult=dim_h_mult)
         self.mlp_time = nn.Sequential(
-            SinusoidalPositionEmbedding(dim_h),
+            LearnedSinusoidalPositionEmbedding(dim_h),
             FeedForward(dim_h, dim_mult=dim_h_mult),
         )
         self.mlp_cond = nn.Sequential(
