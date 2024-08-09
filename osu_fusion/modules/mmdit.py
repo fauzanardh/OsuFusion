@@ -353,10 +353,6 @@ class MMDiT(nn.Module):
         # Zero-out output layer
         nn.init.zeros_(self.final_layer.modulation[1].weight)
         nn.init.zeros_(self.final_layer.modulation[1].bias)
-        nn.init.zeros_(self.final_layer.linear.weight)
-        nn.init.zeros_(self.final_layer.linear.bias)
-        nn.init.zeros_(self.out.weight)
-        nn.init.zeros_(self.out.bias)
 
     def set_gradient_checkpointing(self: "MMDiT", value: bool) -> None:
         for name, module in self.named_modules():
