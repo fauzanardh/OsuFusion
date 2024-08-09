@@ -48,7 +48,6 @@ class LearnedSinusoidalPositionEmbedding(nn.Module):
         x = rearrange(x, "b -> b 1")
         freqs = x * rearrange(self.weights, "d -> 1 d") * 2 * math.pi
         fouriered = torch.cat((freqs.sin(), freqs.cos()), dim=-1)
-        fouriered = torch.cat((x, fouriered), dim=-1)
         return fouriered
 
 
