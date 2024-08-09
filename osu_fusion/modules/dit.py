@@ -6,7 +6,7 @@ import torch.nn as nn
 from einops import rearrange, repeat
 from torch.nn import functional as F  # noqa: N812
 
-from osu_fusion.modules.attention import Attention
+from osu_fusion.modules.attention import Attend
 from osu_fusion.modules.utils import prob_mask_like
 
 
@@ -107,7 +107,7 @@ class DiTAttention(nn.Module):
         self.q_norm = MultiHeadRMSNorm(dim_head, heads=heads) if qk_norm else nn.Identity()
         self.k_norm = MultiHeadRMSNorm(dim_head, heads=heads) if qk_norm else nn.Identity()
 
-        self.attn = Attention(
+        self.attn = Attend(
             dim_head,
             heads=heads,
             causal=causal,
