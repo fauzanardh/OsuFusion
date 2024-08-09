@@ -1,3 +1,4 @@
+import math
 import os  # noqa: F401
 import random
 import shutil
@@ -9,11 +10,10 @@ import numpy as np
 import torch
 from accelerate import Accelerator
 from accelerate.utils import FP8RecipeKwargs, ProjectConfiguration
-from diffusers.optimization import get_cosine_schedule_with_warmup
 from matplotlib import pyplot as plt
 from safetensors.torch import save_file
 from torch.nn import functional as F  # noqa: N812
-from torch.optim import AdamW
+from torch.optim import AdamW, Optimizer
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
@@ -27,6 +27,22 @@ from osu_fusion.scripts.dataset_creator import load_audio, normalize_context
 
 wandb.require("core")
 Model = Union[DiffusionOsuFusion, RectifiedFlowOsuFusion]
+
+
+def get_cosine_schedule_with_warmup(
+    optimizer: Optimizer,
+    num_warmup_steps: int,
+    num_training_steps: int,
+    num_cycles: float = 0.5,
+    last_epoch: int = -1,
+) -> LambdaLR:
+    def lr_lambda(current_step: int) -> float:
+        if current_step < num_warmup_steps:
+            return float(current_step) / float(max(1, num_warmup_steps))
+        progress = float(current_step - num_warmup_steps) / float(max(1, num_training_steps - num_warmup_steps))
+        return max(0.0, 0.5 * (1.0 + math.cos(math.pi * float(num_cycles) * 2.0 * progress)))
+
+    return LambdaLR(optimizer, lr_lambda, last_epoch)
 
 
 def get_total_norm(parameters: List[torch.Tensor], norm_type: float = 2.0) -> float:

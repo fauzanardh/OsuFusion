@@ -1,13 +1,14 @@
+import math
 from typing import Optional
 
 import torch
 import torch.nn as nn
-from diffusers import DDIMScheduler
-from einops import repeat
+from einops import rearrange, repeat
 from torch.nn import functional as F  # noqa: N812
 from tqdm.auto import tqdm
 
 from osu_fusion.library.osu.data.encode import TOTAL_DIM
+from osu_fusion.library.scheduler import EDMScheduler
 from osu_fusion.modules.mmdit import MMDiT
 from osu_fusion.scripts.dataset_creator import AUDIO_DIM, CONTEXT_DIM
 
@@ -29,7 +30,6 @@ class OsuFusion(nn.Module):
         attn_infini: bool = True,
         attn_segment_len: int = 1024,
         cond_drop_prob: float = 0.5,
-        train_timesteps: int = 1000,
         sampling_timesteps: int = 35,
     ) -> None:
         super().__init__()
@@ -52,13 +52,7 @@ class OsuFusion(nn.Module):
             attn_infini=attn_infini,
             attn_segment_len=attn_segment_len,
         )
-
-        self.scheduler = DDIMScheduler(
-            num_train_timesteps=train_timesteps,
-            beta_schedule="linear",
-            prediction_type="sample",
-        )
-        self.train_timesteps = train_timesteps
+        self.scheduler = EDMScheduler()
         self.sampling_timesteps = sampling_timesteps
         self.cond_drop_prob = cond_drop_prob
 
@@ -77,13 +71,52 @@ class OsuFusion(nn.Module):
         if x is None:
             x = torch.randn((b, TOTAL_DIM, n), device=device)
 
-        self.scheduler.set_timesteps(self.sampling_timesteps)
-        for t in tqdm(self.scheduler.timesteps, desc="sampling loop time step", dynamic_ncols=True):
-            t_batched = repeat(t, "... -> b ...", b=b).long().to(device)
-            pred = self.mmdit.forward_with_cond_scale(x, a, t_batched, c, cond_scale=cond_scale)
-            x = self.scheduler.step(pred, t, x).prev_sample
+        sigmas = self.scheduler.sample_schedule(self.sampling_timesteps, device)
+        gammas = torch.where(
+            (sigmas >= self.scheduler.s_tmin) & (sigmas <= self.scheduler.s_tmax),
+            min(self.scheduler.s_churn / self.sampling_timesteps, math.sqrt(2) - 1),
+            0.0,
+        )
+        sigmas_and_gammas = list(zip(sigmas[:-1], sigmas[1:], gammas[:-1]))
+        x = x * sigmas[0]
+        for sigma, sigma_next, gamma in tqdm(sigmas_and_gammas, desc="sampling loop time step", dynamic_ncols=True):
+            sigma, sigma_next, gamma = [t.item() for t in (sigma, sigma_next, gamma)]
 
-        return x
+            eps = self.scheduler.s_noise * torch.randn_like(x, device=device)
+
+            sigma_hat = sigma + gamma * sigma
+            added_noise = math.sqrt(sigma_hat**2 - sigma**2) * eps
+            x_noisy = x + added_noise
+
+            model_output = self.scheduler.preconditioned_network_forward(
+                self.mmdit.forward_with_cond_scale,
+                x_noisy,
+                a,
+                sigma_hat,
+                c,
+                cond_scale=cond_scale,
+            )
+
+            x_denoised = (x_noisy - model_output) / sigma_hat
+            x_next = x_noisy + (sigma_next - sigma_hat) * x_denoised
+
+            # second order correction (heun's method)
+            if sigma_next != 0:
+                model_output_next = self.scheduler.preconditioned_network_forward(
+                    self.mmdit.forward_with_cond_scale,
+                    x_next,
+                    a,
+                    sigma_next,
+                    c,
+                    cond_scale=cond_scale,
+                )
+
+                x_prime_denoised = (x_next - model_output_next) / sigma_next
+                x_next = x_noisy + 0.5 * (sigma_next - sigma_hat) * (x_denoised + x_prime_denoised)
+
+            x = x_next
+
+        x = x.clamp(-1.0, 1.0)
 
     def forward(
         self: "OsuFusion",
@@ -94,17 +127,20 @@ class OsuFusion(nn.Module):
     ) -> torch.Tensor:
         assert x.shape[-1] == a.shape[-1], "x and a must have the same number of sequence length"
 
-        noise = torch.randn_like(x, device=x.device)
-        timesteps = torch.randint(
-            0,
-            self.scheduler.config.num_train_timesteps,
-            (x.shape[0],),
-            dtype=torch.int64,
-            device=x.device,
-        )
-        x_noisy = self.scheduler.add_noise(x, noise, timesteps)
+        sigmas = self.scheduler.noise_distribution(x.shape[0], x.device)
+        padded_sigmas = rearrange(sigmas, "b -> b 1 1")
 
-        pred_x0 = self.mmdit(x_noisy, a, timesteps, c, cond_drop_prob=self.cond_drop_prob)
+        noise = torch.randn_like(x, device=x.device)
+        x_noisy = x + padded_sigmas * noise
+
+        pred_x0 = self.scheduler.preconditioned_network_forward(
+            self.mmdit.forward,
+            x_noisy,
+            a,
+            sigmas,
+            c,
+            cond_drop_prob=self.cond_drop_prob,
+        )
 
         # Calculate loss
         loss = F.mse_loss(pred_x0, x, reduction="none")
