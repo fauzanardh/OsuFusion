@@ -50,8 +50,8 @@ class EDMScheduler:
 
         c_in = 1 * (padded_sigma**2 + self.sigma_data**2) ** -0.5
         c_noise = log(sigma) * 0.25
-        c_skip = self.sigma_data**2 / (sigma**2 + self.sigma_data**2)
-        c_out = sigma * self.sigma_data * (sigma**2 + self.sigma_data**2) ** -0.5
+        c_skip = self.sigma_data**2 / (padded_sigma**2 + self.sigma_data**2)
+        c_out = padded_sigma * self.sigma_data * (padded_sigma**2 + self.sigma_data**2) ** -0.5
 
         net_out = forward_fn(c_in * x_noisy, a, c_noise, c, **kwargs)
         out = c_skip * x_noisy + c_out * net_out
