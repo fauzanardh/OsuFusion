@@ -1,5 +1,5 @@
 import math
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -9,7 +9,7 @@ from tqdm.auto import tqdm
 
 from osu_fusion.library.osu.data.encode import TOTAL_DIM
 from osu_fusion.library.scheduler import EDMScheduler
-from osu_fusion.modules.unet import UNet
+from osu_fusion.modules.mmdit import MMDiT
 from osu_fusion.scripts.dataset_creator import AUDIO_DIM, CONTEXT_DIM
 
 
@@ -17,35 +17,33 @@ class OsuFusion(nn.Module):
     def __init__(
         self: "OsuFusion",
         dim_h: int,
-        dim_h_mult: Tuple[int] = (1, 2, 3, 4),
-        num_layer_blocks: Tuple[int] = (3, 3, 3, 3),
-        num_middle_transformers: int = 3,
-        cross_embed_kernel_sizes: Tuple[int] = (3, 7, 15),
-        attn_dim_head: int = 64,
+        dim_h_mult: int = 4,
+        patch_size: int = 4,
+        depth: int = 12,
         attn_heads: int = 16,
+        attn_dim_head: int = 64,
         attn_kv_heads: int = 4,
         attn_qk_norm: bool = True,
         attn_causal: bool = False,
         attn_use_rotary_emb: bool = True,
         attn_context_len: int = 8192,
         attn_infini: bool = True,
-        attn_segment_len: int = 8192,
+        attn_segment_len: int = 1024,
         cond_drop_prob: float = 0.5,
         sampling_timesteps: int = 35,
     ) -> None:
         super().__init__()
 
-        self.unet = UNet(
+        self.mmdit = MMDiT(
             dim_in_x=TOTAL_DIM,
             dim_in_a=AUDIO_DIM,
             dim_in_c=CONTEXT_DIM,
             dim_h=dim_h,
             dim_h_mult=dim_h_mult,
-            num_layer_blocks=num_layer_blocks,
-            num_middle_transformers=num_middle_transformers,
-            cross_embed_kernel_sizes=cross_embed_kernel_sizes,
-            attn_dim_head=attn_dim_head,
+            patch_size=patch_size,
+            depth=depth,
             attn_heads=attn_heads,
+            attn_dim_head=attn_dim_head,
             attn_kv_heads=attn_kv_heads,
             attn_qk_norm=attn_qk_norm,
             attn_causal=attn_causal,
@@ -59,7 +57,7 @@ class OsuFusion(nn.Module):
         self.cond_drop_prob = cond_drop_prob
 
     def set_full_bf16(self: "OsuFusion") -> None:
-        self.unet = self.unet.bfloat16()
+        self.mmdit = self.mmdit.bfloat16()
 
     @torch.inference_mode()
     def sample(
@@ -91,7 +89,7 @@ class OsuFusion(nn.Module):
             x_noisy = x + added_noise
 
             model_output = self.scheduler.preconditioned_network_forward(
-                self.unet.forward_with_cond_scale,
+                self.mmdit.forward_with_cond_scale,
                 x_noisy,
                 a,
                 sigma_hat,
@@ -105,7 +103,7 @@ class OsuFusion(nn.Module):
             # second order correction (heun's method)
             if sigma_next != 0:
                 model_output_next = self.scheduler.preconditioned_network_forward(
-                    self.unet.forward_with_cond_scale,
+                    self.mmdit.forward_with_cond_scale,
                     x_next,
                     a,
                     sigma_next,
@@ -137,7 +135,7 @@ class OsuFusion(nn.Module):
         x_noisy = x + padded_sigmas * noise
 
         pred_x0 = self.scheduler.preconditioned_network_forward(
-            self.unet.forward,
+            self.mmdit.forward,
             x_noisy,
             a,
             sigmas,
