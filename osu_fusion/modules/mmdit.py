@@ -1,5 +1,5 @@
 import math
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 
 import torch
 import torch.nn as nn
@@ -39,13 +39,6 @@ class FeedForward(nn.Sequential):
             nn.SiLU(),
             nn.Linear(inner_dim, dim),
         )
-        self.gradient_checkpointing = False
-
-    def forward(self: "FeedForward", x: torch.Tensor) -> torch.Tensor:
-        if self.training and self.gradient_checkpointing:
-            return torch.utils.checkpoint.checkpoint(super().forward, x, use_reentrant=False)
-        else:
-            return super().forward(x)
 
 
 class PatchEmbedding(nn.Module):
@@ -54,17 +47,9 @@ class PatchEmbedding(nn.Module):
         self.patch_size = patch_size
         self.proj = nn.Conv1d(dim_in, dim_emb, patch_size, stride=patch_size)
 
-        self.gradient_checkpointing = False
-
-    def forward_body(self: "PatchEmbedding", x: torch.Tensor) -> torch.Tensor:
+    def forward(self: "PatchEmbedding", x: torch.Tensor) -> torch.Tensor:
         assert x.shape[-1] % self.patch_size == 0, "Input sequence length must be divisible by the patch size"
         return rearrange(self.proj(x), "b d n -> b n d")
-
-    def forward(self: "PatchEmbedding", x: torch.Tensor) -> torch.Tensor:
-        if self.training and self.gradient_checkpointing:
-            return torch.utils.checkpoint.checkpoint(self.forward_body, x, use_reentrant=False)
-        else:
-            return self.forward_body(x)
 
 
 class MultiHeadRMSNorm(nn.Module):
@@ -81,31 +66,39 @@ class JointAttention(nn.Module):
     def __init__(
         self: "JointAttention",
         dim: int,
+        dim_head: int,
         heads: int,
+        kv_heads: int,
         qk_norm: bool = True,
         causal: bool = True,
         use_rotary_emb: bool = True,
+        context_len: int = 8192,
         infini: bool = True,
-        segment_len: int = 256,
+        segment_len: int = 1024,
     ) -> None:
         super().__init__()
         self.heads = heads
-        self.dim_head = dim // heads
+        self.kv_heads = kv_heads
         self.qk_norm = qk_norm
 
-        self.to_qkv_x = nn.Linear(dim, self.dim_head * heads * 3, bias=False)
-        self.q_x_norm = MultiHeadRMSNorm(self.dim_head, heads) if qk_norm else None
-        self.k_x_norm = MultiHeadRMSNorm(self.dim_head, heads) if qk_norm else None
+        self.to_q_x = nn.Linear(dim, dim_head * heads, bias=False)
+        self.to_k_x = nn.Linear(dim, dim_head * kv_heads, bias=False)
+        self.to_v_x = nn.Linear(dim, dim_head * kv_heads, bias=False)
+        self.q_x_norm = MultiHeadRMSNorm(dim_head, heads) if qk_norm else nn.Identity()
+        self.k_x_norm = MultiHeadRMSNorm(dim_head, kv_heads) if qk_norm else nn.Identity()
 
-        self.to_qkv_a = nn.Linear(dim, self.dim_head * heads * 3, bias=False)
-        self.q_a_norm = MultiHeadRMSNorm(self.dim_head, heads) if qk_norm else None
-        self.k_a_norm = MultiHeadRMSNorm(self.dim_head, heads) if qk_norm else None
+        self.to_q_a = nn.Linear(dim, dim_head * heads, bias=False)
+        self.to_k_a = nn.Linear(dim, dim_head * kv_heads, bias=False)
+        self.to_v_a = nn.Linear(dim, dim_head * kv_heads, bias=False)
+        self.q_a_norm = MultiHeadRMSNorm(dim_head, heads) if qk_norm else nn.Identity()
+        self.k_a_norm = MultiHeadRMSNorm(dim_head, kv_heads) if qk_norm else nn.Identity()
 
         self.attn = Attend(
-            self.dim_head,
+            dim_head,
             heads=heads,
             causal=causal,
             use_rotary_emb=use_rotary_emb,
+            context_len=context_len,
             infini=infini,
             segment_len=segment_len,
         )
@@ -114,13 +107,16 @@ class JointAttention(nn.Module):
         self: "JointAttention",
         x: torch.Tensor,
         a: torch.Tensor,
-        padding_data: Optional[Tuple[int, List[int]]] = None,
     ) -> torch.Tensor:
-        q_x, k_x, v_x = self.to_qkv_x(x).chunk(3, dim=-1)
-        q_x, k_x, v_x = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q_x, k_x, v_x))
+        q_x = rearrange(self.to_q_x(x), "b n (h d) -> b h n d", h=self.heads)
+        k_x = self.to_k_x(x)
+        v_x = self.to_v_x(x)
+        k_x, v_x = (rearrange(t, "b n (h d) -> b h n d", h=self.kv_heads) for t in (k_x, v_x))
 
-        q_a, k_a, v_a = self.to_qkv_a(a).chunk(3, dim=-1)
-        q_a, k_a, v_a = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q_a, k_a, v_a))
+        q_a = rearrange(self.to_q_a(a), "b n (h d) -> b h n d", h=self.heads)
+        k_a = self.to_k_a(a)
+        v_a = self.to_v_a(a)
+        k_a, v_a = (rearrange(t, "b n (h d) -> b h n d", h=self.kv_heads) for t in (k_a, v_a))
 
         if self.qk_norm:
             q_x = self.q_x_norm(q_x)
@@ -128,14 +124,15 @@ class JointAttention(nn.Module):
             q_a = self.q_a_norm(q_a)
             k_a = self.k_a_norm(k_a)
 
-        # Combine the audio data first and then the osu data
-        # logic behind it is that we let the model learn the audio data first
-        # and then the osu data can attend to the audio data
+        # GQA
+        k_x, v_x = (repeat(t, "b h n d -> b (r h) n d", r=self.heads // self.kv_heads) for t in (k_x, v_x))
+        k_a, v_a = (repeat(t, "b h n d -> b (r h) n d", r=self.heads // self.kv_heads) for t in (k_a, v_a))
+
         q, seq_shape = pack([q_a, q_x], "b h * d")
         k, _ = pack([k_a, k_x], "b h * d")
         v, _ = pack([v_a, v_x], "b h * d")
 
-        out = self.attn(q, k, v, padding_data=padding_data)
+        out = self.attn(q, k, v)
         out_a, out_x = unpack(out, seq_shape, "b h * d")
 
         out_x, out_a = (rearrange(t, "b h n d -> b n (h d)") for t in (out_x, out_a))
@@ -147,12 +144,15 @@ class MMDiTBlock(nn.Module):
         self: "MMDiTBlock",
         dim_h: int,
         dim_h_mult: int = 4,
+        attn_dim_head: int = 64,
         attn_heads: int = 8,
+        attn_kv_heads: int = 2,
         attn_qk_norm: bool = True,
         attn_causal: bool = True,
         attn_use_rotary_emb: bool = True,
+        attn_context_len: int = 8192,
         attn_infini: bool = True,
-        attn_segment_len: int = 256,
+        attn_segment_len: int = 1024,
     ) -> None:
         super().__init__()
         # Modulation
@@ -179,10 +179,13 @@ class MMDiTBlock(nn.Module):
 
         self.attn = JointAttention(
             dim_h,
+            attn_dim_head,
             attn_heads,
+            attn_kv_heads,
             qk_norm=attn_qk_norm,
             causal=attn_causal,
             use_rotary_emb=attn_use_rotary_emb,
+            context_len=attn_context_len,
             infini=attn_infini,
             segment_len=attn_segment_len,
         )
@@ -194,7 +197,6 @@ class MMDiTBlock(nn.Module):
         x: torch.Tensor,
         a: torch.Tensor,
         c: torch.Tensor,
-        padding_data: Optional[Tuple[int, List[int]]] = None,
     ) -> torch.Tensor:
         # Modulation
         (
@@ -217,7 +219,7 @@ class MMDiTBlock(nn.Module):
         # Attention
         h_x = modulate(self.norm1_x(x), shift_attn_x, scale_attn_x)
         h_a = modulate(self.norm1_a(a), shift_attn_a, scale_attn_a)
-        attn_out_x, attn_out_a = self.attn(h_x, h_a, padding_data=padding_data)
+        attn_out_x, attn_out_a = self.attn(h_x, h_a)
 
         x = x + gate_attn_x.unsqueeze(1) * (self.attn_out_x(attn_out_x))
         a = a + gate_attn_a.unsqueeze(1) * (self.attn_out_a(attn_out_a))
@@ -233,12 +235,11 @@ class MMDiTBlock(nn.Module):
         x: torch.Tensor,
         a: torch.Tensor,
         c: torch.Tensor,
-        padding_data: Optional[Tuple[int, List[int]]] = None,
     ) -> torch.Tensor:
         if self.training and self.gradient_checkpointing:
-            return torch.utils.checkpoint.checkpoint(self.forward_body, x, a, c, padding_data, use_reentrant=True)
+            return torch.utils.checkpoint.checkpoint(self.forward_body, x, a, c, use_reentrant=True)
         else:
-            return self.forward_body(x, a, c, padding_data=padding_data)
+            return self.forward_body(x, a, c)
 
 
 class FinalLayer(nn.Module):
@@ -251,18 +252,10 @@ class FinalLayer(nn.Module):
         )
         self.linear = nn.Linear(dim_h, patch_size * dim_out)
 
-        self.gradient_checkpointing = False
-
-    def forward_body(self: "FinalLayer", x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+    def forward(self: "FinalLayer", x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
         shift, scale = self.modulation(c).chunk(2, dim=1)
         x = modulate(self.norm(x), shift, scale)
         return self.linear(x)
-
-    def forward(self: "FinalLayer", x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
-        if self.training and self.gradient_checkpointing:
-            return torch.utils.checkpoint.checkpoint(self.forward_body, x, c, use_reentrant=True)
-        else:
-            return self.forward_body(x, c)
 
 
 class MMDiT(nn.Module):
@@ -275,48 +268,60 @@ class MMDiT(nn.Module):
         dim_h_mult: int = 4,
         patch_size: int = 4,
         depth: int = 12,
+        attn_dim_head: int = 64,
         attn_heads: int = 8,
+        attn_kv_heads: int = 2,
         attn_qk_norm: bool = True,
         attn_causal: bool = True,
         attn_use_rotary_emb: bool = True,
+        attn_context_len: int = 8192,
         attn_infini: bool = True,
-        attn_segment_len: int = 256,
+        attn_segment_len: int = 1024,
     ) -> None:
         super().__init__()
+
         self.dim_h = dim_h
         self.dim_in_x = dim_in_x
         self.patch_size = patch_size
-        self.attn_segment_len = attn_segment_len
+        self.attn_context_len = (attn_context_len // patch_size) * 2  # We have two modalities
+        self.attn_segment_len = (attn_segment_len // patch_size) * 2
         self.attn_infini = attn_infini
 
         self.emb_x = PatchEmbedding(dim_in_x, dim_h, patch_size)
         self.emb_a = PatchEmbedding(dim_in_a, dim_h, patch_size)
 
-        self.pos_emb_time = SinusoidalPositionEmbedding(dim_h)
-        self.mlp_time = FeedForward(dim_h, dim_mult=dim_h_mult)
+        self.feature_extractor_a = nn.Linear(dim_in_a * 2, dim_h)
+        self.mlp_a = FeedForward(dim_h, dim_mult=dim_h_mult)
+        self.mlp_time = nn.Sequential(
+            SinusoidalPositionEmbedding(dim_h),
+            FeedForward(dim_h, dim_mult=dim_h_mult),
+        )
         self.mlp_cond = nn.Sequential(
             nn.Linear(dim_in_c, dim_h),
             FeedForward(dim_h, dim_mult=dim_h_mult),
         )
         self.null_cond = nn.Parameter(torch.randn(dim_h))
-
         self.blocks = nn.ModuleList(
             [
                 MMDiTBlock(
                     dim_h,
                     dim_h_mult=dim_h_mult,
+                    attn_dim_head=attn_dim_head,
                     attn_heads=attn_heads,
+                    attn_kv_heads=attn_kv_heads,
                     attn_qk_norm=attn_qk_norm,
                     attn_causal=attn_causal,
                     attn_use_rotary_emb=attn_use_rotary_emb,
+                    attn_context_len=self.attn_context_len,
                     attn_infini=attn_infini,
-                    attn_segment_len=attn_segment_len,
+                    attn_segment_len=self.attn_segment_len,
                 )
                 for _ in range(depth)
             ],
         )
 
-        self.final_layer = FinalLayer(dim_h, self.patch_size, dim_in_x)
+        self.final_layer = FinalLayer(dim_h, self.patch_size, dim_h)
+        self.out = nn.Conv1d(dim_h, dim_in_x, 1)
 
         self.initialize_weights()
 
@@ -331,8 +336,10 @@ class MMDiT(nn.Module):
         self.apply(_basic_init)
 
         # Initialize embedder
-        nn.init.normal_(self.mlp_time[0].weight, std=0.02)
-        nn.init.normal_(self.mlp_time[2].weight, std=0.02)
+        nn.init.normal_(self.mlp_a[0].weight, std=0.02)
+        nn.init.normal_(self.mlp_a[2].weight, std=0.02)
+        nn.init.normal_(self.mlp_time[1][0].weight, std=0.02)
+        nn.init.normal_(self.mlp_time[1][2].weight, std=0.02)
         nn.init.normal_(self.mlp_cond[1][0].weight, std=0.02)
         nn.init.normal_(self.mlp_cond[1][2].weight, std=0.02)
 
@@ -348,6 +355,8 @@ class MMDiT(nn.Module):
         nn.init.zeros_(self.final_layer.modulation[1].bias)
         nn.init.zeros_(self.final_layer.linear.weight)
         nn.init.zeros_(self.final_layer.linear.bias)
+        nn.init.zeros_(self.out.weight)
+        nn.init.zeros_(self.out.bias)
 
     def set_gradient_checkpointing(self: "MMDiT", value: bool) -> None:
         for name, module in self.named_modules():
@@ -372,6 +381,12 @@ class MMDiT(nn.Module):
         c: torch.Tensor,
         cond_drop_prob: float = 0.0,
     ) -> torch.Tensor:
+        # Statistic audio features pooling
+        mean_features = a.mean(dim=-1)
+        std_features = a.std(dim=-1)
+        h_a = torch.cat([mean_features, std_features], dim=1)
+        h_a = self.feature_extractor_a(h_a)
+
         n = x.shape[-1]
         if self.attn_infini:
             # Pad to the closest multiple of attn_segment_len
@@ -393,18 +408,18 @@ class MMDiT(nn.Module):
         cond_mask = prob_mask_like((x.shape[0],), 1.0 - cond_drop_prob, device=x.device)
         cond_mask = rearrange(cond_mask, "b -> b 1")
         null_conds = repeat(self.null_cond, "d -> b d", b=x.shape[0])
-        c = torch.where(cond_mask, c, null_conds)
         c = self.mlp_cond(c)
+        c = torch.where(cond_mask, c, null_conds)
 
-        c = c + self.mlp_time(self.pos_emb_time(t))
+        c = c + self.mlp_time(t) + self.mlp_a(h_a)
 
         # Run the blocks
         for block in self.blocks:
-            x, a = block(x, a, c)  # padding_data=(pad_len, padding_start_idxs) if pad_len != 0 else None
+            x, a = block(x, a, c)
 
         # Run the final layer
         x = self.final_layer(x, c)
 
         # Unpatchify the output
         x = rearrange(x, "b n (p d) -> b d (n p)", p=self.patch_size)
-        return x[:, :, :n]
+        return self.out(x)[:, :, :n]
