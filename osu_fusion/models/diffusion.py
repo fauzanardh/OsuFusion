@@ -117,6 +117,7 @@ class OsuFusion(nn.Module):
             x = x_next
 
         x = x.clamp(-1.0, 1.0)
+        return x
 
     def forward(
         self: "OsuFusion",
