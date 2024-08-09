@@ -5,6 +5,10 @@ import torch.nn.functional as F  # noqa: N812
 from einops import rearrange
 
 
+def log(x: torch.Tensor, eps: float = 1e-20) -> torch.Tensor:
+    return torch.log(x + eps)
+
+
 class EDMScheduler:
     def __init__(
         self: "EDMScheduler",
@@ -45,7 +49,7 @@ class EDMScheduler:
         padded_sigma = rearrange(sigma, "b -> b 1 1")
 
         c_in = 1 * (padded_sigma**2 + self.sigma_data**2) ** -0.5
-        c_noise = torch.log(sigma) * 0.25 if sigma > 0 else 0.0
+        c_noise = log(sigma) * 0.25
         c_skip = self.sigma_data**2 / (sigma**2 + self.sigma_data**2)
         c_out = sigma * self.sigma_data * (sigma**2 + self.sigma_data**2) ** -0.5
 
