@@ -75,5 +75,5 @@ class EDMScheduler:
             self.sigma_max**inv_rho
             + steps / (num_sample_timesteps - 1) * (self.sigma_min**inv_rho - self.sigma_max**inv_rho)
         ) ** self.rho
-        sigmas = F.pad(sigmas, (1, 0), value=0.0)  # prepend 0.0 to sigmas
+        sigmas = F.pad(sigmas, (0, 1), value=0.0)
         return sigmas
