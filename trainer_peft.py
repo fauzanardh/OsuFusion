@@ -227,7 +227,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
 
     model_class = DiffusionOsuFusion if args.model_type == "diffusion" else RectifiedFlowOsuFusion
     model = model_class(args.model_dim, attn_infini=False)
-    model.mmdit.set_gradient_checkpointing(args.gradient_checkpointing)
+    model.unet.set_gradient_checkpointing(args.gradient_checkpointing)
     load_model(model, args.model_path)
     model.eval()
     if args.full_bf16:

@@ -226,7 +226,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     model = model_class(args.model_dim, attn_infini=False)
     if args.full_bf16:
         model.set_full_bf16()
-    model.mmdit.set_gradient_checkpointing(args.gradient_checkpointing)
+    model.unet.set_gradient_checkpointing(args.gradient_checkpointing)
     optimizer = AdamW(model.parameters(), lr=args.lr)
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
