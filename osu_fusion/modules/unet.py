@@ -316,12 +316,6 @@ class AudioEncoder(nn.Module):
         self.attn_context_len = attn_context_len
 
         self.init_conv = CrossEmbedLayer(dim_in, dim_h, cross_embed_kernel_sizes)
-        self.time_mlp = nn.Sequential(
-            SinusoidalPositionEmbedding(self.dim_emb),
-            nn.Linear(self.dim_emb, self.dim_emb),
-            nn.SiLU(),
-            nn.Linear(self.dim_emb, self.dim_emb),
-        )
 
         dims_h = tuple((dim_h * mult) for mult in dim_h_mult)
         dims_h = (dim_h, *dims_h)
