@@ -82,6 +82,9 @@ class JointAttention(nn.Module):
         self.q_a_norm = MultiHeadRMSNorm(dim_head, heads) if qk_norm else nn.Identity()
         self.k_a_norm = MultiHeadRMSNorm(dim_head, kv_heads) if qk_norm else nn.Identity()
 
+        self.to_out_x = nn.Linear(dim_head * heads, dim)
+        self.to_out_a = nn.Linear(dim_head * heads, dim)
+
         self.attn = Attend(
             dim_head,
             heads=heads,
@@ -125,6 +128,8 @@ class JointAttention(nn.Module):
         out_a, out_x = unpack(out, seq_shape, "b h * d")
 
         out_x, out_a = (rearrange(t, "b h n d -> b n (h d)") for t in (out_x, out_a))
+        out_x = self.to_out_x(out_x)
+        out_a = self.to_out_a(out_a)
         return out_x, out_a
 
 
