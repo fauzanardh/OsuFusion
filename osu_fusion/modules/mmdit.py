@@ -350,11 +350,11 @@ class MMDiT(nn.Module):
             nn.init.zeros_(block.modulation_a[1].weight)
             nn.init.zeros_(block.modulation_a[1].bias)
 
-        # Zero-out output layer
+        # Zero-out final adaLN layers
         nn.init.zeros_(self.final_layer.modulation[1].weight)
         nn.init.zeros_(self.final_layer.modulation[1].bias)
-        nn.init.zeros_(self.final_layer.linear.weight)
-        nn.init.zeros_(self.final_layer.linear.bias)
+
+        # Zero-out final layer
         nn.init.zeros_(self.out.weight)
         nn.init.zeros_(self.out.bias)
 
