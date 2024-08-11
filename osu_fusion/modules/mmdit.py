@@ -421,5 +421,5 @@ class MMDiT(nn.Module):
         x = self.final_layer(x, c)
 
         # Unpatchify the output
-        x = rearrange(x, "b n (p d) -> b d (n p)", p=self.patch_size)
-        return self.out(x)[:, :, :n]
+        x = rearrange(x, "b n (p d) -> b (n p) d", p=self.patch_size)
+        return rearrange(self.out(x), "b n d -> b d n")[:, :, :n]
