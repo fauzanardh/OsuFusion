@@ -321,7 +321,7 @@ class MMDiT(nn.Module):
         )
 
         self.final_layer = FinalLayer(dim_h, self.patch_size, dim_h)
-        self.out = nn.Conv1d(dim_h, dim_in_x, 1)
+        self.out = nn.Linear(dim_h, dim_in_x)
 
         self.initialize_weights()
 
