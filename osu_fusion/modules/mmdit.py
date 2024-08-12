@@ -31,6 +31,17 @@ class SinusoidalPositionEmbedding(nn.Module):
         return emb
 
 
+class FourierFeatures(nn.Module):
+    def __init__(self: "FourierFeatures", dim: int, dim_out: int, std: float = 1.0) -> None:
+        super().__init__()
+        assert dim_out % 2 == 0
+        self.weight = nn.Parameter(torch.randn([dim_out // 2, dim]) * std)
+
+    def forward(self: "FourierFeatures", x: torch.Tensor) -> torch.Tensor:
+        f = 2 * math.pi * x @ self.weight.T
+        return torch.cat([f.cos(), f.sin()], dim=-1)
+
+
 class FeedForward(nn.Sequential):
     def __init__(self: "FeedForward", dim: int, dim_mult: int = 4) -> None:
         inner_dim = dim * dim_mult
@@ -260,7 +271,7 @@ class MMDiT(nn.Module):
         dim_in_c: int,
         dim_h: int,
         dim_h_mult: int = 4,
-        patch_size: int = 4,
+        patch_size: int = 2,
         depth: int = 12,
         attn_dim_head: int = 64,
         attn_heads: int = 8,
@@ -287,7 +298,7 @@ class MMDiT(nn.Module):
         self.feature_extractor_a = nn.Linear(dim_in_a * 2, self.dim_h)
         self.mlp_audio = FeedForward(self.dim_h, dim_mult=dim_h_mult)
         self.mlp_time = nn.Sequential(
-            SinusoidalPositionEmbedding(self.dim_h),
+            FourierFeatures(1, self.dim_h),
             FeedForward(self.dim_h, dim_mult=dim_h_mult),
         )
         self.mlp_cond = nn.Sequential(
