@@ -401,7 +401,7 @@ class MMDiT(nn.Module):
         null_conds = repeat(self.null_cond, "d -> b d", b=x.shape[0])
         c = self.mlp_cond(c)
         c = torch.where(cond_mask, c, null_conds)
-        c = c + self.mlp_time(t) + self.mlp_audio(h_a)
+        c = c + self.mlp_time(t.unsqueeze(1)) + self.mlp_audio(h_a)
 
         n = x.shape[-1]
         if self.attn_infini:
