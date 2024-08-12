@@ -284,32 +284,34 @@ class MMDiT(nn.Module):
         attn_segment_len: int = 1024,
     ) -> None:
         super().__init__()
-
-        self.dim_h = dim_h * patch_size
         self.patch_size = patch_size
         self.attn_context_len = (attn_context_len // patch_size) * 2  # We have two modalities
         self.attn_segment_len = (attn_segment_len // patch_size) * 2
         self.attn_infini = attn_infini
 
-        self.init_conv_x = nn.Conv1d(dim_in_x, dim_h, 1, bias=False)
-        self.init_conv_a = nn.Conv1d(dim_in_a, dim_h, 1, bias=False)
-        self.out_conv = nn.Conv1d(dim_h, dim_in_x, 1, bias=False)
+        self.init_conv_x = nn.Conv1d(dim_in_x, dim_in_x, 1, bias=False)
+        self.init_conv_a = nn.Conv1d(dim_in_a, dim_in_a, 1, bias=False)
+        self.out_conv = nn.Conv1d(dim_in_x, dim_in_x, 1, bias=False)
 
-        self.feature_extractor_a = nn.Linear(dim_in_a * 2, self.dim_h)
-        self.mlp_audio = FeedForward(self.dim_h, dim_mult=dim_h_mult)
+        self.proj_in_x = nn.Linear(dim_in_x * patch_size, dim_h)
+        self.proj_in_a = nn.Linear(dim_in_a * patch_size, dim_h)
+        self.proj_out = nn.Linear(dim_h, dim_in_x * patch_size)
+
+        self.feature_extractor_a = nn.Linear(dim_in_a * 2, dim_h)
+        self.mlp_audio = FeedForward(dim_h, dim_mult=dim_h_mult)
         self.mlp_time = nn.Sequential(
-            FourierFeatures(1, self.dim_h),
-            FeedForward(self.dim_h, dim_mult=dim_h_mult),
+            FourierFeatures(1, dim_h),
+            FeedForward(dim_h, dim_mult=dim_h_mult),
         )
         self.mlp_cond = nn.Sequential(
-            nn.Linear(dim_in_c, self.dim_h),
-            FeedForward(self.dim_h, dim_mult=dim_h_mult),
+            nn.Linear(dim_in_c, dim_h),
+            FeedForward(dim_h, dim_mult=dim_h_mult),
         )
-        self.null_cond = nn.Parameter(torch.randn(self.dim_h))
+        self.null_cond = nn.Parameter(torch.randn(dim_h))
         self.blocks = nn.ModuleList(
             [
                 MMDiTBlock(
-                    self.dim_h,
+                    dim_h,
                     dim_h_mult=dim_h_mult,
                     attn_dim_head=attn_dim_head,
                     attn_heads=attn_heads,
@@ -324,7 +326,7 @@ class MMDiT(nn.Module):
                 for _ in range(depth)
             ],
         )
-        self.final_layer = FinalLayer(self.dim_h)
+        self.final_layer = FinalLayer(dim_h)
 
         self.initialize_weights()
 
@@ -337,6 +339,10 @@ class MMDiT(nn.Module):
 
         # Basic initialization for layers
         self.apply(_basic_init)
+
+        # Zero-out init_conv
+        nn.init.zeros_(self.init_conv_x.weight)
+        nn.init.zeros_(self.init_conv_a.weight)
 
         # Initialize embedder
         nn.init.normal_(self.mlp_audio[0].weight, std=0.02)
@@ -389,6 +395,14 @@ class MMDiT(nn.Module):
         h_a = torch.cat([mean_features, std_features], dim=1)
         h_a = self.feature_extractor_a(h_a)
 
+        # Add the condition, time and audio features
+        cond_mask = prob_mask_like((x.shape[0],), 1.0 - cond_drop_prob, device=x.device)
+        cond_mask = rearrange(cond_mask, "b -> b 1")
+        null_conds = repeat(self.null_cond, "d -> b d", b=x.shape[0])
+        c = self.mlp_cond(c)
+        c = torch.where(cond_mask, c, null_conds)
+        c = c + self.mlp_time(t) + self.mlp_audio(h_a)
+
         n = x.shape[-1]
         if self.attn_infini:
             # Pad to the closest multiple of attn_segment_len
@@ -402,21 +416,17 @@ class MMDiT(nn.Module):
         x = F.pad(x, (0, pad_len), value=-1.0)
         a = F.pad(a, (0, pad_len), value=0.0)
 
-        x = self.init_conv_x(x)
-        a = self.init_conv_a(a)
+        # Initial convolution residual
+        x = self.init_conv_x(x) + x
+        a = self.init_conv_a(a) + a
 
         # Patchify the input
         x = rearrange(x, "b d (p n) -> b n (p d)", p=self.patch_size)
         a = rearrange(a, "b d (p n) -> b n (p d)", p=self.patch_size)
 
-        # Add positional embedding and condition
-        cond_mask = prob_mask_like((x.shape[0],), 1.0 - cond_drop_prob, device=x.device)
-        cond_mask = rearrange(cond_mask, "b -> b 1")
-        null_conds = repeat(self.null_cond, "d -> b d", b=x.shape[0])
-        c = self.mlp_cond(c)
-        c = torch.where(cond_mask, c, null_conds)
-
-        c = c + self.mlp_time(t) + self.mlp_audio(h_a)
+        # Project the input
+        x = self.proj_in_x(x)
+        a = self.proj_in_a(a)
 
         # Run the blocks
         for block in self.blocks:
@@ -425,6 +435,10 @@ class MMDiT(nn.Module):
         # Run the final layer
         x = self.final_layer(x, c)
 
+        # Project back to the original dimension
+        x = self.proj_out(x)
+
         # Unpatchify the output
         x = rearrange(x, "b n (p d) -> b d (p n)", p=self.patch_size)
-        return self.out_conv(x)[:, :, :n]
+        x = self.out_conv(x) + x
+        return x[:, :, :n]
