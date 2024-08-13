@@ -112,8 +112,14 @@ def sample_step(
         figsize=(w, h * 8),
         sharex=True,
     )
-    for feature, ax in zip(reconstructed[0].cpu().to(torch.float32), axs):
-        ax.plot(feature)
+    for orig_feature, recon_feature, ax in zip(
+        x[0].cpu().to(torch.float32),
+        reconstructed[0].cpu().to(torch.float32),
+        axs,
+    ):
+        ax.plot(recon_feature, label="Reconstructed", color="red", linestyle="-")
+        ax.plot(orig_feature, label="Original", color="blue", linestyle="--")
+        ax.legend()
 
     fig.canvas.draw()
     pil_img = Image.frombytes("RGBA", fig.canvas.get_width_height(), fig.canvas.buffer_rgba().tobytes())
