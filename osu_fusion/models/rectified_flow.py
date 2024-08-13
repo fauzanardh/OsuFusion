@@ -21,7 +21,7 @@ class OsuFusion(nn.Module):
         self: "OsuFusion",
         dim_h: int,
         dim_h_mult: int = 4,
-        patch_size: int = 2,
+        patch_size: int = 1,
         depth: int = 12,
         attn_heads: int = 8,
         attn_dim_head: int = 64,
