@@ -139,7 +139,6 @@ class Block(nn.Module):
         dim_out: int,
         layer_idx: int,
         num_layers: int,
-        num_blocks: int,
         down_block: bool,
         attn_dim_head: int,
         attn_heads: int,
@@ -152,44 +151,29 @@ class Block(nn.Module):
         attn_segment_len: int,
     ) -> None:
         super().__init__()
-        self.init_resnet = ResidualBlock(dim_in, dim_in)
-        self.resnets = nn.ModuleList(
-            [ResidualBlock(dim_in, dim_in) for _ in range(num_blocks)],
-        )
-        self.transformer = nn.ModuleList(
-            [
-                TransformerBlock(
-                    dim_in,
-                    attn_dim_head=attn_dim_head,
-                    attn_heads=attn_heads,
-                    attn_kv_heads=attn_kv_heads,
-                    attn_qk_norm=attn_qk_norm,
-                    attn_causal=attn_causal,
-                    attn_use_rotary_emb=attn_use_rotary_emb,
-                    attn_context_len=attn_context_len,
-                    attn_infini=attn_infini,
-                    attn_segment_len=attn_segment_len,
-                )
-                for _ in range(num_blocks)
-            ],
+        self.init_resnet = ResidualBlock(dim_in, dim_out)
+        self.resnet = ResidualBlock(dim_out, dim_out)
+        self.transformer = TransformerBlock(
+            dim_out,
+            attn_dim_head=attn_dim_head,
+            attn_heads=attn_heads,
+            attn_kv_heads=attn_kv_heads,
+            attn_qk_norm=attn_qk_norm,
+            attn_causal=attn_causal,
+            attn_use_rotary_emb=attn_use_rotary_emb,
+            attn_context_len=attn_context_len,
+            attn_infini=attn_infini,
+            attn_segment_len=attn_segment_len,
         )
         if down_block:
-            self.sampler = (
-                Downsample(dim_in, dim_out)
-                if layer_idx < (num_layers - 1)
-                else nn.Conv1d(dim_in, dim_out, 3, padding=1)
-            )
+            self.sampler = Downsample(dim_out, dim_out) if layer_idx < (num_layers - 1) else nn.Identity()
         else:
-            self.sampler = (
-                Upsample(dim_in, dim_out) if layer_idx < (num_layers - 1) else nn.Conv1d(dim_in, dim_out, 3, padding=1)
-            )
+            self.sampler = Upsample(dim_out, dim_out) if layer_idx < (num_layers - 1) else nn.Identity()
 
     def forward(self: "Block", x: torch.Tensor) -> torch.Tensor:
         x = self.init_resnet(x)
-
-        for resnet, transformer in zip(self.resnets, self.transformer):
-            x = resnet(x)
-            x = transformer(x)
+        x = self.resnet(x)
+        x = self.transformer(x)
 
         return self.sampler(x)
 
@@ -200,8 +184,7 @@ class Encoder(nn.Module):
         dim_in: int,
         dim_z: int,
         dim_h: int,
-        dim_h_mult: Tuple[int] = (1, 2, 4, 4),
-        num_layer_blocks: Tuple[int] = (2, 2, 2, 2),
+        dim_h_mult: Tuple[int] = (1, 2, 3, 4),
         attn_dim_head: int = 64,
         attn_heads: int = 8,
         attn_kv_heads: int = 2,
@@ -224,7 +207,6 @@ class Encoder(nn.Module):
         down_blocks = []
         for i in range(n_layers):
             layer_dim_in, layer_dim_out = in_out[i]
-            num_blocks = num_layer_blocks[i]
             attn_context_len_layer = attn_context_len // (2**i)
             attn_segment_len_layer = attn_segment_len // (2**i)
             down_blocks.append(
@@ -233,7 +215,6 @@ class Encoder(nn.Module):
                     layer_dim_out,
                     i,
                     n_layers,
-                    num_blocks,
                     True,
                     attn_dim_head,
                     attn_heads,
@@ -294,8 +275,7 @@ class Decoder(nn.Module):
         dim_out: int,
         dim_z: int,
         dim_h: int,
-        dim_h_mult: Tuple[int] = (1, 2, 4, 4),
-        num_layer_blocks: Tuple[int] = (2, 2, 2, 2),
+        dim_h_mult: Tuple[int] = (1, 2, 3, 4),
         attn_dim_head: int = 64,
         attn_heads: int = 8,
         attn_kv_heads: int = 2,
@@ -311,7 +291,6 @@ class Decoder(nn.Module):
         dims_h = tuple((dim_h * mult) for mult in dim_h_mult)
         dims_h = (dim_h, *dims_h)
         in_out = tuple(reversed(tuple(zip(dims_h[:-1], dims_h[1:]))))
-        num_layer_blocks = tuple(reversed(num_layer_blocks))
         n_layers = len(in_out)
 
         self.init_conv = nn.Conv1d(dim_z, dims_h[-1], 3, padding=1)
@@ -336,7 +315,6 @@ class Decoder(nn.Module):
         up_blocks = []
         for i in range(n_layers):
             layer_dim_out, layer_dim_in = in_out[i]
-            num_blocks = num_layer_blocks[i]
             attn_context_len_layer = attn_context_len // (2 ** (n_layers - i - 1))
             attn_segment_len_layer = attn_segment_len // (2 ** (n_layers - i - 1))
             up_blocks.append(
@@ -345,7 +323,6 @@ class Decoder(nn.Module):
                     layer_dim_out,
                     i,
                     n_layers,
-                    num_blocks,
                     False,
                     attn_dim_head,
                     attn_heads,
@@ -390,8 +367,7 @@ class AutoEncoder(nn.Module):
         dim_in: int,
         dim_z: int,
         dim_h: int,
-        dim_h_mult: Tuple[int] = (1, 2, 4, 4),
-        num_layer_blocks: Tuple[int] = (2, 2, 2, 2),
+        dim_h_mult: Tuple[int] = (1, 2, 3, 4),
         padding_value: float = -1.0,
         attn_dim_head: int = 64,
         attn_heads: int = 8,
@@ -411,7 +387,6 @@ class AutoEncoder(nn.Module):
             dim_z,
             dim_h,
             dim_h_mult,
-            num_layer_blocks,
             attn_dim_head,
             attn_heads,
             attn_kv_heads,
@@ -427,7 +402,6 @@ class AutoEncoder(nn.Module):
             dim_z,
             dim_h,
             dim_h_mult,
-            num_layer_blocks,
             attn_dim_head,
             attn_heads,
             attn_kv_heads,
