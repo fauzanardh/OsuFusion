@@ -392,6 +392,7 @@ class AutoEncoder(nn.Module):
         dim_h: int,
         dim_h_mult: Tuple[int] = (1, 2, 4, 4),
         num_layer_blocks: Tuple[int] = (2, 2, 2, 2),
+        padding_value: float = -1.0,
         attn_dim_head: int = 64,
         attn_heads: int = 8,
         attn_kv_heads: int = 2,
@@ -403,6 +404,8 @@ class AutoEncoder(nn.Module):
         attn_segment_len: int = 1024,
     ) -> None:
         super().__init__()
+        self.padding_value = padding_value
+
         self.encoder = Encoder(
             dim_in,
             dim_z,
@@ -449,9 +452,15 @@ class AutoEncoder(nn.Module):
         return self.decoder(z)
 
     def forward(self: "AutoEncoder", x: torch.Tensor) -> Union[torch.Tensor, torch.Tensor]:
+        # Pad to nearest power of 2^encoder depth
+        n = x.shape[-1]
+        depth = len(self.encoder.down_blocks)
+        pad_len = (2**depth - (n % (2**depth))) % (2**depth)
+        x = F.pad(x, (0, pad_len), value=self.padding_value)
+
         mu, logvar = self.encode(x)
         z = self.reparameterize(mu, logvar)
-        reconstructed = self.decode(z)
+        reconstructed = self.decode(z)[:, :, :n]
 
         recon_loss = F.mse_loss(reconstructed, x)
         kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1).mean()
