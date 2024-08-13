@@ -99,7 +99,7 @@ def sample_step(
     x = torch.from_numpy(x).unsqueeze(0).to(device=accelerator.device, dtype=torch.float32)
 
     model.eval()
-    with accelerator.autocast() and torch.inference_mode():
+    with accelerator.autocast() and torch.no_grad():
         mu, logvar = model.encode(x)
         z = model.reparameterize(mu, logvar)
         reconstructed = model.decode(z)
