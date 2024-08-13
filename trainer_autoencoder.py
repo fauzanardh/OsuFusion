@@ -204,7 +204,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     )
 
     input_dim = TOTAL_DIM if args.osu_data else AUDIO_DIM
-    model = AutoEncoder(input_dim, 16, args.model_dim, attn_infini=False)
+    model = AutoEncoder(input_dim, 32, args.model_dim, attn_infini=False)
     if args.full_bf16:
         model.set_full_bf16()
     optimizer = AdamW(model.parameters(), lr=args.lr)
