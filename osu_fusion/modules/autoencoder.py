@@ -456,9 +456,9 @@ class AutoEncoder(nn.Module):
         n = x.shape[-1]
         depth = len(self.encoder.down_blocks)
         pad_len = (2**depth - (n % (2**depth))) % (2**depth)
-        x = F.pad(x, (0, pad_len), value=self.padding_value)
+        x_padded = F.pad(x, (0, pad_len), value=self.padding_value)
 
-        mu, logvar = self.encode(x)
+        mu, logvar = self.encode(x_padded)
         z = self.reparameterize(mu, logvar)
         reconstructed = self.decode(z)[:, :, :n]
 
