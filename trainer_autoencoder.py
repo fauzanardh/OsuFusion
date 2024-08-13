@@ -95,14 +95,8 @@ def sample_step(
     x: Path,
     step: int,
 ) -> torch.Tensor:
-    dtype = torch.float32
-    if accelerator.mixed_precision == "fp16":
-        dtype = torch.float16
-    elif accelerator.mixed_precision == "bf16":
-        dtype = torch.bfloat16
-
     x = np.load(x)["x"]
-    x = torch.from_numpy(x).unsqueeze(0).to(device=accelerator.device, dtype=dtype)
+    x = torch.from_numpy(x).unsqueeze(0).to(device=accelerator.device, dtype=torch.float32)
 
     model.eval()
     with accelerator.autocast() and torch.inference_mode():
