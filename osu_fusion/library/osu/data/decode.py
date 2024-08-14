@@ -72,13 +72,10 @@ def slider_decoder(
     length = 0.0
 
     path = fit_bezier(cursor_signal.T[start_idx : first_slide_idx + 1], max_err=50.0)
-    for i, segment in enumerate(path):
+    for segment in path:
         segment = segment.round()
-        segment_length_ = segment_length(segment)
-        if len(path) > 1 and i == 0 and segment_length_ < 20:
-            continue
         control_points.extend(segment)
-        length += segment_length_
+        length += segment_length(segment)
 
     return length, control_points
 
@@ -195,20 +192,20 @@ def decode_beatmap(  # noqa: C901
             hos.append(f"{x},{y},{t},{2**0 + combo_bit},0,0:0:0:0:")
             continue
 
-        if sustain_end - hit_loc < 4:
-            # Sustain too short
-            hos.append(f"{x},{y},{t},{2**0 + combo_bit},0,0:0:0:0:")
-            continue
+        # if sustain_end - hit_loc < 4:
+        #     # Sustain too short
+        #     hos.append(f"{x},{y},{t},{2**0 + combo_bit},0,0:0:0:0:")
+        #     continue
 
         if slider_end == -1:
             # Spinner
             hos.append(f"256,192,{t},{2**3 + combo_bit},0,{u}")
             continue
 
-        if slider_end - hit_loc < 4:
-            # Slider too short
-            hos.append(f"{x},{y},{t},{2**0 + combo_bit},0,0:0:0:0:")
-            continue
+        # if slider_end - hit_loc < 4:
+        #     # Slider too short
+        #     hos.append(f"{x},{y},{t},{2**0 + combo_bit},0,0:0:0:0:")
+        #     continue
 
         # Slider
         num_slides = max(1, round((sustain_end - hit_loc) / (slider_end - hit_loc)))
