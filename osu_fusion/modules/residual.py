@@ -3,6 +3,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 from einops import rearrange
+from torch.nn import functional as F  # noqa: N812
 
 
 class Block(nn.Module):
@@ -24,7 +25,7 @@ class Block(nn.Module):
         if scale_shift is not None:
             scale, shift = scale_shift
             x = x * (scale + 1) + shift
-        return x * torch.sigmoid(x)  # Swish
+        return F.silu(x)
 
 
 class ResidualBlock(nn.Module):

@@ -305,7 +305,7 @@ class Encoder(nn.Module):
 
         # End
         x = self.norm_out(x)
-        x = x * torch.sigmoid(x)  # Swish
+        x = F.silu(x)
         x = self.conv_out(x)
 
         return x
@@ -397,7 +397,7 @@ class Decoder(nn.Module):
 
         # End
         x = self.norm_out(x)
-        x = x * torch.sigmoid(x)  # Swish
+        x = F.silu(x)
         x = self.conv_out(x)
 
         return x
