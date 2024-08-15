@@ -11,11 +11,11 @@ class Block(nn.Module):
         dim_in: int,
         dim_out: int,
         norm: bool = True,
+        num_groups: int = 1,
     ) -> None:
         super().__init__()
         self.proj = nn.Conv1d(dim_in, dim_out, 3, padding=1)
-        self.norm = nn.GroupNorm(1, dim_out) if norm else nn.Identity()
-        self.activation = nn.SiLU()
+        self.norm = nn.GroupNorm(num_groups, dim_out) if norm else nn.Identity()
 
     def forward(self: "Block", x: torch.Tensor, scale_shift: Optional[torch.Tensor] = None) -> torch.Tensor:
         x = self.proj(x)
@@ -24,9 +24,7 @@ class Block(nn.Module):
         if scale_shift is not None:
             scale, shift = scale_shift
             x = x * (scale + 1) + shift
-
-        x = self.activation(x)
-        return x
+        return x * torch.sigmoid(x)  # Swish
 
 
 class ResidualBlock(nn.Module):
@@ -34,6 +32,7 @@ class ResidualBlock(nn.Module):
         self: "ResidualBlock",
         dim_in: int,
         dim_out: int,
+        num_groups: int = 1,
         dim_time: Optional[int] = None,
         dim_cond: Optional[int] = None,
     ) -> None:
@@ -49,8 +48,8 @@ class ResidualBlock(nn.Module):
             if dim_time or dim_cond
             else None
         )
-        self.block1 = Block(dim_in, dim_out)
-        self.block2 = Block(dim_out, dim_out)
+        self.block1 = Block(dim_in, dim_out, num_groups=num_groups)
+        self.block2 = Block(dim_out, dim_out, num_groups=num_groups)
 
         self.res_conv = nn.Conv1d(dim_in, dim_out, 1) if dim_in != dim_out else nn.Identity()
 
