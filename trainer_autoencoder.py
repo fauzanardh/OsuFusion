@@ -100,8 +100,7 @@ def sample_step(
 
     model.eval()
     with accelerator.autocast() and torch.no_grad():
-        mu, logvar = model.encode(x)
-        z = model.reparameterize(mu, logvar)
+        z, _ = model.encode(x)
         reconstructed = model.decode(z)
     model.train()
 
