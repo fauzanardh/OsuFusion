@@ -1,4 +1,4 @@
-from typing import Dict, List, Tuple, Union
+from typing import Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -9,46 +9,28 @@ from osu_fusion.modules.attention import Attend
 from osu_fusion.modules.residual import ResidualBlock
 
 
-class CrossEmbedLayer(nn.Module):
-    def __init__(self: "CrossEmbedLayer", dim: int, dim_out: int, kernel_sizes: Tuple[int]) -> None:
-        super().__init__()
-        kernel_sizes = sorted(kernel_sizes)
-        num_scales = len(kernel_sizes)
-
-        dim_scales = [int(dim / (2**i)) for i in range(1, num_scales)]
-        dim_scales = [*dim_scales, dim_out - sum(dim_scales)]
-
-        convs = []
-        for kernel, dim_scale in zip(kernel_sizes, dim_scales):
-            convs.append(nn.Conv1d(dim, dim_scale, kernel, padding=kernel // 2))
-
-        self.convs = nn.ModuleList(convs)
-
-    def forward(self: "CrossEmbedLayer", x: torch.Tensor) -> torch.Tensor:
-        return torch.cat([conv(x) for conv in self.convs], dim=1)
-
-
-class Upsample(nn.Sequential):
+class Upsample(nn.Module):
     def __init__(self: "Upsample", dim_in: int, dim_out: int) -> None:
-        super().__init__(
-            nn.ConvTranspose1d(dim_in, dim_out, 4, stride=2, padding=1),
-        )
-
-
-class Downsample(nn.Sequential):
-    def __init__(self: "Downsample", dim_in: int, dim_out: int) -> None:
-        super().__init__(
-            nn.Conv1d(dim_in, dim_out, 4, stride=2, padding=1, padding_mode="reflect"),
-        )
-
-
-class Parallel(nn.Module):
-    def __init__(self: "Parallel", *fns: nn.Module) -> None:
         super().__init__()
-        self.fns = nn.ModuleList(fns)
+        self.conv = nn.Conv1d(dim_in, dim_out, 3, padding=1)
 
-    def forward(self: "Parallel", x: torch.Tensor, *args: List, **kwargs: Dict) -> List[torch.Tensor]:
-        return sum([fn(x, *args, **kwargs) for fn in self.fns])
+    def forward(self: "Upsample", x: torch.Tensor) -> torch.Tensor:
+        x = F.interpolate(x, scale_factor=2.0, mode="nearest")
+        x = self.conv(x)
+        return x
+
+
+class Downsample(nn.Module):
+    def __init__(self: "Downsample", dim_in: int, dim_out: int) -> None:
+        super().__init__()
+        # Asymmetric padding
+        self.conv = nn.Conv1d(dim_in, dim_out, 3, stride=2, padding=0)
+
+    def forward(self: "Downsample", x: torch.Tensor) -> torch.Tensor:
+        pad = (0, 1)
+        x = F.pad(x, pad=pad, mode="constant", value=0.0)
+        x = self.conv(x)
+        return x
 
 
 class MultiHeadRMSNorm(nn.Module):
@@ -195,22 +177,10 @@ class Block(nn.Module):
         )
         if down_block:
             self.sampler = (
-                Downsample(dim_in, dim_out)
-                if layer_idx < (num_layers - 1)
-                else Parallel(
-                    nn.Conv1d(dim_in, dim_out, 3, padding=1),
-                    nn.Conv1d(dim_in, dim_out, 1),
-                )
+                Downsample(dim_in, dim_out) if layer_idx < (num_layers - 1) else nn.Conv1d(dim_in, dim_out, 1)
             )
         else:
-            self.sampler = (
-                Upsample(dim_in, dim_out)
-                if layer_idx < (num_layers - 1)
-                else Parallel(
-                    nn.Conv1d(dim_in, dim_out, 3, padding=1),
-                    nn.Conv1d(dim_in, dim_out, 1),
-                )
-            )
+            self.sampler = Upsample(dim_in, dim_out) if layer_idx < (num_layers - 1) else nn.Conv1d(dim_in, dim_out, 1)
 
     def forward(self: "Block", x: torch.Tensor) -> torch.Tensor:
         x = self.init_resnet(x)
@@ -238,7 +208,7 @@ class Encoder(nn.Module):
         attn_segment_len: int = 1024,
     ) -> None:
         super().__init__()
-        self.init_conv = CrossEmbedLayer(dim_in, dim_h, (3, 7, 15))
+        self.init_conv = nn.Conv1d(dim_in, dim_h, 3, padding=1)
 
         dims_h = tuple((dim_h * mult) for mult in dim_h_mult)
         dims_h = (dim_h, *dims_h)
@@ -335,7 +305,7 @@ class Decoder(nn.Module):
         in_out = tuple(reversed(tuple(zip(dims_h[:-1], dims_h[1:]))))
         n_layers = len(in_out)
 
-        self.init_conv = CrossEmbedLayer(dim_z, dims_h[-1], (3, 7, 15))
+        self.init_conv = nn.Conv1d(dim_z, dims_h[-1], 3, padding=1)
 
         # Middle
         self.middle_resnet1 = ResidualBlock(dims_h[-1], dims_h[-1])
@@ -409,7 +379,7 @@ class AutoEncoder(nn.Module):
         dim_in: int,
         dim_z: int,
         dim_h: int,
-        dim_h_mult: Tuple[int] = (1, 2, 4, 4),
+        dim_h_mult: Tuple[int] = (1, 2, 4, 8),
         padding_value: float = -1.0,
         attn_dim_head: int = 128,
         attn_heads: int = 4,
