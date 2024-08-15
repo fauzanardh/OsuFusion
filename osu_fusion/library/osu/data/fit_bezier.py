@@ -43,7 +43,7 @@ def compute_error(
     return float(errs[split_point]), int(split_point)
 
 
-def segment_length(p: npt.NDArray) -> float:
+def get_segment_length(p: npt.NDArray) -> float:
     return float(bezier.Curve.from_nodes(p.T).length)
 
 
