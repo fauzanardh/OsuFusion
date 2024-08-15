@@ -19,13 +19,14 @@ class Block(nn.Module):
         self.norm = nn.GroupNorm(num_groups, dim_out) if norm else nn.Identity()
 
     def forward(self: "Block", x: torch.Tensor, scale_shift: Optional[torch.Tensor] = None) -> torch.Tensor:
-        x = self.proj(x)
         x = self.norm(x)
+        x = F.silu(x)
+        x = self.proj(x)
 
         if scale_shift is not None:
             scale, shift = scale_shift
             x = x * (scale + 1) + shift
-        return F.silu(x)
+        return x
 
 
 class ResidualBlock(nn.Module):
