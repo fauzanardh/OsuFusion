@@ -102,7 +102,7 @@ def sample_step(
         x = np.load(args.sample_data)["a"]
 
     model.eval()
-    with accelerator.autocast() and torch.no_grad():
+    with accelerator.autocast(), torch.no_grad():
         z, _ = model.encode(x)
         reconstructed = model.decode(z)
     model.train()
@@ -281,7 +281,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
             total_norm = 0.0
             for _ in range(args.gradient_accumulation_steps):
                 batch = next(cycle_dataloader)
-                with accelerator.autocast() and accelerator.accumulate(model):
+                with accelerator.autocast(), accelerator.accumulate(model):
                     try:
                         if collator is None:
                             x, a, _ = batch  # (x, a, c) from Dataset

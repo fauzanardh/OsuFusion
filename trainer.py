@@ -292,7 +292,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
             total_norm = 0.0
             for _ in range(args.gradient_accumulation_steps):
                 batch = next(cycle_dataloader)
-                with accelerator.autocast() and accelerator.accumulate(model):
+                with accelerator.autocast(), accelerator.accumulate(model):
                     try:
                         loss = model(*batch)
                     except AssertionError:
