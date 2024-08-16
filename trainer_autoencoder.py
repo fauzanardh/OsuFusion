@@ -90,13 +90,16 @@ def collate_fn(
 
 
 def sample_step(
+    args: ArgumentParser,
     accelerator: Accelerator,
     model: AutoEncoder,
-    x: Path,
     step: int,
 ) -> torch.Tensor:
-    x = np.load(x)["x"]
-    x = torch.from_numpy(x).unsqueeze(0).to(device=accelerator.device, dtype=torch.float32)
+    if args.osu_data:
+        x = np.load(args.sample_data)["x"]
+        x = torch.from_numpy(x).unsqueeze(0).to(device=accelerator.device, dtype=torch.float32)
+    else:
+        x = np.load(args.sample_data)["a"]
 
     model.eval()
     with accelerator.autocast() and torch.no_grad():
@@ -104,21 +107,20 @@ def sample_step(
         reconstructed = model.decode(z)
     model.train()
 
-    w, h = reconstructed.shape[-1] // 150, TOTAL_DIM
+    features = TOTAL_DIM if args.osu_data else AUDIO_DIM
+    max_features = min(6, features)
+
+    w, h = reconstructed.shape[-1] // 150, max_features
     fig, axs = plt.subplots(
         h,
         1,
         figsize=(w, h * 8),
         sharex=True,
     )
-    for orig_feature, recon_feature, ax in zip(
-        x[0].cpu().to(torch.float32),
-        reconstructed[0].cpu().to(torch.float32),
-        axs,
-    ):
-        ax.plot(recon_feature, label="Reconstructed", color="red", linestyle="-")
-        ax.plot(orig_feature, label="Original", color="blue", linestyle="--")
-        ax.legend()
+    for i in range(max_features):
+        axs[i].plot(reconstructed[0, i].cpu().to(torch.float32), label="Reconstructed", color="red", linestyle="-")
+        axs[i].plot(x[0, i].cpu().to(torch.float32), label="Original", color="blue", linestyle="--")
+        axs[i].legend()
 
     fig.canvas.draw()
     pil_img = Image.frombytes("RGBA", fig.canvas.get_width_height(), fig.canvas.buffer_rgba().tobytes())
@@ -348,9 +350,9 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
             ):
                 print("Sampling...")
                 sample_step(
+                    args,
                     accelerator,
                     model,
-                    args.sample_data,
                     step=current_step + 1,
                 )
 
