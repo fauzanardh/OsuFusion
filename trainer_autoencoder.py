@@ -95,14 +95,18 @@ def sample_step(
     model: AutoEncoder,
     step: int,
 ) -> torch.Tensor:
-    if args.osu_data:
-        x = np.load(args.sample_data)["x"]
-        x = torch.from_numpy(x).unsqueeze(0).to(device=accelerator.device, dtype=torch.float32)
-    else:
-        x = np.load(args.sample_data)["a"]
+    dtype = torch.float32
+    if accelerator.mixed_precision == "fp16":
+        dtype = torch.float16
+    elif accelerator.mixed_precision == "bf16":
+        dtype = torch.bfloat16
+
+    x = np.load(args.sample_data)
+    x = x["x"] if args.osu_data else x["a"]
+    x = torch.from_numpy(x).unsqueeze(0).to(device=accelerator.device, dtype=dtype)
 
     model.eval()
-    with accelerator.autocast(), torch.no_grad():
+    with accelerator.autocast(), torch.torch.inference_mode():
         z, _ = model.encode(x)
         reconstructed = model.decode(z)
     model.train()
