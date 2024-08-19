@@ -271,7 +271,6 @@ class MMDiT(nn.Module):
         dim_in_c: int,
         dim_h: int,
         dim_h_mult: int = 4,
-        patch_size: int = 1,
         depth: int = 12,
         attn_dim_head: int = 64,
         attn_heads: int = 8,
@@ -284,21 +283,18 @@ class MMDiT(nn.Module):
         attn_segment_len: int = 1024,
     ) -> None:
         super().__init__()
-        self.patch_size = patch_size
-        self.attn_context_len = (attn_context_len // patch_size) * 2  # We have two modalities
-        self.attn_segment_len = (attn_segment_len // patch_size) * 2
+        self.attn_context_len = attn_context_len * 2  # We have two modalities
+        self.attn_segment_len = attn_segment_len * 2
         self.attn_infini = attn_infini
 
         self.init_conv_x = nn.Conv1d(dim_in_x, dim_in_x, 1, bias=False)
         self.init_conv_a = nn.Conv1d(dim_in_a, dim_in_a, 1, bias=False)
         self.out_conv = nn.Conv1d(dim_in_x, dim_in_x, 1, bias=False)
 
-        self.proj_in_x = nn.Linear(dim_in_x * patch_size, dim_h)
-        self.proj_in_a = nn.Linear(dim_in_a * patch_size, dim_h)
-        self.proj_out = nn.Linear(dim_h, dim_in_x * patch_size)
+        self.proj_in_x = nn.Linear(dim_in_x, dim_h)
+        self.proj_in_a = nn.Linear(dim_in_a, dim_h)
+        self.proj_out = nn.Linear(dim_h, dim_in_x)
 
-        self.feature_extractor_a = nn.Linear(dim_in_a * 2, dim_h)
-        self.mlp_audio = FeedForward(dim_h, dim_mult=dim_h_mult)
         self.mlp_time = nn.Sequential(
             FourierFeatures(1, dim_h),
             FeedForward(dim_h, dim_mult=dim_h_mult),
@@ -345,8 +341,6 @@ class MMDiT(nn.Module):
         nn.init.zeros_(self.init_conv_a.weight)
 
         # Initialize embedder
-        nn.init.normal_(self.mlp_audio[0].weight, std=0.02)
-        nn.init.normal_(self.mlp_audio[2].weight, std=0.02)
         nn.init.normal_(self.mlp_time[1][0].weight, std=0.02)
         nn.init.normal_(self.mlp_time[1][2].weight, std=0.02)
         nn.init.normal_(self.mlp_cond[1][0].weight, std=0.02)
@@ -389,40 +383,29 @@ class MMDiT(nn.Module):
         c: torch.Tensor,
         cond_drop_prob: float = 0.0,
     ) -> torch.Tensor:
-        # Statistic audio features pooling
-        mean_features = a.mean(dim=-1)
-        std_features = a.std(dim=-1)
-        h_a = torch.cat([mean_features, std_features], dim=1)
-        h_a = self.feature_extractor_a(h_a)
-
         # Add the condition, time and audio features
         cond_mask = prob_mask_like((x.shape[0],), 1.0 - cond_drop_prob, device=x.device)
         cond_mask = rearrange(cond_mask, "b -> b 1")
         null_conds = repeat(self.null_cond, "d -> b d", b=x.shape[0])
         c = self.mlp_cond(c)
         c = torch.where(cond_mask, c, null_conds)
-        c = c + self.mlp_time(t.unsqueeze(1)) + self.mlp_audio(h_a)
+        c = c + self.mlp_time(t.unsqueeze(1))
 
         n = x.shape[-1]
         if self.attn_infini:
             # Pad to the closest multiple of attn_segment_len
             segment_len = self.attn_segment_len // 2  # We use half the segment length since we have two modalities
-            segment_len *= self.patch_size  # times the patch size to get the real segment length
             pad_len = (segment_len - (n % segment_len)) % segment_len
-        else:
-            # Pad to the closest multiple of patch_size
-            pad_len = (self.patch_size - (n % self.patch_size)) % self.patch_size
-
-        x = F.pad(x, (0, pad_len), value=-1.0)
-        a = F.pad(a, (0, pad_len), value=0.0)
+            x = F.pad(x, (0, pad_len), value=-1.0)
+            a = F.pad(a, (0, pad_len), value=0.0)
 
         # Initial convolution residual
         x = self.init_conv_x(x) + x
         a = self.init_conv_a(a) + a
 
         # Patchify the input
-        x = rearrange(x, "b d (p n) -> b n (p d)", p=self.patch_size)
-        a = rearrange(a, "b d (p n) -> b n (p d)", p=self.patch_size)
+        x = rearrange(x, "b d n -> b n d")
+        a = rearrange(a, "b d n -> b n d")
 
         # Project the input
         x = self.proj_in_x(x)
@@ -439,6 +422,6 @@ class MMDiT(nn.Module):
         x = self.proj_out(x)
 
         # Unpatchify the output
-        x = rearrange(x, "b n (p d) -> b d (p n)", p=self.patch_size)
+        x = rearrange(x, "b n d -> b d n")
         x = self.out_conv(x) + x
         return x[:, :, :n]

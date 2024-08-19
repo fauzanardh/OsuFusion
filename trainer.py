@@ -11,7 +11,7 @@ from accelerate import Accelerator
 from accelerate.utils import FP8RecipeKwargs, ProjectConfiguration
 from diffusers.optimization import get_cosine_schedule_with_warmup
 from matplotlib import pyplot as plt
-from safetensors.torch import save_file
+from safetensors.torch import load_file, save_file
 from torch.nn import functional as F  # noqa: N812
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
@@ -23,6 +23,7 @@ from osu_fusion.library.dataset import FullSequenceDataset, RandomLengthDataset,
 from osu_fusion.library.osu.data.encode import TOTAL_DIM
 from osu_fusion.models.diffusion import OsuFusion as DiffusionOsuFusion
 from osu_fusion.models.rectified_flow import OsuFusion as RectifiedFlowOsuFusion
+from osu_fusion.modules.autoencoder import AutoEncoder
 from osu_fusion.scripts.dataset_creator import load_audio, normalize_context
 
 wandb.require("core")
@@ -114,16 +115,9 @@ def sample_step(
     a = torch.from_numpy(a).unsqueeze(0).to(device=accelerator.device, dtype=dtype)
     c = torch.from_numpy(c).unsqueeze(0).to(device=accelerator.device, dtype=dtype)
 
-    b, _, n = a.shape
-
-    current_rng_state = torch.get_rng_state()
-    torch.manual_seed(0)
-    x = torch.randn((b, TOTAL_DIM, n), device=accelerator.device, dtype=dtype)
-    torch.set_rng_state(current_rng_state)
-
     model.eval()
     with accelerator.autocast():
-        generated = model.sample(a, c, x, cond_scale=1.0)
+        generated = model.sample(a, c, 0, cond_scale=1.0)
     model.train()
 
     w, h = generated.shape[-1] // 150, TOTAL_DIM
@@ -141,7 +135,7 @@ def sample_step(
 
 
 def save_model_sd(model: Model, project_dir: Path) -> None:
-    model_sd = model.state_dict()
+    model_sd = model.mmdit.state_dict()
     save_file(model_sd, project_dir / "model.safetensors")
 
 
@@ -156,7 +150,7 @@ def save_checkpoint(
     checkpoint_dir = project_dir / f"checkpoint-{current_step + 1}{'-nan' if is_nan else ''}"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     print(f"Saving checkpoint to {project_dir}...")
-    model_state_dict = model.state_dict()
+    model_state_dict = model.mmdit.state_dict()
     optimizer_state_dict = optimizer.state_dict()
     scheduler_state_dict = scheduler.state_dict()
     rng_state = torch.get_rng_state()
@@ -188,7 +182,7 @@ def load_checkpoint(
     device = next(model.parameters()).device
     checkpoint = torch.load(checkpoint_path / "checkpoint.pt", map_location=device)
     try:
-        model.load_state_dict(checkpoint["model_state_dict"])
+        model.mmdit.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
     except RuntimeError:  # Model changed
         print("Model changed, loading with strict=False...")
@@ -201,6 +195,20 @@ def load_checkpoint(
         scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
     torch.set_rng_state(checkpoint["rng_state"].cpu())
     return 0 if reset_steps else int(checkpoint_path.stem.split("-")[1])
+
+
+def load_autoencoder_sd(model: AutoEncoder, pretrained_model_path: Path) -> None:
+    print(f"Loading AutoEncoder from {pretrained_model_path}...")
+    if pretrained_model_path.suffix == ".pt":
+        checkpoint = torch.load(pretrained_model_path)
+        state_dict = checkpoint["model_state_dict"]
+    else:
+        state_dict = load_file(pretrained_model_path)
+
+    device = next(model.parameters()).device
+    state_dict = {k: v.to(device) for k, v in state_dict.items()}
+
+    model.load_state_dict(state_dict)
 
 
 def train(args: ArgumentParser) -> None:  # noqa: C901
@@ -271,6 +279,14 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     current_step = (
         load_checkpoint(model, optimizer, scheduler, args.resume, args.reset_steps) if args.resume is not None else 0
     )
+    load_autoencoder_sd(model.osu_encoder, args.pretrained_osu_encoder)
+    load_autoencoder_sd(model.audio_encoder, args.pretrained_audio_encoder)
+
+    # Freeze both encoders' parameters
+    for param in model.osu_encoder.parameters():
+        param.requires_grad = False
+    for param in model.audio_encoder.parameters():
+        param.requires_grad = False
 
     model.train()
 
@@ -365,6 +381,8 @@ def main() -> None:
     args = ArgumentParser()
     args.add_argument("--project-dir", type=Path)
     args.add_argument("--dataset-dir", type=Path)
+    args.add_argument("--pretrained-osu-encoder", type=Path)
+    args.add_argument("--pretrained-audio-encoder", type=Path)
     args.add_argument("--model-type", type=str, default="diffusion", choices=["diffusion", "rectified-flow"])
     args.add_argument("--resume", type=Path, default=None)
     args.add_argument("--reset-steps", action="store_true")
