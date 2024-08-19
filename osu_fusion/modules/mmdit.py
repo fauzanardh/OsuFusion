@@ -72,7 +72,7 @@ class JointAttention(nn.Module):
         qk_norm: bool = True,
         causal: bool = True,
         use_rotary_emb: bool = True,
-        context_len: int = 8192,
+        context_len: int = 16384,
         infini: bool = True,
         segment_len: int = 1024,
     ) -> None:
@@ -155,7 +155,7 @@ class MMDiTBlock(nn.Module):
         attn_qk_norm: bool = True,
         attn_causal: bool = True,
         attn_use_rotary_emb: bool = True,
-        attn_context_len: int = 8192,
+        attn_context_len: int = 16384,
         attn_infini: bool = True,
         attn_segment_len: int = 1024,
     ) -> None:
@@ -278,7 +278,7 @@ class MMDiT(nn.Module):
         attn_qk_norm: bool = True,
         attn_causal: bool = True,
         attn_use_rotary_emb: bool = True,
-        attn_context_len: int = 8192,
+        attn_context_len: int = 16384,
         attn_infini: bool = True,
         attn_segment_len: int = 1024,
         auto_encoder_depth: int = 4,
