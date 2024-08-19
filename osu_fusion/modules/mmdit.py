@@ -281,10 +281,13 @@ class MMDiT(nn.Module):
         attn_context_len: int = 8192,
         attn_infini: bool = True,
         attn_segment_len: int = 1024,
+        auto_encoder_depth: int = 4,
+        patch_size: int = 2,
     ) -> None:
         super().__init__()
-        self.attn_context_len = attn_context_len * 2  # We have two modalities
-        self.attn_segment_len = attn_segment_len * 2
+        divider = (2 ** (auto_encoder_depth - 1)) * patch_size
+        self.attn_context_len = (attn_context_len // divider) * 2  # We have two modalities
+        self.attn_segment_len = (attn_segment_len // divider) * 2
         self.attn_infini = attn_infini
 
         self.init_conv_x = nn.Conv1d(dim_in_x, dim_in_x, 1, bias=False)

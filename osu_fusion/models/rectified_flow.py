@@ -71,6 +71,8 @@ class OsuFusion(nn.Module):
             attn_context_len=attn_context_len,
             attn_infini=attn_infini,
             attn_segment_len=attn_segment_len,
+            auto_encoder_depth=len(self.osu_encoder.encoder.down_blocks),
+            patch_size=patch_size,
         )
 
         self.sample_timesteps = sampling_timesteps
@@ -79,6 +81,7 @@ class OsuFusion(nn.Module):
     def set_full_bf16(self: "OsuFusion") -> None:
         self.mmdit = self.mmdit.bfloat16()
 
+    @torch.inference_mode()
     def prepare_latent(
         self: "OsuFusion",
         x: torch.Tensor,
@@ -94,6 +97,7 @@ class OsuFusion(nn.Module):
         x = rearrange(x, "b d (p n) -> b (p d) n", p=self.patch_size)
         return x, n
 
+    @torch.inference_mode()
     def decode_latent(
         self: "OsuFusion",
         x: torch.Tensor,
