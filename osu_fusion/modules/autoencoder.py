@@ -116,7 +116,7 @@ class TransformerBlock(nn.Module):
         attn_qk_norm: bool = True,
         attn_causal: bool = False,
         attn_use_rotary_emb: bool = True,
-        attn_context_len: int = 16384,
+        attn_context_len: int = 8192,
         attn_infini: bool = True,
         attn_segment_len: int = 1024,
     ) -> None:
@@ -203,7 +203,7 @@ class Encoder(nn.Module):
         attn_qk_norm: bool = True,
         attn_causal: bool = False,
         attn_use_rotary_emb: bool = True,
-        attn_context_len: int = 16384,
+        attn_context_len: int = 8192,
         attn_infini: bool = False,
         attn_segment_len: int = 1024,
     ) -> None:
@@ -294,7 +294,7 @@ class Decoder(nn.Module):
         attn_qk_norm: bool = True,
         attn_causal: bool = False,
         attn_use_rotary_emb: bool = True,
-        attn_context_len: int = 16384,
+        attn_context_len: int = 8192,
         attn_infini: bool = False,
         attn_segment_len: int = 1024,
     ) -> None:
@@ -387,7 +387,7 @@ class AutoEncoder(nn.Module):
         attn_qk_norm: bool = True,
         attn_causal: bool = False,
         attn_use_rotary_emb: bool = True,
-        attn_context_len: int = 16384,
+        attn_context_len: int = 8192,
         attn_infini: bool = False,
         attn_segment_len: int = 1024,
     ) -> None:

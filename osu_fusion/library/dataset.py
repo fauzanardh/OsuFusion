@@ -167,7 +167,7 @@ class RandomLengthDataset(StreamPerSample):
 class SubsequenceDataset(StreamPerSample):
     def __init__(self: "SubsequenceDataset", **kwargs: Dict) -> None:
         super().__init__(**kwargs)
-        self.sequence_length = kwargs.pop("sequence_length", 16384)
+        self.sequence_length = kwargs.pop("sequence_length", 8192)
 
     def sample_stream(self: StreamPerSample, map_file: Path) -> Generator[torch.Tensor, None, None]:
         try:

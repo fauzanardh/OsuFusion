@@ -95,7 +95,7 @@ class DiTAttention(nn.Module):
         qk_norm: bool = True,
         causal: bool = False,
         use_rotary_emb: bool = True,
-        context_len: int = 16384,
+        context_len: int = 8192,
         infini: bool = True,
         segment_len: int = 1024,
     ) -> None:
@@ -138,7 +138,7 @@ class DiTBlock(nn.Module):
         attn_qk_norm: bool = True,
         attn_causal: bool = False,
         attn_use_rotary_emb: bool = True,
-        attn_context_len: int = 16384,
+        attn_context_len: int = 8192,
         attn_infini: bool = True,
         attn_segment_len: int = 1024,
     ) -> None:
@@ -194,7 +194,7 @@ class DiT(nn.Module):
         attn_qk_norm: bool = True,
         attn_causal: bool = False,
         attn_use_rotary_emb: bool = True,
-        attn_context_len: int = 16384,
+        attn_context_len: int = 8192,
         attn_infini: bool = True,
         attn_segment_len: int = 1024,
     ) -> None:
