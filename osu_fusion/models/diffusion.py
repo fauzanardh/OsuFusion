@@ -83,7 +83,7 @@ class OsuFusion(nn.Module):
     def set_full_bf16(self: "OsuFusion") -> None:
         self.mmdit = self.mmdit.bfloat16()
 
-    @torch.inference_mode()
+    @torch.no_grad()
     def prepare_latent(
         self: "OsuFusion",
         x: torch.Tensor,
@@ -99,7 +99,7 @@ class OsuFusion(nn.Module):
         x = rearrange(x, "b d (p n) -> b (p d) n", p=self.patch_size)
         return x, n
 
-    @torch.inference_mode()
+    @torch.no_grad()
     def decode_latent(
         self: "OsuFusion",
         x: torch.Tensor,
