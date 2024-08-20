@@ -7,7 +7,7 @@ from scipy import signal
 
 from osu_fusion.library.osu.beatmap import TimingPoint
 from osu_fusion.library.osu.data.encode import BeatmapEncoding
-from osu_fusion.library.osu.data.fit_bezier import fit_bezier, segment_length
+from osu_fusion.library.osu.data.fit_bezier import fit_bezier, get_segment_length
 from osu_fusion.library.osu.data.hit import decode_extents, decode_flips
 
 BEAT_DIVISOR = 16
@@ -72,13 +72,10 @@ def slider_decoder(
     length = 0.0
 
     path = fit_bezier(cursor_signal.T[start_idx : first_slide_idx + 1], max_err=50.0)
-    for i, segment in enumerate(path):
+    for segment in path:
         segment = segment.round()
-        segment_length_ = segment_length(segment)
-        if len(path) > 1 and i == 0 and segment_length_ < 20:
-            continue
         control_points.extend(segment)
-        length += segment_length_
+        length += get_segment_length(segment)
 
     return length, control_points
 
@@ -141,27 +138,31 @@ def decode_beatmap(  # noqa: C901
     allow_beat_snap: bool = True,
     verbose: bool = True,
 ) -> str:
+    hit_signals = encoded_beatmap[
+        [BeatmapEncoding.HIT, BeatmapEncoding.SUSTAIN, BeatmapEncoding.SLIDER, BeatmapEncoding.COMBO]
+    ]
+    hit_signals = np.where(hit_signals > 0, 1.0, -1.0)  # Discretize signals
     cursor_signals = encoded_beatmap[[BeatmapEncoding.CURSOR_X, BeatmapEncoding.CURSOR_Y]]
     cursor_signals = ((cursor_signals + 1) / 2) * np.array([[512], [384]])
 
-    hit_locs = decode_flips(encoded_beatmap[BeatmapEncoding.HIT])
+    hit_locs = decode_flips(hit_signals[BeatmapEncoding.HIT])
     loc2idx = np.full_like(frame_times, -1, dtype=int)
     for i, onset_idx in enumerate(hit_locs):
         loc2idx[onset_idx] = i
 
     new_combos = [False] * len(hit_locs)
-    for combo_locs in decode_flips(encoded_beatmap[BeatmapEncoding.COMBO]):
+    for combo_locs in decode_flips(hit_signals[BeatmapEncoding.COMBO]):
         new_combos[loc2idx[combo_locs]] = True
 
     sustain_ends = [-1] * len(hit_locs)
-    for sustain_start, sustain_end in zip(*decode_extents(encoded_beatmap[BeatmapEncoding.SUSTAIN])):
+    for sustain_start, sustain_end in zip(*decode_extents(hit_signals[BeatmapEncoding.SUSTAIN])):
         onset_idx = loc2idx[sustain_start]
         if onset_idx == -1:
             continue
         sustain_ends[onset_idx] = sustain_end
 
     slider_ends = [-1] * len(hit_locs)
-    for slider_start, slider_end in zip(*decode_extents(encoded_beatmap[BeatmapEncoding.SLIDER])):
+    for slider_start, slider_end in zip(*decode_extents(hit_signals[BeatmapEncoding.SLIDER])):
         onset_idx = loc2idx[slider_start]
         if onset_idx == -1:
             continue
