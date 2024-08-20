@@ -16,7 +16,7 @@ class Block(nn.Module):
     ) -> None:
         super().__init__()
         self.proj = nn.Conv1d(dim_in, dim_out, 3, padding=1)
-        self.norm = nn.GroupNorm(num_groups, dim_out) if norm else nn.Identity()
+        self.norm = nn.GroupNorm(num_groups, dim_in) if norm else nn.Identity()
 
     def forward(self: "Block", x: torch.Tensor, scale_shift: Optional[torch.Tensor] = None) -> torch.Tensor:
         x = self.norm(x)

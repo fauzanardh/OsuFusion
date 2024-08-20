@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -9,7 +9,7 @@ from tqdm.auto import tqdm
 
 from osu_fusion.library.osu.data.encode import TOTAL_DIM
 from osu_fusion.modules.autoencoder import AutoEncoder
-from osu_fusion.modules.mmdit import MMDiT
+from osu_fusion.modules.unet import UNet
 from osu_fusion.scripts.dataset_creator import AUDIO_DIM, CONTEXT_DIM
 
 Z_DIM = 16
@@ -19,9 +19,11 @@ class OsuFusion(nn.Module):
     def __init__(
         self: "OsuFusion",
         dim_h: int,
-        dim_h_mult: int = 4,
+        dim_h_mult: Tuple[int] = (1, 2, 3, 4),
+        num_layer_blocks: Tuple[int] = (3, 3, 3, 3),
+        num_middle_transformers: int = 3,
+        cross_embed_kernel_sizes: Tuple[int] = (3, 7, 15),
         patch_size: int = 2,
-        depth: int = 12,
         attn_dim_head: int = 64,
         attn_heads: int = 16,
         attn_kv_heads: int = 4,
@@ -52,13 +54,15 @@ class OsuFusion(nn.Module):
             attn_infini=False,
         )
 
-        self.mmdit = MMDiT(
+        self.unet = UNet(
             dim_in_x=Z_DIM * patch_size,
             dim_in_a=Z_DIM * patch_size,
             dim_in_c=CONTEXT_DIM,
             dim_h=dim_h,
             dim_h_mult=dim_h_mult,
-            depth=depth,
+            num_layer_blocks=num_layer_blocks,
+            num_middle_transformers=num_middle_transformers,
+            cross_embed_kernel_sizes=cross_embed_kernel_sizes,
             attn_dim_head=attn_dim_head,
             attn_heads=attn_heads,
             attn_kv_heads=attn_kv_heads,
@@ -81,7 +85,7 @@ class OsuFusion(nn.Module):
         self.cond_drop_prob = cond_drop_prob
 
     def set_full_bf16(self: "OsuFusion") -> None:
-        self.mmdit = self.mmdit.bfloat16()
+        self.unet = self.unet.bfloat16()
 
     @torch.no_grad()
     def prepare_latent(
@@ -132,7 +136,7 @@ class OsuFusion(nn.Module):
         self.scheduler.set_timesteps(self.sampling_timesteps)
         for t in tqdm(self.scheduler.timesteps, desc="sampling loop time step", dynamic_ncols=True):
             t_batched = repeat(t, "... -> b ...", b=b).long().to(device)
-            pred = self.mmdit.forward_with_cond_scale(x, a, t_batched, c, cond_scale=cond_scale)
+            pred = self.unet.forward_with_cond_scale(x, a, t_batched, c, cond_scale=cond_scale)
             x = self.scheduler.step(pred, t, x).prev_sample
 
         return self.decode_latent(x, orig_n)
@@ -158,7 +162,7 @@ class OsuFusion(nn.Module):
         )
         x_noisy = self.scheduler.add_noise(x, noise, timesteps)
 
-        pred = self.mmdit(x_noisy, a, timesteps, c, cond_drop_prob=self.cond_drop_prob)
+        pred = self.unet(x_noisy, a, timesteps, c, cond_drop_prob=self.cond_drop_prob)
 
         # Calculate loss
         loss = F.mse_loss(pred, noise, reduction="none")

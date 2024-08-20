@@ -208,10 +208,15 @@ class UNetBlock(nn.Module):
         attn_segment_len: int,
     ) -> None:
         super().__init__()
-        self.init_resnet = ResidualBlock(dim_in if down_block else dim_in + dim_out, dim_in, dim_time, dim_cond)
+        self.init_resnet = ResidualBlock(
+            dim_in if down_block else dim_in + dim_out,
+            dim_in,
+            dim_time=dim_time,
+            dim_cond=dim_cond,
+        )
         self.resnets = nn.ModuleList(
             [
-                ResidualBlock(dim_in if down_block else dim_in + dim_out, dim_in, dim_time, dim_cond)
+                ResidualBlock(dim_in if down_block else dim_in + dim_out, dim_in, dim_time=dim_time, dim_cond=dim_cond)
                 for _ in range(num_blocks)
             ],
         )
@@ -292,78 +297,6 @@ class UNetBlock(nn.Module):
             return self.forward_body(x, t, c, skip_inputs=skip_inputs)
 
 
-class AudioEncoder(nn.Module):
-    def __init__(
-        self: "AudioEncoder",
-        dim_in: int,
-        dim_h: int,
-        dim_h_mult: Tuple[int] = (1, 2, 3, 4),
-        num_layer_blocks: Tuple[int] = (3, 3, 3, 3),
-        cross_embed_kernel_sizes: Tuple[int] = (3, 7, 15),
-        attn_dim_head: int = 64,
-        attn_heads: int = 8,
-        attn_kv_heads: int = 2,
-        attn_qk_norm: bool = True,
-        attn_causal: bool = False,
-        attn_use_rotary_emb: bool = True,
-        attn_context_len: int = 8192,
-        attn_infini: bool = True,
-        attn_segment_len: int = 1024,
-    ) -> None:
-        super().__init__()
-        self.dim_h = dim_h
-        self.dim_emb = dim_h * 4
-        self.attn_context_len = attn_context_len
-
-        self.init_conv = CrossEmbedLayer(dim_in, dim_h, cross_embed_kernel_sizes)
-        self.time_mlp = nn.Sequential(
-            SinusoidalPositionEmbedding(self.dim_emb),
-            nn.Linear(self.dim_emb, self.dim_emb),
-            nn.SiLU(),
-            nn.Linear(self.dim_emb, self.dim_emb),
-        )
-
-        dims_h = tuple((dim_h * mult) for mult in dim_h_mult)
-        dims_h = (dim_h, *dims_h)
-        in_out = tuple(zip(dims_h[:-1], dims_h[1:]))
-        n_layers = len(in_out)
-
-        layers = []
-        for i in range(n_layers):
-            layer_dim_in, layer_dim_out = in_out[i]
-            num_blocks = num_layer_blocks[i]
-            attn_context_len_layer = attn_context_len // (2**i)
-            attn_segment_len_layer = attn_segment_len // (2**i)
-            layers.append(
-                UNetBlock(
-                    layer_dim_in,
-                    layer_dim_out,
-                    None,
-                    None,
-                    i,
-                    n_layers,
-                    num_blocks,
-                    True,
-                    attn_dim_head,
-                    attn_heads,
-                    attn_kv_heads,
-                    attn_qk_norm,
-                    attn_causal,
-                    attn_use_rotary_emb,
-                    attn_context_len_layer,
-                    attn_infini,
-                    attn_segment_len_layer,
-                ),
-            )
-        self.layers = nn.ModuleList(layers)
-
-    def forward(self: "AudioEncoder", x: torch.Tensor) -> torch.Tensor:
-        x = self.init_conv(x)
-        for layer in self.layers:
-            x, _ = layer(x)
-        return x
-
-
 class UNet(nn.Module):
     def __init__(
         self: "UNet",
@@ -384,39 +317,24 @@ class UNet(nn.Module):
         attn_context_len: int = 8192,
         attn_infini: bool = True,
         attn_segment_len: int = 1024,
+        auto_encoder_depth: int = 4,
+        patch_size: int = 2,
     ) -> None:
         super().__init__()
+        divider = (2 ** (auto_encoder_depth - 1)) * patch_size
+        self.attn_context_len = (attn_context_len // divider) * 2  # We have two modalities
+        self.attn_segment_len = (attn_segment_len // divider) * 2
+        self.attn_infini = attn_infini
+
         self.dim_h = dim_h
         self.dim_emb = dim_h * 4
-        self.attn_context_len = attn_context_len
-        self.attn_infini = attn_infini
-        self.attn_segment_len = attn_segment_len
 
         self.init_x = CrossEmbedLayer(dim_in_x, dim_h, cross_embed_kernel_sizes)
-        self.audio_encoder = AudioEncoder(
-            dim_in_a,
-            dim_h,
-            dim_h_mult=dim_h_mult,
-            num_layer_blocks=num_layer_blocks,
-            cross_embed_kernel_sizes=cross_embed_kernel_sizes,
-            attn_dim_head=attn_dim_head,
-            attn_heads=attn_heads,
-            attn_kv_heads=attn_kv_heads,
-            attn_qk_norm=attn_qk_norm,
-            attn_causal=attn_causal,
-            attn_use_rotary_emb=attn_use_rotary_emb,
-            attn_infini=attn_infini,
-            attn_segment_len=attn_segment_len,
-        )
-        self.final_resnet = ResidualBlock(dim_h * 2, dim_h, self.dim_emb, self.dim_emb)
+        self.init_a = CrossEmbedLayer(dim_in_a, dim_h, cross_embed_kernel_sizes)
+        self.init_resnet = ResidualBlock(dim_h * 2, dim_h, dim_time=self.dim_emb, dim_cond=self.dim_emb)
+        self.final_resnet = ResidualBlock(dim_h * 2, dim_h, dim_time=self.dim_emb, dim_cond=self.dim_emb)
         self.final_conv = zero_init(nn.Conv1d(dim_h, dim_in_x, 1))
 
-        self.feature_extractor_a = nn.Linear(dim_in_a * 2, self.dim_emb)
-        self.audio_mlp = nn.Sequential(
-            nn.Linear(self.dim_emb, self.dim_emb),
-            nn.SiLU(),
-            nn.Linear(self.dim_emb, self.dim_emb),
-        )
         self.time_mlp = nn.Sequential(
             SinusoidalPositionEmbedding(self.dim_emb),
             nn.Linear(self.dim_emb, self.dim_emb),
@@ -467,10 +385,10 @@ class UNet(nn.Module):
 
         # Middle
         self.middle_resnet1 = ResidualBlock(
-            dims_h[-1] * 2,
             dims_h[-1],
-            self.dim_emb,
-            self.dim_emb,
+            dims_h[-1],
+            dim_time=self.dim_emb,
+            dim_cond=self.dim_emb,
         )
         self.middle_transformer = nn.ModuleList(
             [
@@ -492,8 +410,8 @@ class UNet(nn.Module):
         self.middle_resnet2 = ResidualBlock(
             dims_h[-1],
             dims_h[-1],
-            self.dim_emb,
-            self.dim_emb,
+            dim_time=self.dim_emb,
+            dim_cond=self.dim_emb,
         )
 
         # Upsample
@@ -553,12 +471,6 @@ class UNet(nn.Module):
         c: torch.Tensor,
         cond_drop_prob: float = 0.0,
     ) -> torch.Tensor:
-        # Statistic audio features pooling
-        mean_features = a.mean(dim=-1)
-        std_features = a.std(dim=-1)
-        h_a = torch.cat([mean_features, std_features], dim=1)
-        h_a = self.feature_extractor_a(h_a)
-
         n = x.shape[-1]
         if self.attn_infini:
             # Pad to the multiple of attn_segment_len
@@ -572,7 +484,7 @@ class UNet(nn.Module):
         a = F.pad(a, (0, pad_len), value=0.0)
 
         x = self.init_x(x)
-        a = self.audio_encoder(a)
+        a = self.init_a(a)
         t = self.time_mlp(t)
 
         r = x.clone()
@@ -584,14 +496,14 @@ class UNet(nn.Module):
         c = self.cond_mlp(c)
         c = torch.where(cond_mask, c, null_conds)
 
-        c = c + self.audio_mlp(h_a)
+        x = torch.cat([x, a], dim=1)
+        x = self.init_resnet(x, t, c)
 
         skips_connections = []
         for down_layer in self.down_layers:
             x, skips = down_layer(x, t, c)
             skips_connections.append(skips)
 
-        x = torch.cat([x, a], dim=1)
         x = self.middle_resnet1(x, t, c)
         for transformer_block in self.middle_transformer:
             x = transformer_block(x)

@@ -135,7 +135,7 @@ def sample_step(
 
 
 def save_model_sd(model: Model, project_dir: Path) -> None:
-    model_sd = model.mmdit.state_dict()
+    model_sd = model.unet.state_dict()
     save_file(model_sd, project_dir / "model.safetensors")
 
 
@@ -150,7 +150,7 @@ def save_checkpoint(
     checkpoint_dir = project_dir / f"checkpoint-{current_step + 1}{'-nan' if is_nan else ''}"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     print(f"Saving checkpoint to {project_dir}...")
-    model_state_dict = model.mmdit.state_dict()
+    model_state_dict = model.unet.state_dict()
     optimizer_state_dict = optimizer.state_dict()
     scheduler_state_dict = scheduler.state_dict()
     rng_state = torch.get_rng_state()
@@ -182,7 +182,7 @@ def load_checkpoint(
     device = next(model.parameters()).device
     checkpoint = torch.load(checkpoint_path / "checkpoint.pt", map_location=device)
     try:
-        model.mmdit.load_state_dict(checkpoint["model_state_dict"])
+        model.unet.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
     except RuntimeError:  # Model changed
         print("Model changed, loading with strict=False...")
@@ -234,8 +234,8 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     model = model_class(args.model_dim, attn_infini=False)
     if args.full_bf16:
         model.set_full_bf16()
-    model.mmdit.set_gradient_checkpointing(args.gradient_checkpointing)
-    optimizer = AdamW(model.mmdit.parameters(), lr=args.lr)
+    model.unet.set_gradient_checkpointing(args.gradient_checkpointing)
+    optimizer = AdamW(model.unet.parameters(), lr=args.lr)
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
         num_training_steps=args.total_steps,
