@@ -56,7 +56,7 @@ def cycle(dataloader: DataLoader) -> Generator[Tuple[torch.Tensor, torch.Tensor,
 
 
 def delete_old_checkpoints(project_dir: Path, max_num_checkpoints: int) -> None:
-    checkpoints = list(project_dir.rglob("checkpoint-*"))
+    checkpoints = list(project_dir.glob("checkpoint-*"))
     checkpoints.sort(key=lambda path: int(path.stem.split("-")[1]))
     for checkpoint in checkpoints[:-max_num_checkpoints]:
         if checkpoint.is_dir():
@@ -64,7 +64,7 @@ def delete_old_checkpoints(project_dir: Path, max_num_checkpoints: int) -> None:
 
 
 def clear_checkpoints(project_dir: Path) -> None:
-    checkpoints = list(project_dir.rglob("checkpoint-*"))
+    checkpoints = list(project_dir.glob("checkpoint-*"))
     for checkpoint in checkpoints:
         if checkpoint.is_dir():
             shutil.rmtree(checkpoint)
@@ -179,14 +179,14 @@ def load_checkpoint(
     reset_steps: bool = False,
 ) -> int:
     print(f"Loading checkpoint from {checkpoint_path}...")
-    device = next(model.parameters()).device
+    device = next(model.mmdit.parameters()).device
     checkpoint = torch.load(checkpoint_path / "checkpoint.pt", map_location=device)
     try:
         model.mmdit.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
     except RuntimeError:  # Model changed
         print("Model changed, loading with strict=False...")
-        incompatible_keys = model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+        incompatible_keys = model.mmdit.load_state_dict(checkpoint["model_state_dict"], strict=False)
         if len(incompatible_keys.missing_keys) > 0:
             print(f"Missing keys: {incompatible_keys.missing_keys}")
         if len(incompatible_keys.unexpected_keys) > 0:
@@ -315,11 +315,11 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                         continue
 
                     accelerator.backward(loss)
-                    total_norm += get_total_norm(model.parameters()) / args.gradient_accumulation_steps
+                    total_norm += get_total_norm(model.mmdit.parameters()) / args.gradient_accumulation_steps
                     batch_loss += loss.item() / args.gradient_accumulation_steps
 
                     if args.clip_grad_norm > 0.0:
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
+                        torch.nn.utils.clip_grad_norm_(model.mmdit.parameters(), args.clip_grad_norm)
                     optimizer.step()
                     optimizer.zero_grad(set_to_none=True)
                     scheduler.step()
