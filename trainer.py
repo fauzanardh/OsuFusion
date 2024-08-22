@@ -179,14 +179,14 @@ def load_checkpoint(
     reset_steps: bool = False,
 ) -> int:
     print(f"Loading checkpoint from {checkpoint_path}...")
-    device = next(model.parameters()).device
+    device = next(model.unet.parameters()).device
     checkpoint = torch.load(checkpoint_path / "checkpoint.pt", map_location=device)
     try:
         model.unet.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
     except RuntimeError:  # Model changed
         print("Model changed, loading with strict=False...")
-        incompatible_keys = model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+        incompatible_keys = model.unet.load_state_dict(checkpoint["model_state_dict"], strict=False)
         if len(incompatible_keys.missing_keys) > 0:
             print(f"Missing keys: {incompatible_keys.missing_keys}")
         if len(incompatible_keys.unexpected_keys) > 0:
@@ -205,10 +205,10 @@ def load_autoencoder_sd(model: AutoEncoder, pretrained_model_path: Path) -> None
     else:
         state_dict = load_file(pretrained_model_path)
 
-    device = next(model.parameters()).device
+    device = next(model.unet.parameters()).device
     state_dict = {k: v.to(device) for k, v in state_dict.items()}
 
-    model.load_state_dict(state_dict)
+    model.unet.load_state_dict(state_dict)
 
 
 def train(args: ArgumentParser) -> None:  # noqa: C901
@@ -315,11 +315,11 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                         continue
 
                     accelerator.backward(loss)
-                    total_norm += get_total_norm(model.parameters()) / args.gradient_accumulation_steps
+                    total_norm += get_total_norm(model.unet.parameters()) / args.gradient_accumulation_steps
                     batch_loss += loss.item() / args.gradient_accumulation_steps
 
                     if args.clip_grad_norm > 0.0:
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
+                        torch.nn.utils.clip_grad_norm_(model.unet.parameters(), args.clip_grad_norm)
                     optimizer.step()
                     optimizer.zero_grad(set_to_none=True)
                     scheduler.step()
