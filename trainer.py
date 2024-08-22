@@ -56,7 +56,7 @@ def cycle(dataloader: DataLoader) -> Generator[Tuple[torch.Tensor, torch.Tensor,
 
 
 def delete_old_checkpoints(project_dir: Path, max_num_checkpoints: int) -> None:
-    checkpoints = list(project_dir.rglob("checkpoint-*"))
+    checkpoints = list(project_dir.glob("checkpoint-*"))
     checkpoints.sort(key=lambda path: int(path.stem.split("-")[1]))
     for checkpoint in checkpoints[:-max_num_checkpoints]:
         if checkpoint.is_dir():
@@ -64,7 +64,7 @@ def delete_old_checkpoints(project_dir: Path, max_num_checkpoints: int) -> None:
 
 
 def clear_checkpoints(project_dir: Path) -> None:
-    checkpoints = list(project_dir.rglob("checkpoint-*"))
+    checkpoints = list(project_dir.glob("checkpoint-*"))
     for checkpoint in checkpoints:
         if checkpoint.is_dir():
             shutil.rmtree(checkpoint)
@@ -205,10 +205,10 @@ def load_autoencoder_sd(model: AutoEncoder, pretrained_model_path: Path) -> None
     else:
         state_dict = load_file(pretrained_model_path)
 
-    device = next(model.unet.parameters()).device
+    device = next(model.parameters()).device
     state_dict = {k: v.to(device) for k, v in state_dict.items()}
 
-    model.unet.load_state_dict(state_dict)
+    model.load_state_dict(state_dict)
 
 
 def train(args: ArgumentParser) -> None:  # noqa: C901
