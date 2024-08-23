@@ -1,4 +1,3 @@
-import math
 from typing import Dict, List, Optional, Tuple
 
 import torch
@@ -19,20 +18,16 @@ def zero_init(module: nn.Module) -> nn.Module:
     return module
 
 
-class SinusoidalPositionEmbedding(nn.Module):
-    def __init__(self: "SinusoidalPositionEmbedding", dim: int, theta: int = 10000) -> None:
+class FourierFeatures(nn.Module):
+    def __init__(self: "FourierFeatures", dim: int, scale: float = 30.0) -> None:
         super().__init__()
-        self.dim = dim
-        self.theta = theta
+        d = dim // 2
+        assert d * 2 == dim, "`dim` must be even"
+        self.weight = nn.Parameter(torch.randn(d) * scale, requires_grad=False)
 
-    def forward(self: "SinusoidalPositionEmbedding", x: torch.Tensor) -> torch.Tensor:
-        device = x.device
-        half_dim = self.dim // 2
-        emb = math.log(self.theta) / (half_dim - 1)
-        emb = torch.exp(torch.arange(half_dim, device=device) * -emb)
-        emb = x[:, None] * emb[None, :]
-        emb = torch.cat([emb.sin(), emb.cos()], dim=-1)
-        return emb
+    def forward(self: "FourierFeatures", x: torch.Tensor) -> torch.Tensor:
+        theta = x[:, None] * self.weight[None, :] * 2 * torch.pi
+        return torch.cat([theta.sin(), theta.cos()], dim=-1)
 
 
 class CrossEmbedLayer(nn.Module):
@@ -336,7 +331,7 @@ class UNet(nn.Module):
         self.final_conv = zero_init(nn.Conv1d(dim_h, dim_in_x, 1))
 
         self.time_mlp = nn.Sequential(
-            SinusoidalPositionEmbedding(self.dim_emb),
+            FourierFeatures(self.dim_emb),
             nn.Linear(self.dim_emb, self.dim_emb),
             nn.SiLU(),
             nn.Linear(self.dim_emb, self.dim_emb),
