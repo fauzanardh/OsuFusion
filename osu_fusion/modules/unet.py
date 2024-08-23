@@ -317,8 +317,8 @@ class UNet(nn.Module):
     ) -> None:
         super().__init__()
         divider = (2 ** (auto_encoder_depth - 1)) * patch_size
-        self.attn_context_len = (attn_context_len // divider) * 2  # We have two modalities
-        self.attn_segment_len = (attn_segment_len // divider) * 2
+        self.attn_context_len = attn_context_len // divider
+        self.attn_segment_len = attn_segment_len // divider
         self.attn_infini = attn_infini
 
         self.dim_h = dim_h
