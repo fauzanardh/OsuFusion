@@ -14,7 +14,6 @@ from safetensors.torch import load_file
 from sanitize_filename import sanitize
 
 from osu_fusion.library.osu.data.decode import Metadata, decode_beatmap
-from osu_fusion.library.osu.data.encode import TOTAL_DIM
 from osu_fusion.models.diffusion import OsuFusion as DiffusionOsuFusion
 from osu_fusion.models.rectified_flow import OsuFusion as RectifiedFlowOsuFusion
 from osu_fusion.scripts.dataset_creator import HOP_LENGTH, N_FFT, SR, load_audio, normalize_context
@@ -29,17 +28,38 @@ global_accelerator = None
 global_temp_dir = tempfile.TemporaryDirectory()
 
 
-def create_model_from_checkpoint(model_path: str, model_type: str) -> Model:
+def create_model_from_checkpoint(
+    model_path: str,
+    model_type: str,
+    autoencoder_osu_path: str,
+    autoencoder_audio_path: str,
+) -> Model:
     if model_path.endswith(".pt"):
         checkpoint = torch.load(model_path)
         state_dict = checkpoint["model_state_dict"]
     else:
         state_dict = load_file(model_path)
 
+    if autoencoder_osu_path.endswith(".pt"):
+        checkpoint = torch.load(autoencoder_osu_path)
+        autoencoder_osu_state_dict = checkpoint["model_state_dict"]
+    else:
+        autoencoder_osu_state_dict = load_file(autoencoder_osu_path)
+
+    if autoencoder_audio_path.endswith(".pt"):
+        checkpoint = torch.load(autoencoder_audio_path)
+        autoencoder_audio_state_dict = checkpoint["model_state_dict"]
+    else:
+        autoencoder_audio_state_dict = load_file(autoencoder_audio_path)
+
     model_class = DiffusionOsuFusion if model_type == "diffusion" else RectifiedFlowOsuFusion
-    model = model_class(128, attn_infini=False)
-    model.load_state_dict(state_dict)
-    return model.eval()
+    model = model_class(512, attn_infini=False)
+    model.mmdit.load_state_dict(state_dict)
+    model.osu_encoder.load_state_dict(autoencoder_osu_state_dict)
+    model.audio_encoder.load_state_dict(autoencoder_audio_state_dict)
+    model.eval()
+
+    return model
 
 
 def create_input(
@@ -62,10 +82,7 @@ def create_input(
     audio = repeat(audio, "d n -> b d n", b=batch_size)
     context = repeat(context, "c -> b c", b=batch_size)
 
-    n = audio.shape[-1]
-    x = torch.randn((batch_size, TOTAL_DIM, n), device=device, dtype=dtype)
-
-    return x, audio, context
+    return audio, context
 
 
 def load_model(model_path: str, model_type: str, mixed_precision: str) -> str:
@@ -113,7 +130,7 @@ def generate_beatmap(
         dtype = torch.float16
     elif global_accelerator.mixed_precision == "bf16":
         dtype = torch.bfloat16
-    x, audio, context = create_input(
+    audio, context = create_input(
         music_path,
         cs,
         ar,
@@ -125,7 +142,7 @@ def generate_beatmap(
         dtype,
     )
 
-    generated = global_model.sample(audio, context, x, cond_scale=cfg)
+    generated = global_model.sample(audio, context, cond_scale=cfg)
 
     frame_times = (
         librosa.frames_to_time(np.arange(generated.shape[-1]), sr=SR, hop_length=HOP_LENGTH, n_fft=N_FFT) * 1000
