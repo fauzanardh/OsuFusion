@@ -85,10 +85,16 @@ def create_input(
     return audio, context
 
 
-def load_model(model_path: str, model_type: str, mixed_precision: str) -> str:
+def load_model(
+    model_path: str,
+    model_type: str,
+    autoencoder_osu_path: str,
+    autoencoder_audio_path: str,
+    mixed_precision: str,
+) -> str:
     global global_model, global_accelerator
     global_accelerator = Accelerator(mixed_precision=mixed_precision)
-    global_model = create_model_from_checkpoint(model_path, model_type)
+    global_model = create_model_from_checkpoint(model_path, model_type, autoencoder_osu_path, autoencoder_audio_path)
     global_model = global_accelerator.prepare(global_model)
 
     model_dtype = torch.float32
@@ -193,6 +199,10 @@ def gradio_interface() -> Blocks:
 
         with gr.Row():
             model_path = gr.Textbox(label="Model Path")
+            autoencoder_osu_path = gr.Textbox(label="Autoencoder Osu Path")
+            autoencoder_audio_path = gr.Textbox(label="Autoencoder Audio Path")
+
+        with gr.Row():
             model_type = gr.Dropdown(["diffusion", "rectified-flow"], value="diffusion", label="Model Type")
             mixed_precision = gr.Dropdown(["no", "fp16", "bf16"], value="no", label="Mixed Precision")
 
@@ -201,7 +211,7 @@ def gradio_interface() -> Blocks:
 
         load_button.click(
             load_model,
-            inputs=[model_path, model_type, mixed_precision],
+            inputs=[model_path, model_type, autoencoder_osu_path, autoencoder_audio_path, mixed_precision],
             outputs=load_output,
         )
 
