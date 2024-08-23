@@ -313,10 +313,9 @@ class UNet(nn.Module):
         attn_infini: bool = True,
         attn_segment_len: int = 1024,
         auto_encoder_depth: int = 4,
-        patch_size: int = 2,
     ) -> None:
         super().__init__()
-        divider = (2 ** (auto_encoder_depth - 1)) * patch_size
+        divider = 2 ** (auto_encoder_depth - 1)
         self.attn_context_len = attn_context_len // divider
         self.attn_segment_len = attn_segment_len // divider
         self.attn_infini = attn_infini

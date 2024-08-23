@@ -27,7 +27,6 @@ class OsuFusion(nn.Module):
         num_layer_blocks: Tuple[int] = (3, 3, 3, 3),
         num_middle_transformers: int = 3,
         cross_embed_kernel_sizes: Tuple[int] = (3, 7, 15),
-        patch_size: int = 2,
         attn_dim_head: int = 64,
         attn_heads: int = 16,
         attn_kv_heads: int = 4,
@@ -42,7 +41,6 @@ class OsuFusion(nn.Module):
         sampling_timesteps: int = 16,
     ) -> None:
         super().__init__()
-        self.patch_size = patch_size
 
         self.osu_encoder = AutoEncoder(
             TOTAL_DIM,
@@ -58,8 +56,8 @@ class OsuFusion(nn.Module):
         )
 
         self.unet = UNet(
-            dim_in_x=Z_DIM * patch_size,
-            dim_in_a=Z_DIM * patch_size,
+            dim_in_x=Z_DIM,
+            dim_in_a=Z_DIM,
             dim_in_c=CONTEXT_DIM,
             dim_h=dim_h,
             dim_h_mult=dim_h_mult,
@@ -76,7 +74,6 @@ class OsuFusion(nn.Module):
             attn_infini=attn_infini,
             attn_segment_len=attn_segment_len,
             auto_encoder_depth=len(self.osu_encoder.encoder.down_blocks),
-            patch_size=patch_size,
         )
 
         self.sample_timesteps = sampling_timesteps
@@ -98,7 +95,6 @@ class OsuFusion(nn.Module):
         x_padded = F.pad(x, (0, pad_len), value=ae.padding_value)
 
         x, _ = ae.encode(x_padded)
-        x = rearrange(x, "b d (p n) -> b (p d) n", p=self.patch_size)
         return x, n
 
     @torch.no_grad()
@@ -107,7 +103,6 @@ class OsuFusion(nn.Module):
         x: torch.Tensor,
         n: int,
     ) -> torch.Tensor:
-        x = rearrange(x, "b (p d) n -> b d (p n)", p=self.patch_size)
         x = self.osu_encoder.decode(x)
         return x[:, :, :n]
 
