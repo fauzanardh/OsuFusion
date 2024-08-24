@@ -53,7 +53,7 @@ def create_model_from_checkpoint(
         autoencoder_audio_state_dict = load_file(autoencoder_audio_path)
 
     model_class = DiffusionOsuFusion if model_type == "diffusion" else RectifiedFlowOsuFusion
-    model = model_class(512, attn_infini=False)
+    model = model_class(256, attn_infini=False)
     model.unet.load_state_dict(state_dict)
     model.osu_encoder.load_state_dict(autoencoder_osu_state_dict)
     model.audio_encoder.load_state_dict(autoencoder_audio_state_dict)
