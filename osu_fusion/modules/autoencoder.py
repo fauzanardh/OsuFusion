@@ -288,6 +288,7 @@ class Decoder(nn.Module):
         dim_z: int,
         dim_h: int,
         dim_h_mult: Tuple[int] = (1, 2, 4, 8),
+        use_tanh: bool = False,
         attn_dim_head: int = 64,
         attn_heads: int = 8,
         attn_kv_heads: int = 2,
@@ -306,6 +307,7 @@ class Decoder(nn.Module):
         n_layers = len(in_out)
 
         self.init_conv = nn.Conv1d(dim_z, dims_h[-1], 3, padding=1)
+        self.final_act = nn.Tanh() if use_tanh else nn.Identity()
 
         # Middle
         self.middle_resnet1 = ResidualBlock(dims_h[-1], dims_h[-1])
@@ -370,7 +372,7 @@ class Decoder(nn.Module):
         x = F.silu(x)
         x = self.conv_out(x)
 
-        return x
+        return self.final_act(x)
 
 
 class AutoEncoder(nn.Module):
@@ -381,6 +383,7 @@ class AutoEncoder(nn.Module):
         dim_h: int,
         dim_h_mult: Tuple[int] = (1, 2, 4, 8),
         padding_value: float = -1.0,
+        decoder_use_tanh: bool = False,
         attn_dim_head: int = 64,
         attn_heads: int = 8,
         attn_kv_heads: int = 2,
@@ -414,6 +417,7 @@ class AutoEncoder(nn.Module):
             dim_z,
             dim_h,
             dim_h_mult,
+            decoder_use_tanh,
             attn_dim_head,
             attn_heads,
             attn_kv_heads,

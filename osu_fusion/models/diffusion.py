@@ -42,6 +42,7 @@ class OsuFusion(nn.Module):
             TOTAL_DIM,
             Z_DIM,
             auto_encoder_dim,
+            decoder_use_tanh=True,
             attn_infini=False,
         )
         self.audio_encoder = AutoEncoder(
