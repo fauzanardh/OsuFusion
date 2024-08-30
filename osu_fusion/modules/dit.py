@@ -93,7 +93,6 @@ class DiTAttention(nn.Module):
         heads: int,
         dim_head: int,
         qk_norm: bool = True,
-        causal: bool = False,
         use_rotary_emb: bool = True,
         context_len: int = 8192,
     ) -> None:
@@ -108,7 +107,6 @@ class DiTAttention(nn.Module):
         self.attn = Attend(
             dim_head,
             heads=heads,
-            causal=causal,
             use_rotary_emb=use_rotary_emb,
             context_len=context_len,
         )
@@ -132,7 +130,6 @@ class DiTBlock(nn.Module):
         attn_heads: int = 8,
         attn_dim_head: int = 64,
         attn_qk_norm: bool = True,
-        attn_causal: bool = False,
         attn_use_rotary_emb: bool = True,
         attn_context_len: int = 8192,
     ) -> None:
@@ -148,7 +145,6 @@ class DiTBlock(nn.Module):
             heads=attn_heads,
             dim_head=attn_dim_head,
             qk_norm=attn_qk_norm,
-            causal=attn_causal,
             use_rotary_emb=attn_use_rotary_emb,
             context_len=attn_context_len,
         )
@@ -184,7 +180,6 @@ class DiT(nn.Module):
         attn_heads: int = 8,
         attn_dim_head: int = 64,
         attn_qk_norm: bool = True,
-        attn_causal: bool = False,
         attn_use_rotary_emb: bool = True,
         attn_context_len: int = 8192,
     ) -> None:
@@ -220,7 +215,6 @@ class DiT(nn.Module):
                     attn_heads=attn_heads,
                     attn_dim_head=attn_dim_head,
                     attn_qk_norm=attn_qk_norm,
-                    attn_causal=attn_causal,
                     attn_use_rotary_emb=attn_use_rotary_emb,
                     attn_context_len=attn_context_len,
                 )

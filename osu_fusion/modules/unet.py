@@ -95,9 +95,8 @@ class Attention(nn.Module):
         heads: int,
         kv_heads: int,
         qk_norm: bool = True,
-        causal: bool = False,
         use_rotary_emb: bool = True,
-        context_len: int = 4096,
+        context_len: int = 8192,
     ) -> None:
         super().__init__()
         self.heads = heads
@@ -112,7 +111,6 @@ class Attention(nn.Module):
         self.attn = Attend(
             dim_head,
             heads=heads,
-            causal=causal,
             use_rotary_emb=use_rotary_emb,
             context_len=context_len,
         )
@@ -154,7 +152,6 @@ class TransformerBlock(nn.Module):
         attn_heads: int = 8,
         attn_kv_heads: int = 2,
         attn_qk_norm: bool = True,
-        attn_causal: bool = False,
         attn_use_rotary_emb: bool = True,
         attn_context_len: int = 8192,
     ) -> None:
@@ -165,7 +162,6 @@ class TransformerBlock(nn.Module):
             attn_heads,
             attn_kv_heads,
             attn_qk_norm,
-            attn_causal,
             attn_use_rotary_emb,
             attn_context_len,
         )
@@ -193,7 +189,6 @@ class UNetBlock(nn.Module):
         attn_heads: int,
         attn_kv_heads: int,
         attn_qk_norm: bool,
-        attn_causal: bool,
         attn_use_rotary_emb: bool,
         attn_context_len: int,
     ) -> None:
@@ -213,7 +208,6 @@ class UNetBlock(nn.Module):
                     attn_heads=attn_heads,
                     attn_kv_heads=attn_kv_heads,
                     attn_qk_norm=attn_qk_norm,
-                    attn_causal=attn_causal,
                     attn_use_rotary_emb=attn_use_rotary_emb,
                     attn_context_len=attn_context_len,
                 )
@@ -292,7 +286,6 @@ class AudioEncoder(nn.Module):
         attn_heads: int = 8,
         attn_kv_heads: int = 2,
         attn_qk_norm: bool = True,
-        attn_causal: bool = False,
         attn_use_rotary_emb: bool = True,
         attn_context_len: int = 8192,
     ) -> None:
@@ -327,7 +320,6 @@ class AudioEncoder(nn.Module):
                     attn_heads,
                     attn_kv_heads,
                     attn_qk_norm,
-                    attn_causal,
                     attn_use_rotary_emb,
                     attn_context_len_layer,
                 ),
@@ -356,7 +348,6 @@ class UNet(nn.Module):
         attn_heads: int = 16,
         attn_kv_heads: int = 4,
         attn_qk_norm: bool = True,
-        attn_causal: bool = False,
         attn_use_rotary_emb: bool = True,
         attn_context_len: int = 8192,
     ) -> None:
@@ -376,7 +367,6 @@ class UNet(nn.Module):
             attn_heads=attn_heads,
             attn_kv_heads=attn_kv_heads,
             attn_qk_norm=attn_qk_norm,
-            attn_causal=attn_causal,
             attn_use_rotary_emb=attn_use_rotary_emb,
         )
         self.final_resnet = ResidualBlock(dim_h * 2, dim_h, self.dim_emb, self.dim_emb)
@@ -426,7 +416,6 @@ class UNet(nn.Module):
                     attn_heads,
                     attn_kv_heads,
                     attn_qk_norm,
-                    attn_causal,
                     attn_use_rotary_emb,
                     attn_context_len_layer,
                 ),
@@ -448,7 +437,6 @@ class UNet(nn.Module):
                     attn_heads=attn_heads,
                     attn_kv_heads=attn_kv_heads,
                     attn_qk_norm=attn_qk_norm,
-                    attn_causal=attn_causal,
                     attn_use_rotary_emb=attn_use_rotary_emb,
                     attn_context_len=attn_context_len // (2 ** (n_layers - 1)),
                 )
@@ -486,7 +474,6 @@ class UNet(nn.Module):
                     attn_heads,
                     attn_kv_heads,
                     attn_qk_norm,
-                    attn_causal,
                     attn_use_rotary_emb,
                     attn_context_len_layer,
                 ),

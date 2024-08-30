@@ -61,7 +61,6 @@ class Attend(nn.Module):
         self: "Attend",
         dim_head: int,
         heads: int = 8,
-        causal: bool = False,
         use_rotary_emb: bool = True,
         context_len: int = 8192,
     ) -> None:
@@ -69,7 +68,6 @@ class Attend(nn.Module):
         assert not version.parse(torch.__version__) < version.parse("2.0.0"), "sdpa requires torch>=2.0.0"
         self.heads = heads
         self.use_rotary_emb = use_rotary_emb
-        self.causal = causal
 
         # sdpa configs
         self.cpu_config = _config(True, True, True)
@@ -120,9 +118,4 @@ class Attend(nn.Module):
     ) -> torch.Tensor:
         if self.use_rotary_emb:
             q, k = self.rotary_emb(q, k)
-
-        causal_mask = None
-        if self.causal:
-            causal_mask = torch.triu(torch.ones(q.shape[-2], k.shape[-2], device=q.device), diagonal=1)
-            causal_mask.masked_fill_(causal_mask == 1, float("-inf"))
-        return self.forward_sdpa(q, k, v, attn_mask=causal_mask)
+        return self.forward_sdpa(q, k, v)
