@@ -31,8 +31,6 @@ class OsuFusion(nn.Module):
         attn_causal: bool = False,
         attn_use_rotary_emb: bool = True,
         attn_context_len: int = 8192,
-        attn_infini: bool = True,
-        attn_segment_len: int = 8192,
         cond_drop_prob: float = 0.5,
         sampling_timesteps: int = 16,
     ) -> None:
@@ -54,8 +52,6 @@ class OsuFusion(nn.Module):
             attn_causal=attn_causal,
             attn_use_rotary_emb=attn_use_rotary_emb,
             attn_context_len=attn_context_len,
-            attn_infini=attn_infini,
-            attn_segment_len=attn_segment_len,
         )
 
         self.sample_timesteps = sampling_timesteps

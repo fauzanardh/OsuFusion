@@ -73,8 +73,6 @@ class JointAttention(nn.Module):
         causal: bool = True,
         use_rotary_emb: bool = True,
         context_len: int = 8192,
-        infini: bool = True,
-        segment_len: int = 1024,
     ) -> None:
         super().__init__()
         self.heads = heads
@@ -99,8 +97,6 @@ class JointAttention(nn.Module):
             causal=causal,
             use_rotary_emb=use_rotary_emb,
             context_len=context_len,
-            infini=infini,
-            segment_len=segment_len,
         )
 
     def forward(
@@ -151,8 +147,6 @@ class MMDiTBlock(nn.Module):
         attn_causal: bool = True,
         attn_use_rotary_emb: bool = True,
         attn_context_len: int = 8192,
-        attn_infini: bool = True,
-        attn_segment_len: int = 1024,
     ) -> None:
         super().__init__()
         # Modulation
@@ -186,8 +180,6 @@ class MMDiTBlock(nn.Module):
             causal=attn_causal,
             use_rotary_emb=attn_use_rotary_emb,
             context_len=attn_context_len,
-            infini=attn_infini,
-            segment_len=attn_segment_len,
         )
 
         self.gradient_checkpointing = False
@@ -275,8 +267,6 @@ class MMDiT(nn.Module):
         attn_causal: bool = True,
         attn_use_rotary_emb: bool = True,
         attn_context_len: int = 8192,
-        attn_infini: bool = True,
-        attn_segment_len: int = 1024,
     ) -> None:
         super().__init__()
 
@@ -284,8 +274,6 @@ class MMDiT(nn.Module):
         self.dim_in_x = dim_in_x
         self.patch_size = patch_size
         self.attn_context_len = (attn_context_len // patch_size) * 2  # We have two modalities
-        self.attn_segment_len = (attn_segment_len // patch_size) * 2
-        self.attn_infini = attn_infini
 
         self.emb_x = PatchEmbedding(dim_in_x, dim_h, patch_size)
         self.emb_a = PatchEmbedding(dim_in_a, dim_h, patch_size)
@@ -313,8 +301,6 @@ class MMDiT(nn.Module):
                     attn_causal=attn_causal,
                     attn_use_rotary_emb=attn_use_rotary_emb,
                     attn_context_len=self.attn_context_len,
-                    attn_infini=attn_infini,
-                    attn_segment_len=self.attn_segment_len,
                 )
                 for _ in range(depth)
             ],
@@ -388,14 +374,8 @@ class MMDiT(nn.Module):
         h_a = self.feature_extractor_a(h_a)
 
         n = x.shape[-1]
-        if self.attn_infini:
-            # Pad to the closest multiple of attn_segment_len
-            segment_len = self.attn_segment_len // 2  # We use half the segment length since we have two modalities
-            segment_len *= self.patch_size  # times the patch size to get the real segment length
-            pad_len = (segment_len - (n % segment_len)) % segment_len
-        else:
-            # Pad to the closest multiple of patch_size
-            pad_len = (self.patch_size - (n % self.patch_size)) % self.patch_size
+        # Pad to the closest multiple of patch_size
+        pad_len = (self.patch_size - (n % self.patch_size)) % self.patch_size
 
         x = F.pad(x, (0, pad_len), value=-1.0)
         a = F.pad(a, (0, pad_len), value=0.0)

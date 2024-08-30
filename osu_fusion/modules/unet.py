@@ -98,8 +98,6 @@ class Attention(nn.Module):
         causal: bool = False,
         use_rotary_emb: bool = True,
         context_len: int = 4096,
-        infini: bool = True,
-        segment_len: int = 1024,
     ) -> None:
         super().__init__()
         self.heads = heads
@@ -117,8 +115,6 @@ class Attention(nn.Module):
             causal=causal,
             use_rotary_emb=use_rotary_emb,
             context_len=context_len,
-            infini=infini,
-            segment_len=segment_len,
         )
         self.linear = nn.Linear(dim_head * heads, dim_in)
 
@@ -161,8 +157,6 @@ class TransformerBlock(nn.Module):
         attn_causal: bool = False,
         attn_use_rotary_emb: bool = True,
         attn_context_len: int = 8192,
-        attn_infini: bool = True,
-        attn_segment_len: int = 1024,
     ) -> None:
         super().__init__()
         self.attn = Attention(
@@ -174,8 +168,6 @@ class TransformerBlock(nn.Module):
             attn_causal,
             attn_use_rotary_emb,
             attn_context_len,
-            attn_infini,
-            attn_segment_len,
         )
         self.ff = FeedForward(dim, ff_mult)
 
@@ -204,8 +196,6 @@ class UNetBlock(nn.Module):
         attn_causal: bool,
         attn_use_rotary_emb: bool,
         attn_context_len: int,
-        attn_infini: bool,
-        attn_segment_len: int,
     ) -> None:
         super().__init__()
         self.init_resnet = ResidualBlock(dim_in if down_block else dim_in + dim_out, dim_in, dim_time, dim_cond)
@@ -226,8 +216,6 @@ class UNetBlock(nn.Module):
                     attn_causal=attn_causal,
                     attn_use_rotary_emb=attn_use_rotary_emb,
                     attn_context_len=attn_context_len,
-                    attn_infini=attn_infini,
-                    attn_segment_len=attn_segment_len,
                 )
                 for _ in range(num_blocks)
             ],
@@ -307,8 +295,6 @@ class AudioEncoder(nn.Module):
         attn_causal: bool = False,
         attn_use_rotary_emb: bool = True,
         attn_context_len: int = 8192,
-        attn_infini: bool = True,
-        attn_segment_len: int = 1024,
     ) -> None:
         super().__init__()
         self.dim_h = dim_h
@@ -327,7 +313,6 @@ class AudioEncoder(nn.Module):
             layer_dim_in, layer_dim_out = in_out[i]
             num_blocks = num_layer_blocks[i]
             attn_context_len_layer = attn_context_len // (2**i)
-            attn_segment_len_layer = attn_segment_len // (2**i)
             layers.append(
                 UNetBlock(
                     layer_dim_in,
@@ -345,8 +330,6 @@ class AudioEncoder(nn.Module):
                     attn_causal,
                     attn_use_rotary_emb,
                     attn_context_len_layer,
-                    attn_infini,
-                    attn_segment_len_layer,
                 ),
             )
         self.layers = nn.ModuleList(layers)
@@ -376,15 +359,11 @@ class UNet(nn.Module):
         attn_causal: bool = False,
         attn_use_rotary_emb: bool = True,
         attn_context_len: int = 8192,
-        attn_infini: bool = True,
-        attn_segment_len: int = 8192,
     ) -> None:
         super().__init__()
         self.dim_h = dim_h
         self.dim_emb = dim_h * 4
         self.attn_context_len = attn_context_len
-        self.attn_infini = attn_infini
-        self.attn_segment_len = attn_segment_len
 
         self.init_x = CrossEmbedLayer(dim_in_x, dim_h, cross_embed_kernel_sizes)
         self.audio_encoder = AudioEncoder(
@@ -399,8 +378,6 @@ class UNet(nn.Module):
             attn_qk_norm=attn_qk_norm,
             attn_causal=attn_causal,
             attn_use_rotary_emb=attn_use_rotary_emb,
-            attn_infini=attn_infini,
-            attn_segment_len=attn_segment_len,
         )
         self.final_resnet = ResidualBlock(dim_h * 2, dim_h, self.dim_emb, self.dim_emb)
         self.final_conv = zero_init(nn.Conv1d(dim_h, dim_in_x, 1))
@@ -435,7 +412,6 @@ class UNet(nn.Module):
             layer_dim_in, layer_dim_out = in_out[i]
             num_blocks = num_layer_blocks[i]
             attn_context_len_layer = attn_context_len // (2**i)
-            attn_segment_len_layer = attn_segment_len // (2**i)
             down_layers.append(
                 UNetBlock(
                     layer_dim_in,
@@ -453,8 +429,6 @@ class UNet(nn.Module):
                     attn_causal,
                     attn_use_rotary_emb,
                     attn_context_len_layer,
-                    attn_infini,
-                    attn_segment_len_layer,
                 ),
             )
         self.down_layers = nn.ModuleList(down_layers)
@@ -477,8 +451,6 @@ class UNet(nn.Module):
                     attn_causal=attn_causal,
                     attn_use_rotary_emb=attn_use_rotary_emb,
                     attn_context_len=attn_context_len // (2 ** (n_layers - 1)),
-                    attn_infini=attn_infini,
-                    attn_segment_len=attn_segment_len // (2 ** (n_layers - 1)),
                 )
                 for _ in range(num_middle_transformers)
             ],
@@ -500,7 +472,6 @@ class UNet(nn.Module):
             layer_dim_out, layer_dim_in = in_out[i]
             num_blocks = num_layer_blocks[i]
             attn_context_len_layer = attn_context_len // (2 ** (n_layers - i - 1))
-            attn_segment_len_layer = attn_segment_len // (2 ** (n_layers - i - 1))
             up_layers.append(
                 UNetBlock(
                     layer_dim_in,
@@ -518,8 +489,6 @@ class UNet(nn.Module):
                     attn_causal,
                     attn_use_rotary_emb,
                     attn_context_len_layer,
-                    attn_infini,
-                    attn_segment_len_layer,
                 ),
             )
         self.up_layers = nn.ModuleList(up_layers)
@@ -554,14 +523,9 @@ class UNet(nn.Module):
         h_a = self.feature_extractor_a(h_a)
 
         n = x.shape[-1]
-        if self.attn_infini:
-            # Pad to the multiple of attn_segment_len
-            segment_len = self.attn_segment_len
-            pad_len = (segment_len - (n % segment_len)) % segment_len
-        else:
-            # Pad to the multiple of 2^unet depth
-            depth = len(self.down_layers)
-            pad_len = (2**depth - (n % (2**depth))) % (2**depth)
+        # Pad to the multiple of 2^unet depth
+        depth = len(self.down_layers)
+        pad_len = (2**depth - (n % (2**depth))) % (2**depth)
         x = F.pad(x, (0, pad_len), value=-1.0)
         a = F.pad(a, (0, pad_len), value=0.0)
 

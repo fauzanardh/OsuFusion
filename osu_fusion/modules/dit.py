@@ -96,8 +96,6 @@ class DiTAttention(nn.Module):
         causal: bool = False,
         use_rotary_emb: bool = True,
         context_len: int = 8192,
-        infini: bool = True,
-        segment_len: int = 1024,
     ) -> None:
         super().__init__()
         self.heads = heads
@@ -113,8 +111,6 @@ class DiTAttention(nn.Module):
             causal=causal,
             use_rotary_emb=use_rotary_emb,
             context_len=context_len,
-            infini=infini,
-            segment_len=segment_len,
         )
 
     def forward(self: "DiTAttention", x: torch.Tensor) -> torch.Tensor:
@@ -139,8 +135,6 @@ class DiTBlock(nn.Module):
         attn_causal: bool = False,
         attn_use_rotary_emb: bool = True,
         attn_context_len: int = 8192,
-        attn_infini: bool = True,
-        attn_segment_len: int = 1024,
     ) -> None:
         super().__init__()
 
@@ -157,8 +151,6 @@ class DiTBlock(nn.Module):
             causal=attn_causal,
             use_rotary_emb=attn_use_rotary_emb,
             context_len=attn_context_len,
-            infini=attn_infini,
-            segment_len=attn_segment_len,
         )
         self.norm2 = nn.LayerNorm(dim_h, elementwise_affine=False, eps=1e-6)
         self.ff = FeedForward(dim_h, dim_h_mult)
@@ -195,13 +187,9 @@ class DiT(nn.Module):
         attn_causal: bool = False,
         attn_use_rotary_emb: bool = True,
         attn_context_len: int = 8192,
-        attn_infini: bool = True,
-        attn_segment_len: int = 1024,
     ) -> None:
         super().__init__()
         self.dim_in_x = dim_in_x
-        self.attn_infini = attn_infini
-        self.attn_segment_len = attn_segment_len
 
         self.preprocess = CrossEmbedLayer(dim_in_x + dim_in_a, dim_h, cross_embed_kernel_sizes)
         self.postprocess = nn.Conv1d(dim_h, dim_in_x, 1, bias=False)
@@ -235,8 +223,6 @@ class DiT(nn.Module):
                     attn_causal=attn_causal,
                     attn_use_rotary_emb=attn_use_rotary_emb,
                     attn_context_len=attn_context_len,
-                    attn_infini=attn_infini,
-                    attn_segment_len=attn_segment_len,
                 )
                 for _ in range(depth)
             ],
@@ -298,12 +284,6 @@ class DiT(nn.Module):
         cond_drop_prob: float = 0.0,
     ) -> torch.Tensor:
         n = x.shape[-1]
-        if self.attn_infini:
-            # Pad to the nearest multiple of segment length
-            pad_len = (self.attn_segment_len - n % self.attn_segment_len) % self.attn_segment_len
-            x = F.pad(x, (0, pad_len), value=-1.0)
-            a = F.pad(a, (0, pad_len), value=0.0)
-
         x = self.preprocess(torch.cat([x, a], dim=1))
         x = rearrange(x, "b d n -> b n d")
 

@@ -37,7 +37,7 @@ def create_model_from_checkpoint(model_path: str, model_type: str) -> Model:
         state_dict = load_file(model_path)
 
     model_class = DiffusionOsuFusion if model_type == "diffusion" else RectifiedFlowOsuFusion
-    model = model_class(128, attn_infini=False)
+    model = model_class(128)
     model.load_state_dict(state_dict)
     return model.eval()
 
