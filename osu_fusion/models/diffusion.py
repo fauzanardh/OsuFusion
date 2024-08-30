@@ -22,7 +22,7 @@ class OsuFusion(nn.Module):
         cross_embed_kernel_sizes: Tuple[int] = (3, 7, 15),
         attn_dim_head: int = 64,
         attn_heads: int = 16,
-        attn_kv_heads: int = 4,
+        attn_kv_heads: int = 1,
         attn_qk_norm: bool = True,
         attn_use_rotary_emb: bool = True,
         attn_context_len: int = 8192,

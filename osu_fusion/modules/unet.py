@@ -180,7 +180,8 @@ class LinearAttention(nn.Module):
             k = self.k_norm(k)
 
         # GQA
-        k, v = (repeat(t, "b h n d -> b (r h) n d", r=self.heads // self.kv_heads) for t in (k, v))
+        if self.kv_heads > 1:
+            k, v = (repeat(t, "b h n d -> b (r h) n d", r=self.heads // self.kv_heads) for t in (k, v))
 
         if self.use_rotary_emb:
             q, k = self.rotary_emb(q, k)
