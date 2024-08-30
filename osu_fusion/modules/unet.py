@@ -6,7 +6,7 @@ import torch.nn as nn
 from einops import rearrange, repeat
 from torch.nn import functional as F  # noqa: N812
 
-from osu_fusion.modules.attention import Attend
+from osu_fusion.modules.attention import Attend, RotaryPositionEmbedding
 from osu_fusion.modules.residual import ResidualBlock
 from osu_fusion.modules.utils import prob_mask_like
 
@@ -54,18 +54,28 @@ class CrossEmbedLayer(nn.Module):
         return torch.cat([conv(x) for conv in self.convs], dim=1)
 
 
-class Upsample(nn.Sequential):
+class Upsample(nn.Module):
     def __init__(self: "Upsample", dim_in: int, dim_out: int) -> None:
-        super().__init__(
-            nn.ConvTranspose1d(dim_in, dim_out, 4, stride=2, padding=1),
-        )
+        super().__init__()
+        self.conv = nn.Conv1d(dim_in, dim_out, 3, padding=1)
+
+    def forward(self: "Upsample", x: torch.Tensor) -> torch.Tensor:
+        x = F.interpolate(x, scale_factor=2.0, mode="nearest")
+        x = self.conv(x)
+        return x
 
 
-class Downsample(nn.Sequential):
+class Downsample(nn.Module):
     def __init__(self: "Downsample", dim_in: int, dim_out: int) -> None:
-        super().__init__(
-            nn.Conv1d(dim_in, dim_out, 4, stride=2, padding=1, padding_mode="reflect"),
-        )
+        super().__init__()
+        # Asymmetric padding
+        self.conv = nn.Conv1d(dim_in, dim_out, 3, stride=2, padding=0)
+
+    def forward(self: "Downsample", x: torch.Tensor) -> torch.Tensor:
+        pad = (0, 1)
+        x = F.pad(x, pad=pad, mode="reflect")
+        x = self.conv(x)
+        return x
 
 
 class Parallel(nn.Module):
@@ -114,7 +124,7 @@ class Attention(nn.Module):
             use_rotary_emb=use_rotary_emb,
             context_len=context_len,
         )
-        self.linear = nn.Linear(dim_head * heads, dim_in)
+        self.to_out = nn.Linear(dim_head * heads, dim_in)
 
     def forward(self: "Attention", x: torch.Tensor) -> torch.Tensor:
         q = rearrange(self.to_q(x), "b n (h d) -> b h n d", h=self.heads)
@@ -130,7 +140,59 @@ class Attention(nn.Module):
 
         out = self.attn(q, k, v)
         out = rearrange(out, "b h n d -> b n (h d)")
-        return x + self.linear(out)
+        return x + self.to_out(out)
+
+
+class LinearAttention(nn.Module):
+    def __init__(
+        self: "LinearAttention",
+        dim_in: int,
+        dim_head: int,
+        heads: int,
+        kv_heads: int,
+        qk_norm: bool = True,
+        use_rotary_emb: bool = True,
+        context_len: int = 8192,
+    ) -> None:
+        super().__init__()
+        self.heads = heads
+        self.kv_heads = kv_heads
+        self.qk_norm = qk_norm
+        self.use_rotary_emb = use_rotary_emb
+
+        self.to_q = nn.Linear(dim_in, dim_head * heads, bias=False)
+        self.to_kv = nn.Linear(dim_in, dim_head * kv_heads * 2, bias=False)
+        self.q_norm = MultiHeadRMSNorm(dim_head, heads) if qk_norm else None
+        self.k_norm = MultiHeadRMSNorm(dim_head, kv_heads) if qk_norm else None
+
+        if self.use_rotary_emb:
+            self.rotary_emb = RotaryPositionEmbedding(dim_head, scale_base=context_len)
+
+        self.to_out = nn.Linear(dim_head * heads, dim_in)
+
+    def forward(self: "LinearAttention", x: torch.Tensor) -> torch.Tensor:
+        q = rearrange(self.to_q(x), "b n (h d) -> b h n d", h=self.heads)
+
+        k, v = self.to_kv(x).chunk(2, dim=-1)
+        k, v = (rearrange(t, "b n (h d) -> b h n d", h=self.kv_heads) for t in (k, v))
+        if self.qk_norm:
+            q = self.q_norm(q)
+            k = self.k_norm(k)
+
+        # GQA
+        k, v = (repeat(t, "b h n d -> b (r h) n d", r=self.heads // self.kv_heads) for t in (k, v))
+
+        if self.use_rotary_emb:
+            q, k = self.rotary_emb(q, k)
+
+        q = q.softmax(dim=-1)
+        k = k.softmax(dim=-2)
+
+        context = torch.einsum("b h n d, b h n e -> b h d e", k, v)
+
+        out = torch.einsum("b h d e, b h n d -> b h n e", context, q)
+        out = rearrange(out, "b h n d -> b n (h d)")
+        return x + self.to_out(out)
 
 
 class FeedForward(nn.Sequential):
@@ -154,16 +216,29 @@ class TransformerBlock(nn.Module):
         attn_qk_norm: bool = True,
         attn_use_rotary_emb: bool = True,
         attn_context_len: int = 8192,
+        attn_linear: bool = False,
     ) -> None:
         super().__init__()
-        self.attn = Attention(
-            dim,
-            attn_dim_head,
-            attn_heads,
-            attn_kv_heads,
-            attn_qk_norm,
-            attn_use_rotary_emb,
-            attn_context_len,
+        self.attn = (
+            Attention(
+                dim,
+                attn_dim_head,
+                attn_heads,
+                attn_kv_heads,
+                attn_qk_norm,
+                attn_use_rotary_emb,
+                attn_context_len,
+            )
+            if not attn_linear
+            else LinearAttention(
+                dim,
+                attn_dim_head,
+                attn_heads,
+                attn_kv_heads,
+                attn_qk_norm,
+                attn_use_rotary_emb,
+                attn_context_len,
+            )
         )
         self.ff = FeedForward(dim, ff_mult)
 
@@ -210,6 +285,7 @@ class UNetBlock(nn.Module):
                     attn_qk_norm=attn_qk_norm,
                     attn_use_rotary_emb=attn_use_rotary_emb,
                     attn_context_len=attn_context_len,
+                    attn_linear=True,
                 )
                 for _ in range(num_blocks)
             ],
@@ -439,6 +515,7 @@ class UNet(nn.Module):
                     attn_qk_norm=attn_qk_norm,
                     attn_use_rotary_emb=attn_use_rotary_emb,
                     attn_context_len=attn_context_len // (2 ** (n_layers - 1)),
+                    attn_linear=False,
                 )
                 for _ in range(num_middle_transformers)
             ],
