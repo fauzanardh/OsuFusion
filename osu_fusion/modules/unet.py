@@ -449,12 +449,6 @@ class UNet(nn.Module):
         self.final_resnet = ResidualBlock(dim_h * 2, dim_h, self.dim_emb, self.dim_emb)
         self.final_conv = zero_init(nn.Conv1d(dim_h, dim_in_x, 1))
 
-        self.feature_extractor_a = nn.Linear(dim_in_a * 2, self.dim_emb)
-        self.audio_mlp = nn.Sequential(
-            nn.Linear(self.dim_emb, self.dim_emb),
-            nn.SiLU(),
-            nn.Linear(self.dim_emb, self.dim_emb),
-        )
         self.time_mlp = nn.Sequential(
             SinusoidalPositionEmbedding(self.dim_emb),
             nn.Linear(self.dim_emb, self.dim_emb),
@@ -581,12 +575,6 @@ class UNet(nn.Module):
         c: torch.Tensor,
         cond_drop_prob: float = 0.0,
     ) -> torch.Tensor:
-        # Statistic audio features pooling
-        mean_features = a.mean(dim=-1)
-        std_features = a.std(dim=-1)
-        h_a = torch.cat([mean_features, std_features], dim=1)
-        h_a = self.feature_extractor_a(h_a)
-
         n = x.shape[-1]
         # Pad to the multiple of 2^unet depth
         depth = len(self.down_layers)
@@ -606,8 +594,6 @@ class UNet(nn.Module):
         null_conds = repeat(self.null_cond, "d -> b d", b=x.shape[0])
         c = self.cond_mlp(c)
         c = torch.where(cond_mask, c, null_conds)
-
-        c = c + self.audio_mlp(h_a)
 
         skips_connections = []
         for down_layer in self.down_layers:
