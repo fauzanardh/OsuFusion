@@ -71,7 +71,7 @@ class JointAttention(nn.Module):
         kv_heads: int,
         qk_norm: bool = True,
         use_rotary_emb: bool = True,
-        context_len: int = 8192,
+        context_len: int = 4096,
     ) -> None:
         super().__init__()
         self.heads = heads
@@ -143,7 +143,7 @@ class MMDiTBlock(nn.Module):
         attn_kv_heads: int = 2,
         attn_qk_norm: bool = True,
         attn_use_rotary_emb: bool = True,
-        attn_context_len: int = 8192,
+        attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
         # Modulation
@@ -261,7 +261,7 @@ class MMDiT(nn.Module):
         attn_kv_heads: int = 2,
         attn_qk_norm: bool = True,
         attn_use_rotary_emb: bool = True,
-        attn_context_len: int = 8192,
+        attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
 
@@ -372,7 +372,7 @@ class MMDiT(nn.Module):
         pad_len = (self.patch_size - (n % self.patch_size)) % self.patch_size
 
         x = F.pad(x, (0, pad_len), value=-1.0)
-        a = F.pad(a, (0, pad_len), value=0.0)
+        a = F.pad(a, (0, pad_len), value=-23.0)
 
         # Patchify the input
         x = self.emb_x(x)

@@ -86,7 +86,7 @@ def collate_fn(
     for x, a, c in batch:
         orig_len.append(x.shape[1])
         x = F.pad(x, (0, max_length - x.shape[1]), mode="constant", value=-1.0)
-        a = F.pad(a, (0, max_length - a.shape[1]), mode="constant", value=-1.0)
+        a = F.pad(a, (0, max_length - a.shape[1]), mode="constant", value=-23.0)
         out_x.append(x)
         out_a.append(a)
         out_c.append(c)

@@ -16,7 +16,6 @@ from osu_fusion.scripts.dataset_creator import (
     AUDIO_DIM,
     CONTEXT_DIM,
     HOP_LENGTH,
-    N_FFT,
     SR,
     normalize_context,
     unnormalize_context,
@@ -47,7 +46,6 @@ def get_new_context(x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
             np.arange(x.shape[-1]),
             sr=SR,
             hop_length=HOP_LENGTH,
-            n_fft=N_FFT,
         )
         * 1000
     )
@@ -118,8 +116,8 @@ class StreamPerSample(IterableDataset):
 
 
 class DummyDataset(StreamPerSample):
-    MIN_LENGTH = 4096  # 16.384 seconds, 1/2 of context length
-    MAX_LENGTH = 16384  # 65.536 seconds, 2x of context length
+    MIN_LENGTH = 2048  # 16.384 seconds, 1/2 of context length
+    MAX_LENGTH = 8192  # 65.536 seconds, 2x of context length
 
     def __init__(self: "DummyDataset") -> None:
         super().__init__({"segment_sr": False})
@@ -146,8 +144,8 @@ class FullSequenceDataset(StreamPerSample):
 
 
 class RandomLengthDataset(StreamPerSample):
-    MIN_LENGTH = 4096  # 16.384 seconds, 1/2 of context length
-    MAX_LENGTH = 16384  # 65.536 seconds, 2x of context length
+    MIN_LENGTH = 2048  # 16.384 seconds, 1/2 of context length
+    MAX_LENGTH = 8192  # 65.536 seconds, 2x of context length
 
     def sample_stream(self: StreamPerSample, map_file: Path) -> Generator[torch.Tensor, None, None]:
         try:
@@ -167,7 +165,7 @@ class RandomLengthDataset(StreamPerSample):
 class SubsequenceDataset(StreamPerSample):
     def __init__(self: "SubsequenceDataset", **kwargs: Dict) -> None:
         super().__init__(**kwargs)
-        self.sequence_length = kwargs.pop("sequence_length", 8192)
+        self.sequence_length = kwargs.pop("sequence_length", 4096)
 
     def sample_stream(self: StreamPerSample, map_file: Path) -> Generator[torch.Tensor, None, None]:
         try:

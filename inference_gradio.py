@@ -17,7 +17,7 @@ from osu_fusion.library.osu.data.decode import Metadata, decode_beatmap
 from osu_fusion.library.osu.data.encode import TOTAL_DIM
 from osu_fusion.models.diffusion import OsuFusion as DiffusionOsuFusion
 from osu_fusion.models.rectified_flow import OsuFusion as RectifiedFlowOsuFusion
-from osu_fusion.scripts.dataset_creator import HOP_LENGTH, N_FFT, SR, load_audio, normalize_context
+from osu_fusion.scripts.dataset_creator import HOP_LENGTH, SR, load_audio, normalize_context
 
 Model = Union[DiffusionOsuFusion, RectifiedFlowOsuFusion]
 
@@ -127,8 +127,8 @@ def generate_beatmap(
 
     generated = global_model.sample(audio, context, x, cond_scale=cfg)
 
-    frame_times = (
-        librosa.frames_to_time(np.arange(generated.shape[-1]), sr=SR, hop_length=HOP_LENGTH, n_fft=N_FFT) * 1000
+    frame_times = frame_times = (
+        librosa.frames_to_time(np.arange(generated.shape[-1]), sr=SR, hop_length=HOP_LENGTH) * 1000
     )
 
     metadata = Metadata(

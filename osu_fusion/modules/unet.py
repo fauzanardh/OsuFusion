@@ -106,7 +106,7 @@ class Attention(nn.Module):
         kv_heads: int,
         qk_norm: bool = True,
         use_rotary_emb: bool = True,
-        context_len: int = 8192,
+        context_len: int = 4096,
     ) -> None:
         super().__init__()
         self.heads = heads
@@ -152,7 +152,7 @@ class LinearAttention(nn.Module):
         kv_heads: int,
         qk_norm: bool = True,
         use_rotary_emb: bool = True,
-        context_len: int = 8192,
+        context_len: int = 4096,
     ) -> None:
         super().__init__()
         self.heads = heads
@@ -216,7 +216,7 @@ class TransformerBlock(nn.Module):
         attn_kv_heads: int = 2,
         attn_qk_norm: bool = True,
         attn_use_rotary_emb: bool = True,
-        attn_context_len: int = 8192,
+        attn_context_len: int = 4096,
         attn_linear: bool = False,
     ) -> None:
         super().__init__()
@@ -364,7 +364,7 @@ class AudioEncoder(nn.Module):
         attn_kv_heads: int = 2,
         attn_qk_norm: bool = True,
         attn_use_rotary_emb: bool = True,
-        attn_context_len: int = 8192,
+        attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
         self.dim_h = dim_h
@@ -426,7 +426,7 @@ class UNet(nn.Module):
         attn_kv_heads: int = 4,
         attn_qk_norm: bool = True,
         attn_use_rotary_emb: bool = True,
-        attn_context_len: int = 8192,
+        attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
         self.dim_h = dim_h
@@ -580,7 +580,7 @@ class UNet(nn.Module):
         depth = len(self.down_layers)
         pad_len = (2**depth - (n % (2**depth))) % (2**depth)
         x = F.pad(x, (0, pad_len), value=-1.0)
-        a = F.pad(a, (0, pad_len), value=0.0)
+        a = F.pad(a, (0, pad_len), value=-23.0)
 
         x = self.init_x(x)
         a = self.audio_encoder(a)

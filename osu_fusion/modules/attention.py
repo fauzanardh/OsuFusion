@@ -17,7 +17,7 @@ class RotaryPositionEmbedding(nn.Module):
         self: "RotaryPositionEmbedding",
         dim: int,
         theta: int = 10000,
-        scale_base: int = 8192,
+        scale_base: int = 4096,
     ) -> None:
         super().__init__()
         self.scale_base = scale_base
@@ -62,7 +62,7 @@ class Attend(nn.Module):
         dim_head: int,
         heads: int = 8,
         use_rotary_emb: bool = True,
-        context_len: int = 8192,
+        context_len: int = 4096,
     ) -> None:
         super().__init__()
         assert not version.parse(torch.__version__) < version.parse("2.0.0"), "sdpa requires torch>=2.0.0"

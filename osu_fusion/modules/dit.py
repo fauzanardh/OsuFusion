@@ -94,7 +94,7 @@ class DiTAttention(nn.Module):
         dim_head: int,
         qk_norm: bool = True,
         use_rotary_emb: bool = True,
-        context_len: int = 8192,
+        context_len: int = 4096,
     ) -> None:
         super().__init__()
         self.heads = heads
@@ -131,7 +131,7 @@ class DiTBlock(nn.Module):
         attn_dim_head: int = 64,
         attn_qk_norm: bool = True,
         attn_use_rotary_emb: bool = True,
-        attn_context_len: int = 8192,
+        attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
 
@@ -181,7 +181,7 @@ class DiT(nn.Module):
         attn_dim_head: int = 64,
         attn_qk_norm: bool = True,
         attn_use_rotary_emb: bool = True,
-        attn_context_len: int = 8192,
+        attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
         self.dim_in_x = dim_in_x

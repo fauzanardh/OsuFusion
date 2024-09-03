@@ -4,7 +4,7 @@ import warnings
 from multiprocessing import Lock
 from multiprocessing.synchronize import Lock as LockBase
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 import librosa
 import numpy as np
@@ -14,12 +14,14 @@ from audioread.ffdec import FFmpegAudioFile
 from osu_fusion.library.osu.beatmap import Beatmap
 from osu_fusion.library.osu.data.encode import encode_beatmap
 
-N_FFT = 2048
-N_MELS = 64
 SR = 22050
-FRAME_RATE = 4
-HOP_LENGTH = (SR // 1000) * FRAME_RATE
-AUDIO_DIM = 32
+MS_PER_FRAME = 8
+HOP_LENGTH = (SR // 1000) * MS_PER_FRAME
+
+FMIN = librosa.note_to_hz("C0")
+N_OCTAVES = 8
+OCTAVE_BINS = 12
+AUDIO_DIM = N_OCTAVES * OCTAVE_BINS
 CONTEXT_DIM = 5
 
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -38,20 +40,19 @@ def load_audio(audio_file: Path) -> npt.NDArray:
         msg = f"Empty audio file: {audio_file}"
         raise ValueError(msg)
 
-    spec = librosa.feature.mfcc(
-        y=wave,
-        sr=SR,
-        n_mfcc=AUDIO_DIM,
-        n_fft=N_FFT,
-        hop_length=HOP_LENGTH,
-        n_mels=N_MELS,
+    return np.log(
+        np.abs(
+            librosa.vqt(
+                y=wave,
+                sr=SR,
+                hop_length=HOP_LENGTH,
+                fmin=FMIN,
+                n_bins=AUDIO_DIM,
+                bins_per_octave=OCTAVE_BINS,
+            ),
+        )
+        + 1e-10,
     )
-
-    # Calculate CMVN
-    spec_mean = spec.mean(axis=1, keepdims=True)
-    spec_std = spec.std(axis=1, keepdims=True)
-    spec = (spec - spec_mean) / (spec_std + 1e-10)
-    return spec
 
 
 def normalize_context(context: npt.NDArray) -> npt.NDArray:
@@ -82,7 +83,7 @@ def get_lock(path: Path) -> LockBase:
     return _global_lock.setdefault(str(path), Lock())
 
 
-def get_audio_spec(beatmap: Beatmap, audio_file: Path) -> npt.NDArray:
+def get_audio_spec(beatmap: Beatmap, audio_file: Path) -> Optional[npt.NDArray]:
     with get_lock(audio_file):
         if audio_file.exists():
             for i in range(5):  # backoff
@@ -159,13 +160,14 @@ def prepare_map(data_dir: Path, map_file: Path) -> None:
         return
 
     spec = get_audio_spec(beatmap, spec_path)
+    if spec is None:
+        return
 
     frame_times = (
         librosa.frames_to_time(
             np.arange(spec.shape[-1]),
             sr=SR,
             hop_length=HOP_LENGTH,
-            n_fft=N_FFT,
         )
         * 1000
     )

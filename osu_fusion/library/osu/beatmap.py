@@ -96,10 +96,15 @@ class Beatmap:
             raise ValueError(msg)
 
     def get_active_timing_point(self: "Beatmap", t: int) -> TimingPoint:
-        idx = bisect.bisect(self.timing_points, Timed(t)) - 1
+        idx = -1
+        for t_offset in [0, -1, 1]:  # try to find the timing point at t, t-1, t+1 since they might be off by a few ms
+            bisect_idx = bisect.bisect(self.timing_points, Timed(t + t_offset)) - 1
+            if bisect_idx >= 0:
+                idx = bisect_idx
+                break
         if idx < 0:
-            msg = f"no active timing point at {t}"
-            raise ValueError(msg)
+            # Default to first timing point
+            return self.timing_points[0]
 
         return self.timing_points[idx]
 
