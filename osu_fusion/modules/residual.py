@@ -14,7 +14,7 @@ DEBUG = os.environ.get("DEBUG", False)
 class GlobalContext(nn.Module):
     """Attention-esque squeeze-excite module"""
 
-    def __init__(self: "GlobalContext", dim_in: int, dim_out: int, reduction: int = 2, dim_min: int = 4) -> None:
+    def __init__(self: "GlobalContext", dim_in: int, dim_out: int, reduction: int = 2, dim_min: int = 8) -> None:
         super().__init__()
         self.to_k = nn.Conv1d(dim_in, 1, 1)
         inner_dim = max(dim_min, dim_out // reduction)
@@ -33,6 +33,28 @@ class GlobalContext(nn.Module):
 
     def forward(self: "GlobalContext", x: torch.Tensor) -> torch.Tensor:
         context_manager = dummy_context_manager() if DEBUG else record_function("GlobalContext")
+        with context_manager:
+            return self.forward_body(x)
+
+
+class SqueezeExcite(nn.Module):
+    def __init__(self: "SqueezeExcite", dim: int, dim_out: int, reduction: int = 2, dim_minimum: int = 8) -> None:
+        super().__init__()
+        inner_dim = max(dim_minimum, dim_out // reduction)
+        self.global_avg_pool = nn.AdaptiveAvgPool1d(1)
+        self.layers = nn.Sequential(
+            nn.Conv1d(dim, inner_dim, 1),
+            nn.SiLU(),
+            nn.Conv1d(inner_dim, dim_out, 1),
+            nn.Sigmoid(),
+        )
+
+    def forward_body(self: "SqueezeExcite", x: torch.Tensor) -> torch.Tensor:
+        avg_pool = self.global_avg_pool(x)
+        return self.layers(avg_pool)
+
+    def forward(self: "SqueezeExcite", x: torch.Tensor) -> torch.Tensor:
+        context_manager = dummy_context_manager() if DEBUG else record_function("SqueezeExcite")
         with context_manager:
             return self.forward_body(x)
 
@@ -73,6 +95,7 @@ class ResidualBlock(nn.Module):
         dim_out: int,
         dim_time: Optional[int] = None,
         dim_cond: Optional[int] = None,
+        use_gca: bool = False,
     ) -> None:
         super().__init__()
         self.has_time_cond = dim_time is not None
@@ -90,7 +113,7 @@ class ResidualBlock(nn.Module):
         self.block2 = Block(dim_out, dim_out)
 
         self.res_conv = nn.Conv1d(dim_in, dim_out, 1) if dim_in != dim_out else nn.Identity()
-        self.gca = GlobalContext(dim_out, dim_out)
+        self.se = GlobalContext(dim_out, dim_out) if use_gca else SqueezeExcite(dim_out, dim_out)
 
     def forward(
         self: "ResidualBlock",
@@ -109,6 +132,6 @@ class ResidualBlock(nn.Module):
         h = self.block1(x, scale_shift=scale_shift)
         h = self.block2(h)
 
-        h = h * self.gca(h)
+        h = h * self.se(h)
 
         return h + self.res_conv(x)
