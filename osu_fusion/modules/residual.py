@@ -1,17 +1,23 @@
+import os
 from typing import Optional
 
 import torch
 import torch.nn as nn
 from einops import rearrange
+from torch.profiler import record_function
+
+from osu_fusion.modules.utils import dummy_context_manager
+
+DEBUG = os.environ.get("DEBUG", False)
 
 
 class GlobalContext(nn.Module):
     """Attention-esque squeeze-excite module"""
 
-    def __init__(self: "GlobalContext", dim_in: int, dim_out: int) -> None:
+    def __init__(self: "GlobalContext", dim_in: int, dim_out: int, reduction: int = 2, dim_min: int = 4) -> None:
         super().__init__()
         self.to_k = nn.Conv1d(dim_in, 1, 1)
-        inner_dim = max(3, dim_out // 2)
+        inner_dim = max(dim_min, dim_out // reduction)
 
         self.layers = nn.Sequential(
             nn.Conv1d(dim_in, inner_dim, 1),
@@ -20,10 +26,15 @@ class GlobalContext(nn.Module):
             nn.Sigmoid(),
         )
 
-    def forward(self: "GlobalContext", x: torch.Tensor) -> torch.Tensor:
+    def forward_body(self: "GlobalContext", x: torch.Tensor) -> torch.Tensor:
         context = self.to_k(x)
         out = torch.einsum("b i d, b j d -> b i j", x, context.softmax(dim=-1))
         return self.layers(out)
+
+    def forward(self: "GlobalContext", x: torch.Tensor) -> torch.Tensor:
+        context_manager = dummy_context_manager() if DEBUG else record_function("GlobalContext")
+        with context_manager:
+            return self.forward_body(x)
 
 
 class Block(nn.Module):
@@ -38,7 +49,7 @@ class Block(nn.Module):
         self.norm = nn.GroupNorm(1, dim_out) if norm else nn.Identity()
         self.activation = nn.SiLU()
 
-    def forward(self: "Block", x: torch.Tensor, scale_shift: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward_body(self: "Block", x: torch.Tensor, scale_shift: Optional[torch.Tensor] = None) -> torch.Tensor:
         x = self.proj(x)
         x = self.norm(x)
 
@@ -48,6 +59,11 @@ class Block(nn.Module):
 
         x = self.activation(x)
         return x
+
+    def forward(self: "Block", x: torch.Tensor, scale_shift: Optional[torch.Tensor] = None) -> torch.Tensor:
+        context_manager = dummy_context_manager() if DEBUG else record_function("Residual's Block")
+        with context_manager:
+            return self.forward_body(x, scale_shift)
 
 
 class ResidualBlock(nn.Module):

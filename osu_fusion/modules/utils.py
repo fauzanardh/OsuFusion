@@ -1,3 +1,6 @@
+from contextlib import contextmanager
+from typing import Generator
+
 import torch
 
 
@@ -27,3 +30,9 @@ def rotate_half(x: torch.Tensor) -> torch.Tensor:
 @torch.jit.script
 def apply_rotary_pos_emb(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
     return (x * cos) + (rotate_half(x) * sin)
+
+
+# Used for profiling
+@contextmanager
+def dummy_context_manager() -> Generator[None, None, None]:
+    yield

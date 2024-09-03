@@ -1,14 +1,18 @@
 import math
+import os
 from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
 from einops import rearrange, repeat
 from torch.nn import functional as F  # noqa: N812
+from torch.profiler import record_function
 
 from osu_fusion.modules.attention import Attend, RotaryPositionEmbedding
 from osu_fusion.modules.residual import ResidualBlock
-from osu_fusion.modules.utils import prob_mask_like
+from osu_fusion.modules.utils import dummy_context_manager, prob_mask_like
+
+DEBUG = os.environ.get("DEBUG", False)
 
 
 def zero_init(module: nn.Module) -> nn.Module:
@@ -59,10 +63,15 @@ class Upsample(nn.Module):
         super().__init__()
         self.conv = nn.Conv1d(dim_in, dim_out, 3, padding=1)
 
-    def forward(self: "Upsample", x: torch.Tensor) -> torch.Tensor:
+    def forward_body(self: "Upsample", x: torch.Tensor) -> torch.Tensor:
         x = F.interpolate(x, scale_factor=2.0, mode="nearest")
         x = self.conv(x)
         return x
+
+    def forward(self: "Upsample", x: torch.Tensor) -> torch.Tensor:
+        context_manager = dummy_context_manager() if DEBUG else record_function("Upsample")
+        with context_manager:
+            return self.forward_body(x)
 
 
 class Downsample(nn.Module):
@@ -71,11 +80,16 @@ class Downsample(nn.Module):
         # Asymmetric padding
         self.conv = nn.Conv1d(dim_in, dim_out, 3, stride=2, padding=0)
 
-    def forward(self: "Downsample", x: torch.Tensor) -> torch.Tensor:
+    def forward_body(self: "Downsample", x: torch.Tensor) -> torch.Tensor:
         pad = (0, 1)
         x = F.pad(x, pad=pad, mode="reflect")
         x = self.conv(x)
         return x
+
+    def forward(self: "Downsample", x: torch.Tensor) -> torch.Tensor:
+        context_manager = dummy_context_manager() if DEBUG else record_function("Downsample")
+        with context_manager:
+            return self.forward_body(x)
 
 
 class Parallel(nn.Module):
@@ -124,7 +138,7 @@ class Attention(nn.Module):
         self.attn = Attend()
         self.to_out = nn.Linear(dim_head * heads, dim_in)
 
-    def forward(self: "Attention", x: torch.Tensor) -> torch.Tensor:
+    def forward_body(self: "Attention", x: torch.Tensor) -> torch.Tensor:
         q = rearrange(self.to_q(x), "b n (h d) -> b h n d", h=self.heads)
 
         k, v = self.to_kv(x).chunk(2, dim=-1)
@@ -142,6 +156,11 @@ class Attention(nn.Module):
         out = self.attn(q, k, v)
         out = rearrange(out, "b h n d -> b n (h d)")
         return x + self.to_out(out)
+
+    def forward(self: "Attention", x: torch.Tensor) -> torch.Tensor:
+        context_manager = dummy_context_manager() if DEBUG else record_function("Attention")
+        with context_manager:
+            return self.forward_body(x)
 
 
 class LinearAttention(nn.Module):
@@ -171,7 +190,7 @@ class LinearAttention(nn.Module):
 
         self.to_out = nn.Linear(dim_head * heads, dim_in)
 
-    def forward(self: "LinearAttention", x: torch.Tensor) -> torch.Tensor:
+    def forward_body(self: "LinearAttention", x: torch.Tensor) -> torch.Tensor:
         q = rearrange(self.to_q(x), "b n (h d) -> b h n d", h=self.heads)
 
         k, v = self.to_kv(x).chunk(2, dim=-1)
@@ -195,6 +214,11 @@ class LinearAttention(nn.Module):
         out = torch.einsum("b h d e, b h n d -> b h n e", context, q)
         out = rearrange(out, "b h n d -> b n (h d)")
         return x + self.to_out(out)
+
+    def forward(self: "LinearAttention", x: torch.Tensor) -> torch.Tensor:
+        context_manager = dummy_context_manager() if DEBUG else record_function("LinearAttention")
+        with context_manager:
+            return self.forward_body(x)
 
 
 class FeedForward(nn.Sequential):
