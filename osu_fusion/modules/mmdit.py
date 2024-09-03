@@ -70,7 +70,6 @@ class JointAttention(nn.Module):
         heads: int,
         kv_heads: int,
         qk_norm: bool = True,
-        use_rotary_emb: bool = True,
         context_len: int = 4096,
     ) -> None:
         super().__init__()
@@ -90,12 +89,7 @@ class JointAttention(nn.Module):
         self.q_a_norm = MultiHeadRMSNorm(dim_head, heads) if qk_norm else nn.Identity()
         self.k_a_norm = MultiHeadRMSNorm(dim_head, kv_heads) if qk_norm else nn.Identity()
 
-        self.attn = Attend(
-            dim_head,
-            heads=heads,
-            use_rotary_emb=use_rotary_emb,
-            context_len=context_len,
-        )
+        self.attn = Attend()
 
     def forward(
         self: "JointAttention",
@@ -142,7 +136,6 @@ class MMDiTBlock(nn.Module):
         attn_heads: int = 8,
         attn_kv_heads: int = 2,
         attn_qk_norm: bool = True,
-        attn_use_rotary_emb: bool = True,
         attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
@@ -174,7 +167,6 @@ class MMDiTBlock(nn.Module):
             attn_heads,
             attn_kv_heads,
             qk_norm=attn_qk_norm,
-            use_rotary_emb=attn_use_rotary_emb,
             context_len=attn_context_len,
         )
 
@@ -260,7 +252,6 @@ class MMDiT(nn.Module):
         attn_heads: int = 8,
         attn_kv_heads: int = 2,
         attn_qk_norm: bool = True,
-        attn_use_rotary_emb: bool = True,
         attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
@@ -293,7 +284,6 @@ class MMDiT(nn.Module):
                     attn_heads=attn_heads,
                     attn_kv_heads=attn_kv_heads,
                     attn_qk_norm=attn_qk_norm,
-                    attn_use_rotary_emb=attn_use_rotary_emb,
                     attn_context_len=self.attn_context_len,
                 )
                 for _ in range(depth)

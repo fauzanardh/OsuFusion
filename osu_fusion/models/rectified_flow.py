@@ -27,7 +27,6 @@ class OsuFusion(nn.Module):
         attn_dim_head: int = 64,
         attn_heads: int = 16,
         attn_kv_heads: int = 1,
-        attn_use_rotary_emb: bool = True,
         attn_context_len: int = 4096,
         cond_drop_prob: float = 0.5,
         sampling_timesteps: int = 16,
@@ -46,7 +45,6 @@ class OsuFusion(nn.Module):
             attn_dim_head=attn_dim_head,
             attn_heads=attn_heads,
             attn_kv_heads=attn_kv_heads,
-            attn_use_rotary_emb=attn_use_rotary_emb,
             attn_context_len=attn_context_len,
         )
 

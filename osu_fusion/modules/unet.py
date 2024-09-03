@@ -108,18 +108,15 @@ class Attention(nn.Module):
         dim_head: int,
         heads: int,
         kv_heads: int,
-        use_rotary_emb: bool = True,
         context_len: int = 4096,
     ) -> None:
         super().__init__()
         self.heads = heads
         self.kv_heads = kv_heads
-        self.use_rotary_emb = use_rotary_emb
 
         self.to_q = nn.Linear(dim_in, dim_head * heads, bias=False)
         self.to_kv = nn.Linear(dim_in, dim_head * kv_heads * 2, bias=False)
-        if use_rotary_emb:
-            self.rotary_emb = RotaryPositionEmbedding(dim_head, scale_base=context_len)
+        self.rotary_emb = RotaryPositionEmbedding(dim_head, scale_base=context_len)
 
         self.attn = Attend()
         self.to_out = nn.Linear(dim_head * heads, dim_in)
@@ -133,8 +130,7 @@ class Attention(nn.Module):
         # GQA
         k, v = (repeat(t, "b h n d -> b (r h) n d", r=self.heads // self.kv_heads) for t in (k, v))
 
-        if self.use_rotary_emb:
-            q, k = self.rotary_emb(q, k)
+        q, k = self.rotary_emb(q, k)
 
         out = self.attn(q, k, v)
         out = rearrange(out, "b h n d -> b n (h d)")
@@ -153,20 +149,17 @@ class LinearAttention(nn.Module):
         dim_head: int,
         heads: int,
         kv_heads: int,
-        use_rotary_emb: bool = True,
         context_len: int = 4096,
     ) -> None:
         super().__init__()
         self.heads = heads
         self.kv_heads = kv_heads
         self.scale = dim_head**-0.5
-        self.use_rotary_emb = use_rotary_emb
 
         self.to_q = nn.Linear(dim_in, dim_head * heads, bias=False)
         self.to_kv = nn.Linear(dim_in, dim_head * kv_heads * 2, bias=False)
 
-        if self.use_rotary_emb:
-            self.rotary_emb = RotaryPositionEmbedding(dim_head, scale_base=context_len)
+        self.rotary_emb = RotaryPositionEmbedding(dim_head, scale_base=context_len)
 
         self.to_out = nn.Linear(dim_head * heads, dim_in)
 
@@ -180,8 +173,7 @@ class LinearAttention(nn.Module):
         if self.kv_heads > 1:
             k, v = (repeat(t, "b h n d -> b (r h) n d", r=self.heads // self.kv_heads) for t in (k, v))
 
-        if self.use_rotary_emb:
-            q, k = self.rotary_emb(q, k)
+        q, k = self.rotary_emb(q, k)
 
         q = q * self.scale
 
@@ -218,7 +210,6 @@ class TransformerBlock(nn.Module):
         attn_dim_head: int = 64,
         attn_heads: int = 16,
         attn_kv_heads: int = 1,
-        attn_use_rotary_emb: bool = True,
         attn_context_len: int = 4096,
         attn_linear: bool = False,
     ) -> None:
@@ -229,7 +220,6 @@ class TransformerBlock(nn.Module):
                 attn_dim_head,
                 attn_heads,
                 attn_kv_heads,
-                attn_use_rotary_emb,
                 attn_context_len,
             )
             if not attn_linear
@@ -238,7 +228,6 @@ class TransformerBlock(nn.Module):
                 attn_dim_head,
                 attn_heads,
                 attn_kv_heads,
-                attn_use_rotary_emb,
                 attn_context_len,
             )
         )
@@ -265,7 +254,6 @@ class UNetBlock(nn.Module):
         attn_dim_head: int,
         attn_heads: int,
         attn_kv_heads: int,
-        attn_use_rotary_emb: bool,
         attn_context_len: int,
     ) -> None:
         super().__init__()
@@ -283,7 +271,6 @@ class UNetBlock(nn.Module):
                     attn_dim_head=attn_dim_head,
                     attn_heads=attn_heads,
                     attn_kv_heads=attn_kv_heads,
-                    attn_use_rotary_emb=attn_use_rotary_emb,
                     attn_context_len=attn_context_len,
                     attn_linear=True,
                 )
@@ -361,7 +348,6 @@ class AudioEncoder(nn.Module):
         attn_dim_head: int = 64,
         attn_heads: int = 16,
         attn_kv_heads: int = 1,
-        attn_use_rotary_emb: bool = True,
         attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
@@ -394,7 +380,6 @@ class AudioEncoder(nn.Module):
                     attn_dim_head,
                     attn_heads,
                     attn_kv_heads,
-                    attn_use_rotary_emb,
                     attn_context_len_layer,
                 ),
             )
@@ -421,7 +406,6 @@ class UNet(nn.Module):
         attn_dim_head: int = 64,
         attn_heads: int = 16,
         attn_kv_heads: int = 1,
-        attn_use_rotary_emb: bool = True,
         attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
@@ -439,7 +423,6 @@ class UNet(nn.Module):
             attn_dim_head=attn_dim_head,
             attn_heads=attn_heads,
             attn_kv_heads=attn_kv_heads,
-            attn_use_rotary_emb=attn_use_rotary_emb,
         )
         self.final_resnet = ResidualBlock(dim_h * 2, dim_h, self.dim_emb, self.dim_emb)
         self.final_conv = zero_init(nn.Conv1d(dim_h, dim_in_x, 1))
@@ -481,7 +464,6 @@ class UNet(nn.Module):
                     attn_dim_head,
                     attn_heads,
                     attn_kv_heads,
-                    attn_use_rotary_emb,
                     attn_context_len_layer,
                 ),
             )
@@ -501,7 +483,6 @@ class UNet(nn.Module):
                     attn_dim_head=attn_dim_head,
                     attn_heads=attn_heads,
                     attn_kv_heads=attn_kv_heads,
-                    attn_use_rotary_emb=attn_use_rotary_emb,
                     attn_context_len=attn_context_len // (2 ** (n_layers - 1)),
                     attn_linear=False,
                 )
@@ -538,7 +519,6 @@ class UNet(nn.Module):
                     attn_dim_head,
                     attn_heads,
                     attn_kv_heads,
-                    attn_use_rotary_emb,
                     attn_context_len_layer,
                 ),
             )

@@ -93,7 +93,6 @@ class DiTAttention(nn.Module):
         heads: int,
         dim_head: int,
         qk_norm: bool = True,
-        use_rotary_emb: bool = True,
         context_len: int = 4096,
     ) -> None:
         super().__init__()
@@ -104,12 +103,7 @@ class DiTAttention(nn.Module):
         self.q_norm = MultiHeadRMSNorm(dim_head, heads=heads) if qk_norm else nn.Identity()
         self.k_norm = MultiHeadRMSNorm(dim_head, heads=heads) if qk_norm else nn.Identity()
 
-        self.attn = Attend(
-            dim_head,
-            heads=heads,
-            use_rotary_emb=use_rotary_emb,
-            context_len=context_len,
-        )
+        self.attn = Attend()
 
     def forward(self: "DiTAttention", x: torch.Tensor) -> torch.Tensor:
         q, k, v = self.to_qkv(x).chunk(3, dim=-1)
@@ -130,7 +124,6 @@ class DiTBlock(nn.Module):
         attn_heads: int = 8,
         attn_dim_head: int = 64,
         attn_qk_norm: bool = True,
-        attn_use_rotary_emb: bool = True,
         attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
@@ -145,7 +138,6 @@ class DiTBlock(nn.Module):
             heads=attn_heads,
             dim_head=attn_dim_head,
             qk_norm=attn_qk_norm,
-            use_rotary_emb=attn_use_rotary_emb,
             context_len=attn_context_len,
         )
         self.norm2 = nn.LayerNorm(dim_h, elementwise_affine=False, eps=1e-6)
@@ -180,7 +172,6 @@ class DiT(nn.Module):
         attn_heads: int = 8,
         attn_dim_head: int = 64,
         attn_qk_norm: bool = True,
-        attn_use_rotary_emb: bool = True,
         attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
@@ -215,7 +206,6 @@ class DiT(nn.Module):
                     attn_heads=attn_heads,
                     attn_dim_head=attn_dim_head,
                     attn_qk_norm=attn_qk_norm,
-                    attn_use_rotary_emb=attn_use_rotary_emb,
                     attn_context_len=attn_context_len,
                 )
                 for _ in range(depth)
