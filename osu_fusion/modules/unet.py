@@ -112,18 +112,16 @@ class Attention(nn.Module):
         self.heads = heads
         self.kv_heads = kv_heads
         self.qk_norm = qk_norm
+        self.use_rotary_emb = use_rotary_emb
 
         self.to_q = nn.Linear(dim_in, dim_head * heads, bias=False)
         self.to_kv = nn.Linear(dim_in, dim_head * kv_heads * 2, bias=False)
         self.q_norm = MultiHeadRMSNorm(dim_head, heads) if qk_norm else None
         self.k_norm = MultiHeadRMSNorm(dim_head, kv_heads) if qk_norm else None
+        if use_rotary_emb:
+            self.rotary_emb = RotaryPositionEmbedding(dim_head, scale_base=context_len)
 
-        self.attn = Attend(
-            dim_head,
-            heads=heads,
-            use_rotary_emb=use_rotary_emb,
-            context_len=context_len,
-        )
+        self.attn = Attend()
         self.to_out = nn.Linear(dim_head * heads, dim_in)
 
     def forward(self: "Attention", x: torch.Tensor) -> torch.Tensor:
@@ -137,6 +135,9 @@ class Attention(nn.Module):
 
         # GQA
         k, v = (repeat(t, "b h n d -> b (r h) n d", r=self.heads // self.kv_heads) for t in (k, v))
+
+        if self.use_rotary_emb:
+            q, k = self.rotary_emb(q, k)
 
         out = self.attn(q, k, v)
         out = rearrange(out, "b h n d -> b n (h d)")

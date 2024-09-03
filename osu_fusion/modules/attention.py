@@ -57,23 +57,11 @@ class RotaryPositionEmbedding(nn.Module):
 
 
 class Attend(nn.Module):
-    def __init__(
-        self: "Attend",
-        dim_head: int,
-        heads: int = 8,
-        use_rotary_emb: bool = True,
-        context_len: int = 4096,
-    ) -> None:
+    def __init__(self: "Attend") -> None:
         super().__init__()
         assert not version.parse(torch.__version__) < version.parse("2.0.0"), "sdpa requires torch>=2.0.0"
-        self.heads = heads
-        self.use_rotary_emb = use_rotary_emb
-
         # sdpa configs
         self.cpu_config = _config(True, True, True)
-
-        if use_rotary_emb:
-            self.rotary_emb = RotaryPositionEmbedding(dim_head, scale_base=context_len)
 
         if not torch.cuda.is_available():
             return
@@ -84,7 +72,7 @@ class Attend(nn.Module):
         else:
             self.cuda_config = _config(False, True, True)
 
-    def forward_sdpa(
+    def forward(
         self: "Attend",
         q: torch.Tensor,
         k: torch.Tensor,
@@ -109,13 +97,3 @@ class Attend(nn.Module):
             )
 
         return out.to(dtype)
-
-    def forward(
-        self: "Attend",
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-    ) -> torch.Tensor:
-        if self.use_rotary_emb:
-            q, k = self.rotary_emb(q, k)
-        return self.forward_sdpa(q, k, v)

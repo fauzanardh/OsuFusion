@@ -105,10 +105,11 @@ class OsuFusion(nn.Module):
         loss = F.mse_loss(pred, noise, reduction="none")
 
         # Create mask for losses to ignore padding
-        b, _, n = x.shape
-        mask = torch.ones((b, n), device=x.device)
         if orig_len is not None:
+            b, _, n = x.shape
+            mask = torch.ones((b, n), device=x.device)
             for i, orig in enumerate(orig_len):
                 mask[i, orig:] = 0.0
-        mask = repeat(mask, "b n -> b d n", d=TOTAL_DIM)
-        return (loss * mask).sum() / mask.sum()
+            mask = repeat(mask, "b n -> b d n", d=TOTAL_DIM)
+            return (loss * mask).sum() / mask.sum()
+        return loss.mean()
