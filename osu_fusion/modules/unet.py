@@ -259,10 +259,7 @@ class UNetBlock(nn.Module):
         super().__init__()
         self.init_resnet = ResidualBlock(dim_in if down_block else dim_in + dim_out, dim_in, dim_time, dim_cond)
         self.resnets = nn.ModuleList(
-            [
-                ResidualBlock(dim_in if down_block else dim_in + dim_out, dim_in, dim_time, dim_cond)
-                for _ in range(num_blocks)
-            ],
+            [ResidualBlock(dim_in, dim_in, dim_time, dim_cond) for _ in range(num_blocks)],
         )
         self.transformers = nn.ModuleList(
             [
@@ -303,38 +300,25 @@ class UNetBlock(nn.Module):
         x: torch.Tensor,
         t: Optional[torch.Tensor] = None,
         c: Optional[torch.Tensor] = None,
-        skip_inputs: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        skips = []
-
-        if skip_inputs is not None:
-            assert (
-                len(skip_inputs) == len(self.resnets) + 1
-            ), f"Expected {len(self.resnets) + 1} skip inputs, got {len(skip_inputs)}"
-            x = torch.cat([x, skip_inputs[0]], dim=1)
         x = self.init_resnet(x, t, c)
-        skips.append(x)
 
-        for i, (resnet, transformer) in enumerate(zip(self.resnets, self.transformers)):
-            if skip_inputs is not None:
-                x = torch.cat([x, skip_inputs[i + 1]], dim=1)
+        for resnet, transformer in zip(self.resnets, self.transformers):
             x = resnet(x, t, c)
             x = transformer(x)
-            skips.append(x)
 
-        return self.sampler(x), skips
+        return self.sampler(x), x
 
     def forward(
         self: "UNetBlock",
         x: torch.Tensor,
         t: Optional[torch.Tensor] = None,
         c: Optional[torch.Tensor] = None,
-        skip_inputs: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if self.training and self.gradient_checkpointing:
-            return torch.utils.checkpoint.checkpoint(self.forward_body, x, t, c, skip_inputs, use_reentrant=True)
+            return torch.utils.checkpoint.checkpoint(self.forward_body, x, t, c, use_reentrant=True)
         else:
-            return self.forward_body(x, t, c, skip_inputs=skip_inputs)
+            return self.forward_body(x, t, c)
 
 
 class AudioEncoder(nn.Module):
@@ -567,10 +551,10 @@ class UNet(nn.Module):
         c = self.cond_mlp(c)
         c = torch.where(cond_mask, c, null_conds)
 
-        skips_connections = []
+        skip_connection = []
         for down_layer in self.down_layers:
-            x, skips = down_layer(x, t, c)
-            skips_connections.append(skips)
+            x, skip = down_layer(x, t, c)
+            skip_connection.append(skip)
 
         x = torch.cat([x, a], dim=1)
         x = self.middle_resnet1(x, t, c)
@@ -578,8 +562,9 @@ class UNet(nn.Module):
             x = transformer_block(x)
         x = self.middle_resnet2(x, t, c)
 
-        for up_layer, skips in zip(self.up_layers, reversed(skips_connections)):
-            x, _ = up_layer(x, t, c, skip_inputs=skips)
+        for up_layer, skip in zip(self.up_layers, reversed(skip_connection)):
+            x = torch.cat([x, skip], dim=1)
+            x, _ = up_layer(x, t, c)
 
         x = torch.cat([x, r], dim=1)
         x = self.final_resnet(x, t, c)
