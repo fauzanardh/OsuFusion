@@ -29,6 +29,7 @@ class RotaryPositionEmbedding(nn.Module):
         self._cos_cached = None
         self._sin_cached = None
 
+    @torch.cuda.amp.autocast(dtype=torch.float32)
     def _update_cos_sin_tables(self: "RotaryPositionEmbedding", x: torch.Tensor) -> torch.Tensor:
         seq_len = x.shape[-2]
         if seq_len != self._seq_len_cached or self._cos_cached.device != x.device or self._cos_cached.dtype != x.dtype:
@@ -47,6 +48,7 @@ class RotaryPositionEmbedding(nn.Module):
 
         return self._cos_cached, self._sin_cached
 
+    @torch.cuda.amp.autocast(dtype=torch.float32)
     def forward(self: "RotaryPositionEmbedding", q: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
         self._cos_cached, self._sin_cached = self._update_cos_sin_tables(q)
 
