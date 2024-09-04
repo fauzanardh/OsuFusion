@@ -142,56 +142,6 @@ class Attention(nn.Module):
             return self.forward_body(x)
 
 
-class LinearAttention(nn.Module):
-    def __init__(
-        self: "LinearAttention",
-        dim_in: int,
-        dim_head: int,
-        heads: int,
-        kv_heads: int,
-        context_len: int = 4096,
-    ) -> None:
-        super().__init__()
-        self.heads = heads
-        self.kv_heads = kv_heads
-        self.scale = dim_head**-0.5
-
-        self.to_q = nn.Linear(dim_in, dim_head * heads, bias=False)
-        self.to_kv = nn.Linear(dim_in, dim_head * kv_heads * 2, bias=False)
-
-        self.rotary_emb = RotaryPositionEmbedding(dim_head, scale_base=context_len)
-
-        self.to_out = nn.Linear(dim_head * heads, dim_in)
-
-    def forward_body(self: "LinearAttention", x: torch.Tensor) -> torch.Tensor:
-        q = rearrange(self.to_q(x), "b n (h d) -> b h n d", h=self.heads)
-
-        k, v = self.to_kv(x).chunk(2, dim=-1)
-        k, v = (rearrange(t, "b n (h d) -> b h n d", h=self.kv_heads) for t in (k, v))
-
-        # GQA
-        if self.kv_heads > 1:
-            k, v = (repeat(t, "b h n d -> b (r h) n d", r=self.heads // self.kv_heads) for t in (k, v))
-
-        q, k = self.rotary_emb(q, k)
-
-        q = q * self.scale
-
-        q = q.softmax(dim=-1)
-        k = k.softmax(dim=-2)
-
-        context = torch.einsum("b h n d, b h n e -> b h d e", k, v)
-
-        out = torch.einsum("b h d e, b h n d -> b h n e", context, q)
-        out = rearrange(out, "b h n d -> b n (h d)")
-        return x + self.to_out(out)
-
-    def forward(self: "LinearAttention", x: torch.Tensor) -> torch.Tensor:
-        context_manager = dummy_context_manager() if DEBUG else record_function("LinearAttention")
-        with context_manager:
-            return self.forward_body(x)
-
-
 class FeedForward(nn.Sequential):
     def __init__(self: "FeedForward", dim: int, dim_mult: int = 2) -> None:
         inner_dim = dim * dim_mult
@@ -211,25 +161,14 @@ class TransformerBlock(nn.Module):
         attn_heads: int = 16,
         attn_kv_heads: int = 1,
         attn_context_len: int = 4096,
-        attn_linear: bool = False,
     ) -> None:
         super().__init__()
-        self.attn = (
-            Attention(
-                dim,
-                attn_dim_head,
-                attn_heads,
-                attn_kv_heads,
-                attn_context_len,
-            )
-            if not attn_linear
-            else LinearAttention(
-                dim,
-                attn_dim_head,
-                attn_heads,
-                attn_kv_heads,
-                attn_context_len,
-            )
+        self.attn = Attention(
+            dim,
+            attn_dim_head,
+            attn_heads,
+            attn_kv_heads,
+            attn_context_len,
         )
         self.ff = FeedForward(dim, ff_mult)
 
@@ -269,7 +208,6 @@ class UNetBlock(nn.Module):
                     attn_heads=attn_heads,
                     attn_kv_heads=attn_kv_heads,
                     attn_context_len=attn_context_len,
-                    attn_linear=True,
                 )
                 for _ in range(num_blocks)
             ],
@@ -468,7 +406,6 @@ class UNet(nn.Module):
                     attn_heads=attn_heads,
                     attn_kv_heads=attn_kv_heads,
                     attn_context_len=attn_context_len // (2 ** (n_layers - 1)),
-                    attn_linear=False,
                 )
                 for _ in range(num_middle_transformers)
             ],
