@@ -114,6 +114,7 @@ class Attention(nn.Module):
         self.heads = heads
         self.kv_heads = kv_heads
 
+        self.norm = nn.LayerNorm(dim_in)
         self.to_q = nn.Linear(dim_in, dim_head * heads, bias=False)
         self.to_kv = nn.Linear(dim_in, dim_head * kv_heads * 2, bias=False)
         self.rotary_emb = RotaryPositionEmbedding(dim_head, scale_base=context_len)
@@ -122,6 +123,9 @@ class Attention(nn.Module):
         self.to_out = nn.Linear(dim_head * heads, dim_in)
 
     def forward_body(self: "Attention", x: torch.Tensor) -> torch.Tensor:
+        # Pre-norm
+        x = self.norm(x)
+
         q = rearrange(self.to_q(x), "b n (h d) -> b h n d", h=self.heads)
 
         k, v = self.to_kv(x).chunk(2, dim=-1)
