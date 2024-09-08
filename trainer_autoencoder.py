@@ -220,7 +220,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         project_name="OsuFusion-AutoEncoder",
     )
 
-    model = OsuAutoEncoder(128, 16, 256) if args.osu_data else AudioAutoEncoder(128, 16, 256)
+    model = OsuAutoEncoder(128, 32, 256) if args.osu_data else AudioAutoEncoder(128, 32, 256)
     if args.full_bf16:
         model.set_full_bf16()
     optimizer = AdamW(model.parameters(), lr=args.lr)
