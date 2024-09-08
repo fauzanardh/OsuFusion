@@ -133,7 +133,7 @@ class Block(nn.Module):
         down_block: bool = False,
         attn_dim_head: int = 64,
         attn_heads: int = 8,
-        attn_kv_heads: int = 2,
+        attn_kv_heads: int = 1,
         attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
@@ -171,7 +171,7 @@ class Encoder(nn.Module):
         dim_h_mult: Tuple[int] = (1, 2, 3, 4),
         attn_dim_head: int = 64,
         attn_heads: int = 8,
-        attn_kv_heads: int = 2,
+        attn_kv_heads: int = 1,
         attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
@@ -247,7 +247,7 @@ class OsuDecoder(nn.Module):
         dim_h_mult: Tuple[int] = (1, 2, 3, 4),
         attn_dim_head: int = 64,
         attn_heads: int = 8,
-        attn_kv_heads: int = 2,
+        attn_kv_heads: int = 1,
         attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
@@ -331,7 +331,7 @@ class AudioDecoder(nn.Module):
         dim_h_mult: Tuple[int] = (1, 2, 3, 4),
         attn_dim_head: int = 64,
         attn_heads: int = 8,
-        attn_kv_heads: int = 2,
+        attn_kv_heads: int = 1,
         attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
@@ -413,25 +413,24 @@ class OsuAutoEncoder(nn.Module):
         dim_h_mult: Tuple[int] = (1, 2, 3, 4),
         attn_dim_head: int = 64,
         attn_heads: int = 8,
-        attn_kv_heads: int = 2,
+        attn_kv_heads: int = 1,
         attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
-        assert dim_emb % (HIT_DIM * 2) == 0, "dim_emb must be divisible by HIT_DIM * 2"
+        assert dim_emb % HIT_DIM == 0, "dim_emb must be divisible by HIT_DIM"
 
         # Embeddings
-        hit_emb_dim = dim_emb // (HIT_DIM * 2)
-        cursor_emb_dim = dim_emb // 2
+        hit_emb_dim = dim_emb // HIT_DIM
         # Discrete hit signals embedding
         self.hit_embedding = nn.Embedding(2, hit_emb_dim)
         # Continuous cursor signals embedding
         self.cursor_embedding = nn.Sequential(
-            nn.Linear(CURSOR_DIM, cursor_emb_dim),
+            nn.Linear(CURSOR_DIM, dim_emb),
             nn.SiLU(),
-            nn.Linear(cursor_emb_dim, cursor_emb_dim),
+            nn.Linear(dim_emb, dim_emb),
         )
         self.mlp_embedding = nn.Sequential(
-            nn.Linear(dim_emb, dim_emb),
+            nn.Linear(dim_emb * 2, dim_emb),
             nn.SiLU(),
             nn.Linear(dim_emb, dim_emb),
         )
@@ -519,7 +518,7 @@ class AudioAutoEncoder(nn.Module):
         dim_h_mult: Tuple[int] = (1, 2, 3, 4),
         attn_dim_head: int = 64,
         attn_heads: int = 8,
-        attn_kv_heads: int = 2,
+        attn_kv_heads: int = 1,
         attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
