@@ -22,10 +22,10 @@ from tqdm.auto import tqdm
 import wandb
 from osu_fusion.library.dataset import FullSequenceDataset, RandomLengthDataset, SubsequenceDataset
 from osu_fusion.library.osu.data.encode import TOTAL_DIM
-from osu_fusion.modules.autoencoder import OsuAutoEncoder
+from osu_fusion.modules.autoencoder import AudioAutoEncoder, OsuAutoEncoder
 from osu_fusion.scripts.dataset_creator import AUDIO_DIM
 
-Model = Union[OsuAutoEncoder]
+Model = Union[OsuAutoEncoder, AudioAutoEncoder]
 
 wandb.require("core")
 
@@ -110,8 +110,11 @@ def sample_step(
     model.eval()
     with accelerator.autocast(), torch.torch.inference_mode():
         z, _ = model.encode(x)
-        recon_hit, recon_cursor = model.decode(z, use_tanh=True)
-        reconstructed = torch.cat([recon_hit, recon_cursor], dim=1)
+        if args.osu_data:
+            recon_hit, recon_cursor = model.decode(z, use_tanh=True)
+            reconstructed = torch.cat([recon_hit, recon_cursor], dim=1)
+        else:
+            reconstructed = model.decode(z)
     model.train()
 
     features = TOTAL_DIM if args.osu_data else AUDIO_DIM
@@ -199,7 +202,6 @@ def load_checkpoint(
 
 
 def train(args: ArgumentParser) -> None:  # noqa: C901
-    assert args.osu_data, "Only osu! data is supported for now"
     print("Initializing...")
     # Add your own API key here or set it as an environment variable
     # os.environ["WANDB_API_KEY"] = ""
@@ -218,8 +220,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         project_name="OsuFusion-AutoEncoder",
     )
 
-    # model = AutoEncoder(input_dim, 16, args.model_dim, decoder_use_tanh=args.osu_data, attn_infini=False)
-    model = OsuAutoEncoder(128, 16, 256)
+    model = OsuAutoEncoder(128, 16, 256) if args.osu_data else AudioAutoEncoder(128, 16, 256)
     if args.full_bf16:
         model.set_full_bf16()
     optimizer = AdamW(model.parameters(), lr=args.lr)
@@ -284,10 +285,13 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     ) as pbar:
         while current_step < args.total_steps:
             batch_total_loss = 0.0
-            batch_hit_loss = 0.0
-            batch_cursor_loss = 0.0
             batch_kl_loss = 0.0
             total_norm = 0.0
+            if args.osu_data:
+                batch_hit_loss = 0.0
+                batch_cursor_loss = 0.0
+            else:
+                batch_audio_loss = 0.0
             for _ in range(args.gradient_accumulation_steps):
                 batch = next(cycle_dataloader)
                 with accelerator.autocast(), accelerator.accumulate(model):
@@ -301,15 +305,22 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                     except AssertionError:
                         continue
 
-                    hit_loss, cursor_loss, kl_loss = loss
-                    loss = hit_loss + cursor_loss + kl_loss * args.kl_weight
+                    if args.osu_data:
+                        hit_loss, cursor_loss, kl_loss = loss
+                        loss = hit_loss + cursor_loss + kl_loss * args.kl_weight
+                    else:
+                        audio_loss, kl_loss = loss
+                        loss = audio_loss + kl_loss * args.kl_weight
 
                     accelerator.backward(loss)
                     total_norm += get_total_norm(model.parameters()) / args.gradient_accumulation_steps
                     batch_total_loss += loss.item() / args.gradient_accumulation_steps
-                    batch_hit_loss += hit_loss.item() / args.gradient_accumulation_steps
-                    batch_cursor_loss += cursor_loss.item() / args.gradient_accumulation_steps
                     batch_kl_loss += kl_loss.item() / args.gradient_accumulation_steps
+                    if args.osu_data:
+                        batch_hit_loss += hit_loss.item() / args.gradient_accumulation_steps
+                        batch_cursor_loss += cursor_loss.item() / args.gradient_accumulation_steps
+                    else:
+                        batch_audio_loss += audio_loss.item() / args.gradient_accumulation_steps
 
                     if args.clip_grad_norm > 0.0:
                         torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
@@ -328,17 +339,18 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
             pbar.update()
 
             if accelerator.is_main_process:
-                accelerator.log(
-                    {
-                        "loss": batch_total_loss,
-                        "hit_loss": batch_hit_loss,
-                        "cursor_loss": batch_cursor_loss,
-                        "kl_loss": batch_kl_loss,
-                        "total_norm": total_norm,
-                        "lr": scheduler.get_last_lr()[0],
-                    },
-                    step=current_step + 1,
-                )
+                log_dict = {
+                    "loss": batch_total_loss,
+                    "kl_loss": batch_kl_loss,
+                    "total_norm": total_norm,
+                    "lr": scheduler.get_last_lr()[0],
+                }
+                if args.osu_data:
+                    log_dict["hit_loss"] = batch_hit_loss
+                    log_dict["cursor_loss"] = batch_cursor_loss
+                else:
+                    log_dict["audio_loss"] = batch_audio_loss
+                accelerator.log(log_dict, step=current_step + 1)
 
             if (current_step + 1) % args.save_every == 0:
                 accelerator.wait_for_everyone()
