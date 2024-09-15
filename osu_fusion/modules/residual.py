@@ -59,9 +59,9 @@ class SqueezeExcite(nn.Module):
             return self.forward_body(x)
 
 
-class Block(nn.Module):
+class ResidualUnit(nn.Module):
     def __init__(
-        self: "Block",
+        self: "ResidualUnit",
         dim_in: int,
         dim_out: int,
         norm: bool = True,
@@ -71,7 +71,7 @@ class Block(nn.Module):
         self.norm = nn.GroupNorm(1, dim_out) if norm else nn.Identity()
         self.activation = nn.SiLU()
 
-    def forward_body(self: "Block", x: torch.Tensor, scale_shift: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward_body(self: "ResidualUnit", x: torch.Tensor, scale_shift: Optional[torch.Tensor] = None) -> torch.Tensor:
         x = self.proj(x)
         x = self.norm(x)
 
@@ -82,8 +82,8 @@ class Block(nn.Module):
         x = self.activation(x)
         return x
 
-    def forward(self: "Block", x: torch.Tensor, scale_shift: Optional[torch.Tensor] = None) -> torch.Tensor:
-        context_manager = dummy_context_manager() if DEBUG else record_function("Residual's Block")
+    def forward(self: "ResidualUnit", x: torch.Tensor, scale_shift: Optional[torch.Tensor] = None) -> torch.Tensor:
+        context_manager = dummy_context_manager() if DEBUG else record_function("ResidualUnit")
         with context_manager:
             return self.forward_body(x, scale_shift)
 
@@ -109,8 +109,8 @@ class ResidualBlock(nn.Module):
             if dim_time or dim_cond
             else None
         )
-        self.block1 = Block(dim_in, dim_out)
-        self.block2 = Block(dim_out, dim_out)
+        self.block1 = ResidualUnit(dim_in, dim_out)
+        self.block2 = ResidualUnit(dim_out, dim_out)
 
         self.res_conv = nn.Conv1d(dim_in, dim_out, 1) if dim_in != dim_out else nn.Identity()
         self.se = GlobalContext(dim_out, dim_out) if use_gca else SqueezeExcite(dim_out, dim_out)
