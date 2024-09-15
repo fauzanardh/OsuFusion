@@ -68,7 +68,6 @@ class Beatmap:
         for line in lines:
             vals = [float(x) for x in line.strip().split(",")]
             t, x, meter = vals[:3]
-            kiai = int(vals[7] if len(vals) >= 8 else 0) % 2 == 1
 
             if vals[6] == 0:
                 if len(self.timing_points) == 0:
@@ -83,13 +82,13 @@ class Beatmap:
                 cur_slider_multiplier = 1.0
                 cur_meter = meter
 
-            tp = TimingPoint(int(t), cur_beat_length, cur_slider_multiplier, cur_meter, kiai)
+            if cur_beat_length is None or cur_meter is None:
+                msg = "inherited timing point appears before any uninherited timing points"
+                raise ValueError(msg)
+
+            tp = TimingPoint(int(t), cur_beat_length, cur_slider_multiplier, int(cur_meter))
             if len(self.timing_points) == 0 or tp != self.timing_points[-1]:
                 self.timing_points.append(tp)
-
-            utp = TimingPoint(int(t), cur_beat_length, None, cur_meter, None)
-            if len(self.uninherited_timing_points) == 0 or utp != self.uninherited_timing_points[-1]:
-                self.uninherited_timing_points.append(utp)
 
         if len(self.timing_points) == 0:
             msg = "no timing points found"
@@ -118,7 +117,9 @@ class Beatmap:
             elif k & (1 << 1):
                 curve, slides, length = vals[5:8]
                 _, *control_points = curve.split("|")
-                control_points = [np.array([x, y])] + [np.array(list(map(int, p.split(":")))) for p in control_points]
+                control_points = [np.array([x, y], dtype=np.float32)] + [
+                    np.array(list(map(int, p.split(":"))), dtype=np.float32) for p in control_points
+                ]
 
                 tp = self.get_active_timing_point(t)
                 ho = from_control_points(

@@ -17,13 +17,11 @@ class TimingPoint(Timed):
         beat_length: float,
         slider_multiplier: float,
         meter: int,
-        kiai: bool,
     ) -> None:
         super().__init__(t)
         self.beat_length = beat_length
         self.slider_multiplier = slider_multiplier
         self.meter = meter
-        self.kiai = kiai
 
     def __eq__(self: "TimingPoint", other: "TimingPoint") -> bool:
         return all(
@@ -32,7 +30,6 @@ class TimingPoint(Timed):
                 self.beat_length == other.beat_length,
                 self.slider_multiplier == other.slider_multiplier,
                 self.meter == other.meter,
-                self.kiai == other.kiai,
             ],
         )
 
@@ -62,7 +59,7 @@ class Circle(HitObject):
         return self.t
 
     def start_pos(self: "Circle") -> npt.NDArray:
-        return np.array([self.x, self.y])
+        return np.array([self.x, self.y], dtype=np.float32)
 
 
 class Spinner(HitObject):
@@ -74,7 +71,7 @@ class Spinner(HitObject):
         return self.u
 
     def start_pos(self: "Spinner") -> npt.NDArray:
-        return np.array([256, 192])
+        return np.array([256, 192], dtype=np.float32)
 
 
 class Slider(HitObject):
@@ -96,11 +93,14 @@ class Slider(HitObject):
     def end_time(self: "Slider") -> int:
         return int(self.t + self.slide_duration * self.slides)
 
-    def lerp(self: "Slider", t: int) -> npt.NDArray:
+    def lerp(self: "Slider", t: npt.NDArray) -> npt.NDArray:
+        raise NotImplementedError
+
+    def velocity(self: "Slider", t: npt.NDArray) -> npt.NDArray:
         raise NotImplementedError
 
     def start_pos(self: "Slider") -> npt.NDArray:
-        return self.lerp(0.0)
+        return self.lerp(np.array([0], dtype=np.float32))[0]
 
     def end_pos(self: "Slider") -> npt.NDArray:
-        return self.lerp(self.slides % 2)
+        return self.lerp(np.array([self.slides % 2], dtype=np.float32))[0]

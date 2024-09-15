@@ -7,10 +7,6 @@ import numpy.typing as npt
 from osu_fusion.library.osu.hit_objects import Slider
 
 
-def round_and_cast(value: npt.NDArray) -> npt.NDArray:
-    return value.round(0).astype(int)
-
-
 class Line(Slider):
     def __init__(
         self: "Line",
@@ -31,11 +27,12 @@ class Line(Slider):
         vec = end - self.start
         return self.start + vec / np.linalg.norm(vec) * length
 
-    def lerp(self: "Line", t: float) -> npt.NDArray:
-        return round_and_cast((1 - t) * self.start + t * self.end)
+    def lerp(self: "Line", t: npt.NDArray) -> npt.NDArray:
+        return (1 - t[:, None]) * self.start + t[:, None] * self.end
 
-    def velocity(self: "Line", t: float) -> npt.NDArray:
-        return round_and_cast((self.end - self.start) / self.slide_duration)
+    def velocity(self: "Line", t: npt.NDArray) -> npt.NDArray:
+        vel = (self.end - self.start) / self.slide_duration
+        return vel[None].repeat(t.shape[0], axis=0)
 
 
 class Perfect(Slider):
@@ -64,14 +61,17 @@ class Perfect(Slider):
     def _calculate_theta(self: "Perfect", t: float) -> float:
         return (1 - t) * self.start + t * self.end
 
-    def lerp(self: "Perfect", t: float) -> npt.NDArray:
+    def lerp(self: "Perfect", t: npt.NDArray) -> npt.NDArray:
         theta = self._calculate_theta(t)
-        return round_and_cast(self.center + self.radius * np.array([np.cos(theta), np.sin(theta)]))
+        return self.center + self.radius * np.stack([np.cos(theta), np.sin(theta)], axis=1)
 
-    def velocity(self: "Perfect", t: float) -> npt.NDArray:
+    def velocity(self: "Perfect", t: npt.NDArray) -> npt.NDArray:
         theta = self._calculate_theta(t)
-        return round_and_cast(
-            self.radius * np.array([-np.sin(theta), np.cos(theta)]) / self.slide_duration,
+        return (
+            self.radius
+            * np.stack([-np.sin(theta), np.cos(theta)], axis=1)
+            * (self.end - self.start)
+            / self.slide_duration
         )
 
 
@@ -123,27 +123,31 @@ class Bezier(Slider):
             curves.append(bezier_curve)
 
         self.path_segments = curves
-        self.cum_t = np.cumsum([curve.length for curve in curves]) / self.length
-        self.cum_t[-1] = 1.0
+        self.cum_t = np.cumsum([curve.length for curve in curves])
+        self.cum_t /= self.cum_t[-1]
 
     def curve_reparametrize(self: "Bezier", t: float) -> Tuple[int, float]:
-        idx = np.searchsorted(self.cum_t, min(1, max(0, t)))
-        assert idx < len(self.cum_t), f"{idx} >= {len(self.cum_t)}"
+        idx = np.searchsorted(self.cum_t, np.clip(t, 0, 1))
 
         range_start = np.insert(self.cum_t, 0, 0)[idx]
         range_end = self.cum_t[idx]
 
         t = (t - range_start) / (range_end - range_start)
-        return int(idx), t
+        return idx, t
 
-    def lerp(self: "Bezier", t: float) -> npt.NDArray:
-        idx, t = self.curve_reparametrize(t)
-        return round_and_cast(self.path_segments[idx].evaluate(t)[:, 0])
+    def lerp(self: "Bezier", t: npt.NDArray) -> npt.NDArray:
+        return np.stack(
+            [self.path_segments[idx].evaluate(t)[:, 0] for idx, t in zip(*self.curve_reparametrize(t))],
+            axis=0,
+        )
 
-    def velocity(self: "Bezier", t: float) -> npt.NDArray:
-        idx, t = self.curve_reparametrize(t)
-        return round_and_cast(
-            self.path_segments[idx].evaluate_hodograph(t)[:, 0] / self.slide_duration,
+    def velocity(self: "Bezier", t: npt.NDArray) -> npt.NDArray:
+        return np.stack(
+            [
+                self.path_segments[idx].evaluate_hodograph(t)[:, 0] / self.slide_duration
+                for idx, t in zip(*self.curve_reparametrize(t))
+            ],
+            axis=0,
         )
 
 
