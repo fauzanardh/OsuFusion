@@ -220,7 +220,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         project_name="OsuFusion-AutoEncoder",
     )
 
-    model = OsuAutoEncoder(128, 32, 256) if args.osu_data else AudioAutoEncoder(128, 32, 256)
+    model = OsuAutoEncoder(128, 16, 128) if args.osu_data else AudioAutoEncoder(128, 16, 128)
     if args.full_bf16:
         model.set_full_bf16()
     optimizer = AdamW(model.parameters(), lr=args.lr)
@@ -238,13 +238,13 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     random.shuffle(all_maps)
 
     if args.full_sequence:
-        dataset = FullSequenceDataset(dataset=all_maps)
+        dataset = FullSequenceDataset(dataset=all_maps, segment_sr=False)
         collator = collate_fn
     elif args.random_length:
-        dataset = RandomLengthDataset(dataset=all_maps)
+        dataset = RandomLengthDataset(dataset=all_maps, segment_sr=False)
         collator = collate_fn
     else:
-        dataset = SubsequenceDataset(dataset=all_maps)
+        dataset = SubsequenceDataset(dataset=all_maps, segment_sr=False)
         collator = None
 
     dataloader = DataLoader(
