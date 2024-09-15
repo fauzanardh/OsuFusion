@@ -95,7 +95,7 @@ class ResidualBlock(nn.Module):
         dim_out: int,
         dim_time: Optional[int] = None,
         dim_cond: Optional[int] = None,
-        use_gca: bool = True,
+        use_gca: bool = False,
     ) -> None:
         super().__init__()
         self.has_time_cond = dim_time is not None
