@@ -3,13 +3,12 @@ from typing import Tuple
 
 import torch
 import torch.nn as nn
-from einops import rearrange, repeat
+from einops import rearrange
 from torch.nn import functional as F  # noqa: N812
 from torch.profiler import record_function
 
 from osu_fusion.library.dataset import AUDIO_DIM
 from osu_fusion.library.osu.data.encode import CURSOR_DIM, HIT_DIM
-from osu_fusion.modules.attention import Attend, RotaryPositionEmbedding
 from osu_fusion.modules.residual import ResidualBlock
 from osu_fusion.modules.utils import dummy_context_manager
 
@@ -76,53 +75,6 @@ class Downsample(nn.Module):
             return self.forward_body(x)
 
 
-class Attention(nn.Module):
-    def __init__(
-        self: "Attention",
-        dim_in: int,
-        dim_head: int,
-        heads: int,
-        kv_heads: int,
-        context_len: int = 4096,
-    ) -> None:
-        super().__init__()
-        self.heads = heads
-        self.kv_heads = kv_heads
-
-        self.norm = nn.LayerNorm(dim_in)
-        self.to_q = nn.Linear(dim_in, dim_head * heads, bias=False)
-        self.to_kv = nn.Linear(dim_in, dim_head * kv_heads * 2, bias=False)
-        self.rotary_emb = RotaryPositionEmbedding(dim_head, scale_base=context_len)
-
-        self.attn = Attend()
-        self.to_out = nn.Linear(dim_head * heads, dim_in)
-
-    def forward_body(self: "Attention", x: torch.Tensor) -> torch.Tensor:
-        x = rearrange(x, "b d n -> b n d")
-
-        # Pre-norm
-        x = self.norm(x)
-
-        q = rearrange(self.to_q(x), "b n (h d) -> b h n d", h=self.heads)
-
-        k, v = self.to_kv(x).chunk(2, dim=-1)
-        k, v = (rearrange(t, "b n (h d) -> b h n d", h=self.kv_heads) for t in (k, v))
-
-        # GQA
-        k, v = (repeat(t, "b h n d -> b (r h) n d", r=self.heads // self.kv_heads) for t in (k, v))
-
-        q, k = self.rotary_emb(q, k)
-
-        out = self.attn(q, k, v)
-        out = rearrange(out, "b h n d -> b n (h d)")
-        return rearrange(x + self.to_out(out), "b n d -> b d n")
-
-    def forward(self: "Attention", x: torch.Tensor) -> torch.Tensor:
-        context_manager = dummy_context_manager() if DEBUG else record_function("Attention")
-        with context_manager:
-            return self.forward_body(x)
-
-
 class Block(nn.Module):
     def __init__(
         self: "Block",
@@ -131,21 +83,9 @@ class Block(nn.Module):
         layer_idx: int,
         num_layers: int,
         down_block: bool = False,
-        attn_dim_head: int = 64,
-        attn_heads: int = 8,
-        attn_kv_heads: int = 1,
-        attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
-        self.init_resnet = ResidualBlock(dim_in, dim_out)
-        self.resnet = ResidualBlock(dim_out, dim_out)
-        self.attention = Attention(
-            dim_out,
-            attn_dim_head,
-            attn_heads,
-            attn_kv_heads,
-            context_len=attn_context_len,
-        )
+        self.resnet = ResidualBlock(dim_in, dim_out)
 
         if down_block:
             self.sampler = (
@@ -155,10 +95,7 @@ class Block(nn.Module):
             self.sampler = Upsample(dim_out, dim_out) if layer_idx < num_layers - 1 else nn.Conv1d(dim_out, dim_out, 1)
 
     def forward(self: "Block", x: torch.Tensor) -> torch.Tensor:
-        x = self.init_resnet(x)
         x = self.resnet(x)
-        x = self.attention(x)
-
         return self.sampler(x)
 
 
@@ -169,10 +106,6 @@ class Encoder(nn.Module):
         dim_z: int,
         dim_h: int,
         dim_h_mult: Tuple[int] = (1, 2, 3, 4),
-        attn_dim_head: int = 64,
-        attn_heads: int = 8,
-        attn_kv_heads: int = 1,
-        attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
 
@@ -187,7 +120,6 @@ class Encoder(nn.Module):
         down_blocks = []
         for i in range(n_layers):
             layer_dim_in, layer_dim_out = in_out[i]
-            attn_context_len_layer = attn_context_len // (2**i)
             down_blocks.append(
                 Block(
                     layer_dim_in,
@@ -195,24 +127,12 @@ class Encoder(nn.Module):
                     i,
                     n_layers,
                     down_block=True,
-                    attn_dim_head=attn_dim_head,
-                    attn_heads=attn_heads,
-                    attn_kv_heads=attn_kv_heads,
-                    attn_context_len=attn_context_len_layer,
                 ),
             )
         self.down_blocks = nn.ModuleList(down_blocks)
 
         # Middle
         self.middle_resnet = ResidualBlock(dims_h[-1], dims_h[-1])
-        self.middle_attention = Attention(
-            dims_h[-1],
-            attn_dim_head,
-            attn_heads,
-            attn_kv_heads,
-            context_len=attn_context_len,
-        )
-        self.middle_resnet2 = ResidualBlock(dims_h[-1], dims_h[-1])
 
         # End
         self.norm_out = nn.GroupNorm(1, dims_h[-1])
@@ -227,8 +147,6 @@ class Encoder(nn.Module):
 
         # Middle
         x = self.middle_resnet(x)
-        x = self.middle_attention(x)
-        x = self.middle_resnet2(x)
 
         # End
         x = self.norm_out(x)
@@ -245,10 +163,6 @@ class OsuDecoder(nn.Module):
         dim_z: int,
         dim_h: int,
         dim_h_mult: Tuple[int] = (1, 2, 3, 4),
-        attn_dim_head: int = 64,
-        attn_heads: int = 8,
-        attn_kv_heads: int = 1,
-        attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
 
@@ -261,20 +175,11 @@ class OsuDecoder(nn.Module):
 
         # Middle
         self.middle_resnet = ResidualBlock(dims_h[-1], dims_h[-1])
-        self.middle_attention = Attention(
-            dims_h[-1],
-            attn_dim_head,
-            attn_heads,
-            attn_kv_heads,
-            context_len=attn_context_len,
-        )
-        self.middle_resnet2 = ResidualBlock(dims_h[-1], dims_h[-1])
 
         # Up
         up_blocks = []
         for i in range(n_layers):
             layer_dim_out, layer_dim_in = in_out[i]
-            attn_context_len_layer = attn_context_len // (2 ** (n_layers - i - 1))
             up_blocks.append(
                 Block(
                     layer_dim_in,
@@ -282,10 +187,6 @@ class OsuDecoder(nn.Module):
                     i,
                     n_layers,
                     down_block=False,
-                    attn_dim_head=attn_dim_head,
-                    attn_heads=attn_heads,
-                    attn_kv_heads=attn_kv_heads,
-                    attn_context_len=attn_context_len_layer,
                 ),
             )
         self.up_blocks = nn.ModuleList(up_blocks)
@@ -303,8 +204,6 @@ class OsuDecoder(nn.Module):
 
         # Middle
         x = self.middle_resnet(x)
-        x = self.middle_attention(x)
-        x = self.middle_resnet2(x)
 
         # Up
         for block in self.up_blocks:
@@ -329,10 +228,6 @@ class AudioDecoder(nn.Module):
         dim_z: int,
         dim_h: int,
         dim_h_mult: Tuple[int] = (1, 2, 3, 4),
-        attn_dim_head: int = 64,
-        attn_heads: int = 8,
-        attn_kv_heads: int = 1,
-        attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
 
@@ -345,20 +240,11 @@ class AudioDecoder(nn.Module):
 
         # Middle
         self.middle_resnet = ResidualBlock(dims_h[-1], dims_h[-1])
-        self.middle_attention = Attention(
-            dims_h[-1],
-            attn_dim_head,
-            attn_heads,
-            attn_kv_heads,
-            context_len=attn_context_len,
-        )
-        self.middle_resnet2 = ResidualBlock(dims_h[-1], dims_h[-1])
 
         # Up
         up_blocks = []
         for i in range(n_layers):
             layer_dim_out, layer_dim_in = in_out[i]
-            attn_context_len_layer = attn_context_len // (2 ** (n_layers - i - 1))
             up_blocks.append(
                 Block(
                     layer_dim_in,
@@ -366,10 +252,6 @@ class AudioDecoder(nn.Module):
                     i,
                     n_layers,
                     down_block=False,
-                    attn_dim_head=attn_dim_head,
-                    attn_heads=attn_heads,
-                    attn_kv_heads=attn_kv_heads,
-                    attn_context_len=attn_context_len_layer,
                 ),
             )
         self.up_blocks = nn.ModuleList(up_blocks)
@@ -386,8 +268,6 @@ class AudioDecoder(nn.Module):
 
         # Middle
         x = self.middle_resnet(x)
-        x = self.middle_attention(x)
-        x = self.middle_resnet2(x)
 
         # Up
         for block in self.up_blocks:
@@ -411,10 +291,6 @@ class OsuAutoEncoder(nn.Module):
         dim_z: int,
         dim_h: int,
         dim_h_mult: Tuple[int] = (1, 2, 3, 4),
-        attn_dim_head: int = 64,
-        attn_heads: int = 8,
-        attn_kv_heads: int = 1,
-        attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
         assert dim_emb % HIT_DIM == 0, "dim_emb must be divisible by HIT_DIM"
@@ -429,11 +305,7 @@ class OsuAutoEncoder(nn.Module):
             nn.SiLU(),
             nn.Linear(dim_emb, dim_emb),
         )
-        self.mlp_embedding = nn.Sequential(
-            nn.Linear(dim_emb * 2, dim_emb),
-            nn.SiLU(),
-            nn.Linear(dim_emb, dim_emb),
-        )
+        self.mlp_embedding = nn.Linear(dim_emb * 2, dim_emb)
 
         # Encoder
         self.encoder = Encoder(
@@ -441,10 +313,6 @@ class OsuAutoEncoder(nn.Module):
             dim_z,
             dim_h,
             dim_h_mult=dim_h_mult,
-            attn_dim_head=attn_dim_head,
-            attn_heads=attn_heads,
-            attn_kv_heads=attn_kv_heads,
-            attn_context_len=attn_context_len,
         )
 
         # Decoder
@@ -453,10 +321,6 @@ class OsuAutoEncoder(nn.Module):
             dim_z,
             dim_h,
             dim_h_mult=dim_h_mult,
-            attn_dim_head=attn_dim_head,
-            attn_heads=attn_heads,
-            attn_kv_heads=attn_kv_heads,
-            attn_context_len=attn_context_len,
         )
 
     def encode(self: "OsuAutoEncoder", x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -516,10 +380,6 @@ class AudioAutoEncoder(nn.Module):
         dim_z: int,
         dim_h: int,
         dim_h_mult: Tuple[int] = (1, 2, 3, 4),
-        attn_dim_head: int = 64,
-        attn_heads: int = 8,
-        attn_kv_heads: int = 1,
-        attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
 
@@ -536,10 +396,6 @@ class AudioAutoEncoder(nn.Module):
             dim_z,
             dim_h,
             dim_h_mult=dim_h_mult,
-            attn_dim_head=attn_dim_head,
-            attn_heads=attn_heads,
-            attn_kv_heads=attn_kv_heads,
-            attn_context_len=attn_context_len,
         )
 
         # Decoder
@@ -548,10 +404,6 @@ class AudioAutoEncoder(nn.Module):
             dim_z,
             dim_h,
             dim_h_mult=dim_h_mult,
-            attn_dim_head=attn_dim_head,
-            attn_heads=attn_heads,
-            attn_kv_heads=attn_kv_heads,
-            attn_context_len=attn_context_len,
         )
 
     def encode(self: "AudioAutoEncoder", x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
