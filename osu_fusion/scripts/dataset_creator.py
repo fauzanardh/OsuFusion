@@ -40,18 +40,15 @@ def load_audio(audio_file: Path) -> npt.NDArray:
         msg = f"Empty audio file: {audio_file}"
         raise ValueError(msg)
 
-    return np.log(
-        np.abs(
-            librosa.vqt(
-                y=wave,
-                sr=SR,
-                hop_length=HOP_LENGTH,
-                fmin=FMIN,
-                n_bins=AUDIO_DIM,
-                bins_per_octave=OCTAVE_BINS,
-            ),
-        )
-        + 1e-10,
+    return np.abs(
+        librosa.vqt(
+            y=wave,
+            sr=SR,
+            hop_length=HOP_LENGTH,
+            fmin=FMIN,
+            n_bins=AUDIO_DIM,
+            bins_per_octave=OCTAVE_BINS,
+        ),
     )
 
 
