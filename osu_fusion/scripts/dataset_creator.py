@@ -35,7 +35,7 @@ if "CREATE_DATASET" in os.environ:
 
 def load_audio(audio_file: Path) -> npt.NDArray:
     aro = FFmpegAudioFile(audio_file)
-    wave, _ = librosa.load(aro, sr=SR, res_type="kaiser_best")
+    wave, _ = librosa.load(aro, sr=SR)
     if wave.shape[0] == 0:
         msg = f"Empty audio file: {audio_file}"
         raise ValueError(msg)
