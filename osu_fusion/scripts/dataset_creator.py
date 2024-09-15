@@ -18,8 +18,8 @@ SR = 22050
 MS_PER_FRAME = 8
 HOP_LENGTH = (SR // 1000) * MS_PER_FRAME
 
-FMIN = librosa.note_to_hz("C0")
-N_OCTAVES = 8
+FMIN = librosa.note_to_hz("C1")
+N_OCTAVES = 7
 OCTAVE_BINS = 12
 AUDIO_DIM = N_OCTAVES * OCTAVE_BINS
 CONTEXT_DIM = 5
