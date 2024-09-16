@@ -24,6 +24,9 @@ def loss_fn_osu(
     logvar: torch.Tensor,
 ) -> torch.Tensor:
     dtype = recon_hit.dtype
+
+    # Remove padding
+    x = x[:, :, :original_len]
     hit_signals = (x[:, :HIT_DIM] >= 0).to(dtype=dtype)
     cursor_signals = x[:, HIT_DIM:]
 
@@ -425,11 +428,17 @@ class AudioAutoEncoder(nn.Module):
         return audio
 
     def forward(self: "AudioAutoEncoder", x: torch.Tensor) -> torch.Tensor:
+        # Pad to nearest power of 2^encoder layers
+        n = x.shape[-1]
+        depth = len(self.encoder.down_blocks)
+        pad_len = (2**depth - (n % (2**depth))) % (2**depth)
+        x = F.pad(x, (0, pad_len), value=0.0)
+
         mu, logvar = self.encode(x)
         z = self.reparametrize(mu, logvar)
         recon_audio = self.decode(z)
 
-        audio_loss = F.mse_loss(recon_audio, x)
+        audio_loss = F.mse_loss(recon_audio[:, :, :n], x[:, :, :n])
         kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1).mean()
 
         return audio_loss, kl_loss
