@@ -78,8 +78,6 @@ class Perfect(Slider):
 
 
 class Bezier(Slider):
-    SEGMENTS = 10
-
     def __init__(
         self: "Bezier",
         t: int,
@@ -128,7 +126,7 @@ class Bezier(Slider):
         self.cum_t = np.cumsum([curve.length for curve in curves])
         self.cum_t /= self.cum_t[-1]
 
-    def curve_reparametrize(self: "Bezier", t: float) -> Tuple[int, float]:
+    def curve_reparametrize(self: "Bezier", t: npt.NDArray) -> Tuple[int, npt.NDArray]:
         idx = np.searchsorted(self.cum_t, np.clip(t, 0, 1))
 
         range_start = np.insert(self.cum_t, 0, 0)[idx]
@@ -138,22 +136,29 @@ class Bezier(Slider):
         return idx, t
 
     def lerp(self: "Bezier", t: npt.NDArray) -> npt.NDArray:
-        return np.stack(
-            [self.path_segments[idx].evaluate(t)[:, 0] for idx, t in zip(*self.curve_reparametrize(t))],
-            axis=0,
-        )
+        indices, local_ts = self.curve_reparametrize(t)
+        evaluations = np.zeros((len(t), 2))
+
+        unique_indices = np.unique(indices)
+        for idx in unique_indices:
+            mask = indices == idx
+            evaluations[mask] = self.path_segments[idx].evaluate(local_ts[mask])[:, 0].T
+
+        return evaluations
 
     def velocity(self: "Bezier", t: npt.NDArray) -> npt.NDArray:
-        return np.stack(
-            [
-                self.path_segments[idx].evaluate_hodograph(t)[:, 0] / self.slide_duration
-                for idx, t in zip(*self.curve_reparametrize(t))
-            ],
-            axis=0,
-        )
+        indices, local_ts = self.curve_reparametrize(t)
+        velocities = np.zeros((len(t), 2))
+
+        unique_indices = np.unique(indices)
+        for idx in unique_indices:
+            mask = indices == idx
+            velocities[mask] = self.path_segments[idx].evaluate_hodograph(local_ts[mask])[:, 0].T / self.slide_duration
+
+        return velocities
 
 
-def from_control_points(
+def from_control_points(  # noqa: C901
     t: int,
     beat_length: float,
     slider_multiplier: float,
@@ -167,33 +172,51 @@ def from_control_points(
     if len(control_points) == 2:  # Line
         pos1, pos2 = control_points
         return Line(t, beat_length, slider_multiplier, new_combo, slides, length, pos1, pos2)
-    if len(control_points) == 3:  # Perfect/Line/Bezier
+
+    elif len(control_points) == 3:  # Perfect/Line/Bezier
         pos1, pos2, pos3 = control_points
 
         if (pos2 == pos3).all():
             return Line(t, beat_length, slider_multiplier, new_combo, slides, length, pos1, pos3)
 
-        cross_product = np.cross(pos2 - pos1, pos3 - pos1)
-        if cross_product == 0:  # Collinear
-            if np.dot(pos2 - pos1, pos3 - pos1) > 0:
+        vec1 = pos2 - pos1
+        vec2 = pos3 - pos1
+        cross_product = np.cross(vec1, vec2)
+
+        if np.abs(cross_product) < 1e-8:  # Account for floating point errors
+            dot_product = np.dot(vec1, vec2)
+            if dot_product > 0:
                 return Line(t, beat_length, slider_multiplier, new_combo, slides, length, pos1, pos3)
             else:
-                control_points.insert(1, control_points[1])
-                return Bezier(t, beat_length, slider_multiplier, new_combo, slides, length, control_points)
+                # Check if inserting a duplicate would help
+                # Avoid infinite recursion by checking if pos2 is already duplicated
+                if (control_points[0] == control_points[1]).all() or (control_points[1] == control_points[2]).all():
+                    # If duplicates already exist, treat as a Line to prevent infinite recursion
+                    return Line(t, beat_length, slider_multiplier, new_combo, slides, length, pos1, pos3)
+                else:
+                    new_control_points = control_points.copy()  # Don't modify original list
+                    new_control_points.insert(1, control_points[1].copy())
+                    return Bezier(t, beat_length, slider_multiplier, new_combo, slides, length, control_points)
 
+        # Calculate side lengths
         a = np.linalg.norm(pos3 - pos2)
         b = np.linalg.norm(pos3 - pos1)
         c = np.linalg.norm(pos2 - pos1)
         s = (a + b + c) / 2
-        r = a * b * c / 4 / np.sqrt(s * (s - a) * (s - b) * (s - c))
 
-        if r > 320 and np.dot(pos3 - pos2, pos2 - pos1) > 0:
-            return Bezier(t, beat_length, slider_multiplier, new_combo, slides, length, control_points)
+        area_squared = s * (s - a) * (s - b) * (s - c)
+        if area_squared <= 0:
+            # Degenerate triangle, treat as Line
+            return Line(t, beat_length, slider_multiplier, new_combo, slides, length, pos1, pos3)
 
+        area = np.sqrt(area_squared)
+        r = (a * b * c) / (4 * area)
+
+        # Proceed with Perfect slider creation
         b1 = a * a * (b * b + c * c - a * a)
         b2 = b * b * (a * a + c * c - b * b)
         b3 = c * c * (a * a + b * b - c * c)
-        p = np.column_stack((pos1, pos2, pos3)).dot(np.hstack((b1, b2, b3)))
+        p = np.column_stack((pos1, pos2, pos3)).dot(np.array([b1, b2, b3]))
         p /= b1 + b2 + b3
 
         start_angle = np.arctan2(*(pos1 - p)[[1, 0]])
