@@ -8,7 +8,7 @@ from typing import List
 from tqdm.auto import tqdm
 
 os.environ["CREATE_DATASET"] = "1"
-from osu_fusion.scripts.dataset_creator import prepare_map  # noqa: E402
+from osu_fusion.scripts.dataset_creator import prepare_map
 
 
 def run(

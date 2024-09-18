@@ -1,5 +1,6 @@
 import os
 import time
+import traceback
 import warnings
 from multiprocessing import Lock
 from multiprocessing.synchronize import Lock as LockBase
@@ -116,8 +117,11 @@ def get_audio_spec(beatmap: Beatmap, audio_file: Path) -> Optional[npt.NDArray]:
 def prepare_map(data_dir: Path, map_file: Path) -> None:
     try:
         beatmap = Beatmap(map_file, meta_only=True)
-    except Exception as e:
-        print(f"Library failed to load beatmap {map_file}: {e}")
+    except KeyError:
+        return
+    except Exception:
+        print(f"Library failed to load beatmap {map_file}")
+        print(traceback.format_exc())
         return
 
     if beatmap.mode != 0:
@@ -146,14 +150,21 @@ def prepare_map(data_dir: Path, map_file: Path) -> None:
             rosu_beatmap.hp,
             sr,
         ]
-    except Exception as e:
-        print(f"Rosu failed to load beatmap {map_file}: {e}")
+    except Exception:
+        print(f"Rosu failed to load beatmap {map_file}")
+        print(traceback.format_exc())
         return
 
     try:
         beatmap.parse_map_data()
-    except Exception as e:
+    except IndexError:  # Usually caused when parsing timing points
+        return
+    except ValueError as e:
         print(f"Library failed to parse beatmap {map_file}: {e}")
+        return
+    except Exception:
+        print(f"Library failed to parse beatmap {map_file}")
+        print(traceback.format_exc())
         return
 
     spec = get_audio_spec(beatmap, spec_path)
