@@ -111,7 +111,7 @@ def sample_step(
     with accelerator.autocast(), torch.torch.inference_mode():
         z, _ = model.encode(x)
         if args.osu_data:
-            recon_hit, recon_cursor = model.decode(z, use_tanh=True)
+            recon_hit, recon_cursor = model.decode(z)
             reconstructed = torch.cat([recon_hit, recon_cursor], dim=1)
         else:
             reconstructed = model.decode(z)
@@ -220,7 +220,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         project_name="OsuFusion-AutoEncoder",
     )
 
-    model = OsuAutoEncoder(128, 16, 128) if args.osu_data else AudioAutoEncoder(128, 16, 128)
+    model = OsuAutoEncoder(16, 64) if args.osu_data else AudioAutoEncoder(16, 128)
     if args.full_bf16:
         model.set_full_bf16()
     optimizer = AdamW(model.parameters(), lr=args.lr)
