@@ -443,9 +443,6 @@ class OsuAutoEncoder(nn.Module):
         )
 
     def encode(self: "OsuAutoEncoder", x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        hit_signals = x[:, :HIT_DIM]
-        cursor_signals = x[:, HIT_DIM:]
-        x = torch.cat([hit_signals, cursor_signals], dim=1)
         mu, logvar = self.encoder(x).chunk(2, dim=1)
         return mu, logvar
 
@@ -457,7 +454,7 @@ class OsuAutoEncoder(nn.Module):
     def decode(self: "OsuAutoEncoder", z: torch.Tensor) -> torch.Tensor:
         recon = self.decoder(z)
         recon_hit = torch.sigmoid(recon[:, :HIT_DIM])
-        recon_cursor = recon[:, HIT_DIM:]
+        recon_cursor = torch.tanh(recon[:, HIT_DIM:])
 
         return recon_hit, recon_cursor
 
