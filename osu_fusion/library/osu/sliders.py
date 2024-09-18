@@ -6,6 +6,8 @@ import numpy.typing as npt
 
 from osu_fusion.library.osu.hit_objects import Slider
 
+np.seterr(divide="raise")
+
 
 class Line(Slider):
     def __init__(
