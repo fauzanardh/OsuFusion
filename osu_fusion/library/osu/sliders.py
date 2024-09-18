@@ -136,26 +136,19 @@ class Bezier(Slider):
         return idx, t
 
     def lerp(self: "Bezier", t: npt.NDArray) -> npt.NDArray:
-        indices, local_ts = self.curve_reparametrize(t)
-        evaluations = np.zeros((len(t), 2))
-
-        unique_indices = np.unique(indices)
-        for idx in unique_indices:
-            mask = indices == idx
-            evaluations[mask] = self.path_segments[idx].evaluate(local_ts[mask])[:, 0].T
-
-        return evaluations
+        return np.stack(
+            [self.path_segments[idx].evaluate(t)[:, 0] for idx, t in zip(*self.curve_reparametrize(t))],
+            axis=0,
+        )
 
     def velocity(self: "Bezier", t: npt.NDArray) -> npt.NDArray:
-        indices, local_ts = self.curve_reparametrize(t)
-        velocities = np.zeros((len(t), 2))
-
-        unique_indices = np.unique(indices)
-        for idx in unique_indices:
-            mask = indices == idx
-            velocities[mask] = self.path_segments[idx].evaluate_hodograph(local_ts[mask])[:, 0].T / self.slide_duration
-
-        return velocities
+        return np.stack(
+            [
+                self.path_segments[idx].evaluate_hodograph(t)[:, 0] / self.slide_duration
+                for idx, t in zip(*self.curve_reparametrize(t))
+            ],
+            axis=0,
+        )
 
 
 def from_control_points(  # noqa: C901
