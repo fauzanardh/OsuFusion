@@ -10,7 +10,7 @@ import numpy as np
 from audioread.ffdec import FFmpegAudioFile
 
 from osu_fusion.library.osu.beatmap import Beatmap
-from osu_fusion.library.osu.data.encode import encode_beatmap
+from osu_fusion.library.osu.data.encode import TOTAL_DIM, encode_beatmap
 
 # Constants
 SR = 22050
@@ -110,6 +110,39 @@ def get_audio_spec(beatmap: Beatmap, audio_file: Path) -> Optional[np.ndarray]:
                 return None
 
 
+def validate_map_data(map_file: Path) -> bool:
+    try:
+        with np.load(map_file) as data:
+            if "x" not in data or "c" not in data:
+                print(f"[Error] Missing data in map file {map_file}")
+                return False
+
+            x = data["x"]
+            c = data["c"]
+            if x.shape[0] != TOTAL_DIM or c.shape[0] != CONTEXT_DIM:
+                print(f"[Error] Invalid data shape in map file {map_file}")
+                return False
+
+            if x.shape[0] == 0:
+                print(f"[Error] Empty data in map file {map_file}")
+                return False
+
+            if "spec_path" in data:
+                spec_relative = data["spec_path"]
+                spec_file = map_file.parent / spec_relative
+                if not spec_file.exists():
+                    print(f"[Error] Missing spec file {spec_file}")
+                    return False
+            else:
+                print(f"[Error] Missing `spec_path` key in map file {map_file}")
+                return False
+    except Exception as e:
+        print(f"[Error] Failed to load map data {map_file}: {e}")
+        return False
+
+    return True
+
+
 def prepare_map(data_dir: Path, map_file: Path) -> None:
     try:
         beatmap = Beatmap(map_file, meta_only=True)
@@ -128,6 +161,10 @@ def prepare_map(data_dir: Path, map_file: Path) -> None:
 
     spec_path = map_dir / "spec.npz"
     map_path = map_dir.parent / f"{map_file.stem}.map.npz"
+
+    # If the map data already exists, check if the map file is valid, then skip
+    if map_path.exists() and validate_map_data(map_path):
+        return
 
     try:
         with open(map_file, "r", encoding="utf-8") as f:
