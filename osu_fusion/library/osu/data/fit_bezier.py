@@ -7,8 +7,8 @@ import numpy as np
 import numpy.typing as npt
 
 
-def hodo(p: npt.NDArray) -> npt.NDArray:
-    return p.shape[0] * (p[1:] - p[:-1])
+def hodo(p: npt.NDArray, degree: int = 3) -> npt.NDArray:
+    return degree * (p[1:] - p[:-1])
 
 
 def q(p: npt.NDArray, t: npt.NDArray) -> npt.NDArray:
@@ -40,6 +40,11 @@ def compute_error(
 ) -> npt.NDArray:
     errs = ((q(p, u) - points) ** 2).sum(-1)
     split_point = errs.argmax()
+
+    # Prevent split_point from being at the ends
+    if split_point == 0 or split_point == len(points) - 1:
+        split_point = len(points) // 2  # Split in the middle
+
     return float(errs[split_point]), int(split_point)
 
 
@@ -108,40 +113,29 @@ def generate_bezier(
     bez_curve = np.array([points[0], points[0], points[-1], points[-1]])
 
     # compute the A's
-    _a = (3 * (1 - u) * u * np.array([1 - u, u])).T[..., None] * np.array(
-        [left_tangent, right_tangent],
-    )
+    S = 3 * (1 - u) * u
+    A_l = (S * (1 - u))[:, np.newaxis] * left_tangent
+    A_r = (S * u)[:, np.newaxis] * right_tangent
+    A = np.stack([A_l, A_r], axis=1)
 
     # Create the C and X matrices
-    _c = np.einsum("lix,ljx->ij", _a, _a)
-    _x = np.einsum("lix,lx->i", _a, points - q(bez_curve, u))
+    C = np.einsum("nij,nkj->ik", A, A)
+    d = points - q(bez_curve, u)
+    X = np.einsum("nij,ni->j", A, d)
 
-    # Compute the determinants of C and X
-    det_c0_c1 = _c[0][0] * _c[1][1] - _c[1][0] * _c[0][1]
-    det_c0_x = _c[0][0] * _x[1] - _c[1][0] * _x[0]
-    det_x_c1 = _x[0] * _c[1][1] - _x[1] * _c[0][1]
+    try:
+        alpha_l, alpha_r = np.linalg.lstsq(C, X, rcond=None)[0]
+    except np.linalg.LinAlgError:
+        alpha_l, alpha_r = 0.0, 0.0
 
-    # Finally, derive alpha values
-    alpha_l = 0.0 if abs(det_c0_c1) < 1e-5 else det_x_c1 / det_c0_c1
-    alpha_r = 0.0 if abs(det_c0_c1) < 1e-5 else det_c0_x / det_c0_c1
-
-    # If alpha negative, use the Wu/Barsky heuristic (see text)
-    # (if alpha is 0, you get coincident control points that lead to
-    # divide by zero in any subsequent NewtonRaphsonRootFind() call)
     seg_len = np.linalg.norm(points[0] - points[-1])
     epsilon = 1e-6 * seg_len
     if alpha_l < epsilon or alpha_r < epsilon:
-        # fall back on standard (probably inaccurate) formula, and subdivide further if needed.
-        bez_curve[1] += left_tangent * (seg_len / 3.0)
-        bez_curve[2] += right_tangent * (seg_len / 3.0)
-
+        bez_curve[1] = points[0] + left_tangent * (seg_len / 3.0)
+        bez_curve[2] = points[-1] + right_tangent * (seg_len / 3.0)
     else:
-        # First and last control points of the Bezier curve are
-        # positioned exactly at the first and last data points
-        # Control points 1 and 2 are positioned an alpha distance out
-        # on the tangent vectors, left and right, respectively
-        bez_curve[1] += left_tangent * alpha_l
-        bez_curve[2] += right_tangent * alpha_r
+        bez_curve[1] = points[0] + left_tangent * alpha_l
+        bez_curve[2] = points[-1] + right_tangent * alpha_r
 
     return bez_curve
 

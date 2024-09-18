@@ -71,7 +71,7 @@ def slider_decoder(
     control_points = []
     length = 0.0
 
-    path = fit_bezier(cursor_signal.T[start_idx : first_slide_idx + 1], max_err=50.0)
+    path = fit_bezier(cursor_signal.T[start_idx : first_slide_idx + 1], max_err=100.0)
     for segment in path:
         segment = segment.round()
         control_points.extend(segment)
