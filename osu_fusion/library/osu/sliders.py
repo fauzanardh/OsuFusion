@@ -204,6 +204,8 @@ def from_control_points(  # noqa: C901
 
         area = np.sqrt(area_squared)
         r = (a * b * c) / (4 * area)
+        if r > 480 and np.dot(pos3 - pos2, pos2 - pos1) > 0:
+            return Bezier(t, beat_length, slider_multiplier, new_combo, slides, length, control_points)
 
         # Proceed with Perfect slider creation
         b1 = a * a * (b * b + c * c - a * a)
