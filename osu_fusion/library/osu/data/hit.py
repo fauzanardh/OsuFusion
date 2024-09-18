@@ -50,8 +50,8 @@ def extents(regions: List[Tuple[Real, Real]], frame_times: npt.NDArray) -> npt.N
 
 
 def decode_extents(extents_: npt.NDArray) -> Tuple[List[int], List[int]]:
-    before_below = extents_[:-1] <= 0
-    after_below = extents_[1:] <= 0
+    before_below = extents_[:-1] <= 0.5
+    after_below = extents_[1:] <= 0.5
 
     start_idxs = sorted(np.argwhere(before_below & ~after_below)[:, 0].tolist())
     end_idxs = sorted(np.argwhere(~before_below & after_below)[:, 0].tolist())
