@@ -1,58 +1,50 @@
 import os
 import random
+import traceback
 from argparse import ArgumentParser
-from multiprocessing import Pool
+from multiprocessing import Pool, cpu_count
 from pathlib import Path
-from typing import List
+from typing import Tuple
 
-from tqdm.auto import tqdm
+from tqdm import tqdm
 
+# Set environment variable before importing dataset_creator
 os.environ["CREATE_DATASET"] = "1"
 from osu_fusion.scripts.dataset_creator import prepare_map
 
 
-def run(
-    dataset_dir: Path,
-    osu_files: List[Path],
-    worker_index: int,
-    world_size: int,
-) -> None:
-    data = osu_files[worker_index::world_size]
-    for osu_file in tqdm(data, position=worker_index, dynamic_ncols=True):
-        try:
-            prepare_map(dataset_dir, osu_file)
-        except Exception:
-            continue
+def worker_task(args: Tuple[Path, Path]) -> None:
+    data_dir, osu_file = args
+    try:
+        prepare_map(data_dir, osu_file)
+    except Exception as e:
+        traceback.print_exc()
+        print(f"[Error] Failed to prepare map for {osu_file}: {e}")
 
 
 def main() -> None:
-    parser = ArgumentParser()
-    parser.add_argument("--dataset-dir", type=Path, required=True)
-    parser.add_argument("--osu_song_dir", type=Path, required=True)
-    parser.add_argument("--num_workers", type=int, default=1)
+    parser = ArgumentParser(description="OSU Dataset Creator")
+    parser.add_argument("--dataset-dir", type=Path, required=True, help="Directory to store the dataset")
+    parser.add_argument("--osu-song-dir", type=Path, required=True, help="Directory containing .osu files")
+    parser.add_argument("--num-workers", type=int, default=cpu_count(), help="Number of worker processes")
     args = parser.parse_args()
 
-    args.dataset_dir.mkdir(exist_ok=True, parents=True)
+    args.dataset_dir.mkdir(parents=True, exist_ok=True)
     osu_files = list(args.osu_song_dir.rglob("*.osu"))
     print(f"Found {len(osu_files)} .osu files")
 
+    if not osu_files:
+        print("No .osu files found. Exiting.")
+        return
     random.shuffle(osu_files)
-    with Pool(args.num_workers) as pool:
-        pool.starmap(
-            run,
-            [
-                (
-                    args.dataset_dir,
-                    osu_files,
-                    worker_index,
-                    args.num_workers,
-                )
-                for worker_index in range(args.num_workers)
-            ],
-        )
 
-        pool.close()
-        pool.join()
+    task_args = [(args.dataset_dir, osu_file) for osu_file in osu_files]
+    with (
+        Pool(processes=args.num_workers) as pool,
+        tqdm(total=len(task_args), desc="Processing Maps", dynamic_ncols=True) as pbar,
+    ):
+        for _ in pool.imap_unordered(worker_task, task_args):
+            pbar.update(1)
 
 
 if __name__ == "__main__":
