@@ -36,7 +36,7 @@ def loss_fn_osu(
     recon_cursor = recon_cursor[:, :, :original_len]
 
     # Calculate hit signals using BCE loss and cursor signals using MSE loss
-    hit_loss = F.binary_cross_entropy(recon_hit, hit_signals)
+    hit_loss = F.binary_cross_entropy_with_logits(recon_hit, hit_signals)
     cursor_loss = F.mse_loss(recon_cursor, cursor_signals)
 
     # Calculate KL divergence loss
@@ -451,10 +451,10 @@ class OsuAutoEncoder(nn.Module):
         eps = torch.randn_like(std)
         return mu + eps * std
 
-    def decode(self: "OsuAutoEncoder", z: torch.Tensor) -> torch.Tensor:
+    def decode(self: "OsuAutoEncoder", z: torch.Tensor, apply_act: bool = False) -> torch.Tensor:
         recon = self.decoder(z)
-        recon_hit = torch.sigmoid(recon[:, :HIT_DIM])
-        recon_cursor = torch.tanh(recon[:, HIT_DIM:])
+        recon_hit = torch.sigmoid(recon[:, :HIT_DIM]) if apply_act else recon[:, :HIT_DIM]
+        recon_cursor = recon[:, HIT_DIM:]
 
         return recon_hit, recon_cursor
 

@@ -111,7 +111,7 @@ def sample_step(
     with accelerator.autocast(), torch.torch.inference_mode():
         z, _ = model.encode(x)
         if args.osu_data:
-            recon_hit, recon_cursor = model.decode(z)
+            recon_hit, recon_cursor = model.decode(z, apply_act=True)
             reconstructed = torch.cat([recon_hit, recon_cursor], dim=1)
         else:
             reconstructed = model.decode(z)
