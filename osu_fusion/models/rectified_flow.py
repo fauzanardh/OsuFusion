@@ -27,7 +27,7 @@ class OsuFusion(nn.Module):
         attn_dim_head: int = 64,
         attn_heads: int = 16,
         attn_kv_heads: int = 1,
-        attn_context_len: int = 4096,
+        attn_context_len: int = 8192,
         cond_drop_prob: float = 0.5,
         sampling_timesteps: int = 16,
     ) -> None:

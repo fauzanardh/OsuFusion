@@ -108,7 +108,7 @@ class Attention(nn.Module):
         dim_head: int,
         heads: int,
         kv_heads: int,
-        context_len: int = 4096,
+        context_len: int = 8192,
     ) -> None:
         super().__init__()
         self.heads = heads
@@ -164,7 +164,7 @@ class TransformerBlock(nn.Module):
         attn_dim_head: int = 64,
         attn_heads: int = 16,
         attn_kv_heads: int = 1,
-        attn_context_len: int = 4096,
+        attn_context_len: int = 8192,
     ) -> None:
         super().__init__()
         self.attn = Attention(
@@ -274,7 +274,7 @@ class AudioEncoder(nn.Module):
         attn_dim_head: int = 64,
         attn_heads: int = 16,
         attn_kv_heads: int = 1,
-        attn_context_len: int = 4096,
+        attn_context_len: int = 8192,
     ) -> None:
         super().__init__()
         self.dim_h = dim_h
@@ -332,7 +332,7 @@ class UNet(nn.Module):
         attn_dim_head: int = 64,
         attn_heads: int = 16,
         attn_kv_heads: int = 1,
-        attn_context_len: int = 4096,
+        attn_context_len: int = 8192,
     ) -> None:
         super().__init__()
         self.dim_h = dim_h

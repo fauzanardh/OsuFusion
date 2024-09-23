@@ -1,6 +1,6 @@
 import random
 from pathlib import Path
-from typing import Dict, Generator
+from typing import Dict, Generator, Tuple
 
 import librosa
 import numpy as np
@@ -11,10 +11,8 @@ from torch.utils.data import IterableDataset
 
 from osu_fusion.library.augment import flip_cursor_horizontal, flip_cursor_vertical
 from osu_fusion.library.osu.data.decode import Metadata, decode_beatmap
-from osu_fusion.library.osu.data.encode import TOTAL_DIM
 from osu_fusion.scripts.dataset_creator import (
     AUDIO_DIM,
-    CONTEXT_DIM,
     HOP_LENGTH,
     SR,
     normalize_context,
@@ -22,13 +20,18 @@ from osu_fusion.scripts.dataset_creator import (
 )
 
 
-def load_tensor(map_file: Path) -> torch.Tensor:
+def load_tensor(map_file: Path, load_audio: bool = True) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     map_data = np.load(map_file)
     audio_file = map_file.parent / map_data["spec_path"].tolist()
     audio_data = np.load(audio_file)
     x = torch.tensor(map_data["x"], dtype=torch.float32)
     c = torch.tensor(map_data["c"], dtype=torch.float32)
-    a = torch.tensor(audio_data["a"], dtype=torch.float32)
+
+    if load_audio:
+        a = torch.tensor(audio_data["a"], dtype=torch.float32)
+    else:
+        # Dummy audio tensor
+        a = torch.zeros((AUDIO_DIM, x.shape[-1]), dtype=torch.float32)
 
     if torch.isnan(x).any() or torch.isnan(a).any() or torch.isnan(c).any():
         msg = "Invalid values in map file"
@@ -77,6 +80,7 @@ class StreamPerSample(IterableDataset):
         self.segment_sr = kwargs.pop("segment_sr", True)
         self.flip_horizontal_prob = kwargs.pop("flip_horizontal_prob", 0.5)
         self.flip_vertical_prob = kwargs.pop("flip_vertical_prob", 0.5)
+        self.load_audio = kwargs.pop("load_audio", True)
 
         if not (0 < self.sample_density <= 1):
             msg = "sample_density must be between 0 and 1"
@@ -115,27 +119,11 @@ class StreamPerSample(IterableDataset):
         random.shuffle(self.dataset)
 
 
-class DummyDataset(StreamPerSample):
-    MIN_LENGTH = 2048  # 16.384 seconds, 1/2 of context length
-    MAX_LENGTH = 8192  # 65.536 seconds, 2x of context length
-
-    def __init__(self: "DummyDataset") -> None:
-        super().__init__({"segment_sr": False})
-
-    def sample_stream(self: StreamPerSample, _: Path) -> Generator[torch.Tensor, None, None]:
-        length = random.randint(self.MIN_LENGTH, self.MAX_LENGTH)
-        x = torch.randn((TOTAL_DIM, length))
-        a = torch.randn((AUDIO_DIM, length))
-        c = torch.randn((CONTEXT_DIM))
-
-        yield x, a, c
-
-
 class FullSequenceDataset(StreamPerSample):
     MAX_LENGTH = 65536
 
     def sample_stream(self: StreamPerSample, map_file: Path) -> Generator[torch.Tensor, None, None]:
-        x, a, c = load_tensor(map_file)
+        x, a, c = load_tensor(map_file, load_audio=self.load_audio)
 
         if x.shape[-1] > self.MAX_LENGTH:
             return
@@ -143,33 +131,14 @@ class FullSequenceDataset(StreamPerSample):
         yield x[..., : self.MAX_LENGTH], a[..., : self.MAX_LENGTH], c
 
 
-class RandomLengthDataset(StreamPerSample):
-    MIN_LENGTH = 2048  # 16.384 seconds, 1/2 of context length
-    MAX_LENGTH = 8192  # 65.536 seconds, 2x of context length
-
-    def sample_stream(self: StreamPerSample, map_file: Path) -> Generator[torch.Tensor, None, None]:
-        try:
-            x, a, c = load_tensor(map_file)
-        except ValueError:
-            return
-        n = x.shape[-1]
-
-        if n < self.MIN_LENGTH:
-            return
-
-        length = random.randint(self.MIN_LENGTH, min(self.MAX_LENGTH, n))
-        start = random.randint(0, n - length)
-        yield x[..., start : start + length], a[..., start : start + length], c
-
-
 class SubsequenceDataset(StreamPerSample):
     def __init__(self: "SubsequenceDataset", **kwargs: Dict) -> None:
         super().__init__(**kwargs)
-        self.sequence_length = kwargs.pop("sequence_length", 4096)
+        self.sequence_length = kwargs.pop("sequence_length", 8192)  # 65.536 seconds
 
     def sample_stream(self: StreamPerSample, map_file: Path) -> Generator[torch.Tensor, None, None]:
         try:
-            x, a, c = load_tensor(map_file)
+            x, a, c = load_tensor(map_file, load_audio=self.load_audio)
         except ValueError:
             return
         n = x.shape[-1]

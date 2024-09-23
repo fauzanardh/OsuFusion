@@ -17,7 +17,7 @@ class RotaryPositionEmbedding(nn.Module):
         self: "RotaryPositionEmbedding",
         dim: int,
         theta: int = 10000,
-        scale_base: int = 4096,
+        scale_base: int = 8192,
     ) -> None:
         super().__init__()
         self.scale_base = scale_base
