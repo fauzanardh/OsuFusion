@@ -22,7 +22,7 @@ from osu_fusion.scripts.dataset_creator import (
 
 def load_tensor(map_file: Path, load_audio: bool = True) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     map_data = np.load(map_file)
-    audio_file = map_file.parent / map_data["spec_path"].tolist()
+    audio_file = map_file.parent.parent.parent / map_data["spec_path"].tolist()
     audio_data = np.load(audio_file)
     x = torch.tensor(map_data["x"], dtype=torch.float32)
     c = torch.tensor(map_data["c"], dtype=torch.float32)

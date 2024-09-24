@@ -1,9 +1,9 @@
+import hashlib
 import os
-import time
 import warnings
 from multiprocessing import Lock
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import librosa
 import numpy as np
@@ -23,7 +23,7 @@ OCTAVE_BINS = 12
 AUDIO_DIM = N_OCTAVES * OCTAVE_BINS
 CONTEXT_DIM = 5
 
-# Supress FutureWarnings from librosa since we are using an older version
+# Suppress FutureWarnings from librosa since we are using an older version
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 if os.getenv("CREATE_DATASET"):
@@ -40,6 +40,18 @@ VQT_PARAMS = {
     "n_bins": AUDIO_DIM,
     "bins_per_octave": OCTAVE_BINS,
 }
+
+
+def compute_hash(audio_file: Path) -> str:
+    hash_func = hashlib.sha256()
+    try:
+        with audio_file.open("rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                hash_func.update(chunk)
+    except Exception as e:
+        print(f"[Error] Failed to compute hash for {audio_file}: {e}")
+        return ""
+    return hash_func.hexdigest()
 
 
 def load_audio(audio_file: Path) -> np.ndarray:
@@ -70,72 +82,82 @@ def unnormalize_context(context: np.ndarray) -> np.ndarray:
     return context
 
 
-def get_lock(path: Path) -> Lock:  # type: ignore
-    path_str = str(path)
+def get_lock(path_str: str) -> Lock:  # type: ignore
     if path_str not in _global_lock:
         _global_lock[path_str] = Lock()
     return _global_lock[path_str]
 
 
-def get_audio_spec(beatmap: Beatmap, audio_file: Path) -> Optional[np.ndarray]:
-    with get_lock(audio_file):
-        if audio_file.exists():
-            for attempt in range(5):  # Exponential backoff
-                try:
-                    with np.load(audio_file) as data:
-                        spec = data["a"]
-                    return spec
-                except (ValueError, EOFError):
-                    time.sleep(0.001 * (2**attempt))
-                except Exception as e:
-                    print(f"Unexpected error loading spec {audio_file}: {e}")
-                    break
-            # If all attempts fail, attempt to reload the audio
-            audio_file.unlink(missing_ok=True)
-            try:
-                spec = load_audio(beatmap.audio_filename)
-                np.savez_compressed(audio_file, a=spec)
-                return spec
-            except Exception as e:
-                print(f"Failed to reload audio {beatmap.audio_filename}: {e}")
-                return None
-        else:
-            try:
-                spec = load_audio(beatmap.audio_filename)
-                audio_file.parent.mkdir(parents=True, exist_ok=True)
-                np.savez_compressed(audio_file, a=spec)
-                return spec
-            except Exception as e:
-                print(f"Failed to load and save audio {beatmap.audio_filename}: {e}")
-                return None
+def split_hash(hash_str: str) -> Tuple[str, str, str]:
+    first_two = hash_str[:2]
+    next_two = hash_str[2:4]
+    remaining = hash_str[4:]
+    return first_two, next_two, remaining
 
 
-def validate_map_data(map_file: Path) -> bool:
+def get_audio_spec(beatmap: Beatmap, global_spec_dir: Path) -> Optional[Tuple[np.ndarray, str]]:
+    audio_file = beatmap.audio_filename
+    audio_hash = compute_hash(audio_file)
+    if not audio_hash:
+        return None
+
+    # Split the hash to create hierarchical directories
+    first_two, next_two, remaining_hash = split_hash(audio_hash)
+    spec_filename = f"{remaining_hash}.spec.npz"
+    spec_path = global_spec_dir / first_two / next_two / spec_filename
+
+    lock = get_lock(str(spec_path))
+    with lock:
+        if spec_path.exists():
+            try:
+                with spec_path.open("rb") as f:
+                    data = np.load(f)
+                    spec = data["a"]
+                return spec, audio_hash
+            except (ValueError, EOFError):
+                # Spec file is corrupted; attempt to regenerate
+                spec_path.unlink(missing_ok=True)
+                print(f"[Warning] Corrupted spec file {spec_path} removed.")
+        # If spec does not exist or was corrupted, generate it
+        try:
+            spec = load_audio(audio_file)
+            # Ensure the hierarchical spec directory exists
+            spec_path.parent.mkdir(parents=True, exist_ok=True)
+            with spec_path.open("wb") as f:
+                np.savez_compressed(f, a=spec)
+            return spec, audio_hash
+        except Exception as e:
+            print(f"[Error] Failed to process audio {audio_file}: {e}")
+            return None
+
+
+def validate_map_data(map_file: Path, data_dir: Path) -> bool:
     try:
-        with np.load(map_file) as data:
-            if "x" not in data or "c" not in data:
-                print(f"[Error] Missing data in map file {map_file}")
-                return False
+        with map_file.open("rb") as f:
+            data = np.load(f)
+        if "x" not in data or "c" not in data:
+            print(f"[Error] Missing data in map file {map_file}")
+            return False
 
-            x = data["x"]
-            c = data["c"]
-            if x.shape[0] != TOTAL_DIM or c.shape[0] != CONTEXT_DIM:
-                print(f"[Error] Invalid data shape in map file {map_file}")
-                return False
+        x = data["x"]
+        c = data["c"]
+        if x.shape[0] != TOTAL_DIM or c.shape[0] != CONTEXT_DIM:
+            print(f"[Error] Invalid data shape in map file {map_file}")
+            return False
 
-            if x.shape[0] == 0:
-                print(f"[Error] Empty data in map file {map_file}")
-                return False
+        if x.size == 0:
+            print(f"[Error] Empty data in map file {map_file}")
+            return False
 
-            if "spec_path" in data:
-                spec_relative = data["spec_path"]
-                spec_file = map_file.parent / spec_relative
-                if not spec_file.exists():
-                    print(f"[Error] Missing spec file {spec_file}")
-                    return False
-            else:
-                print(f"[Error] Missing `spec_path` key in map file {map_file}")
-                return False
+        if "spec_path" not in data:
+            print(f"[Error] Missing `spec_path` key in map file {map_file}")
+            return False
+
+        spec_relative = data["spec_path"].item()
+        spec_file = data_dir / spec_relative
+        if not spec_file.exists():
+            print(f"[Error] Missing spec file {spec_file}")
+            return False
     except Exception as e:
         print(f"[Error] Failed to load map data {map_file}: {e}")
         return False
@@ -153,21 +175,20 @@ def prepare_map(data_dir: Path, map_file: Path) -> None:
     if beatmap.mode != 0:
         return  # Only process standard mode beatmaps
 
-    # Create a unique directory name based on the audio filename
-    audio_stem = beatmap.audio_filename.stem
-    audio_suffix = "".join(beatmap.audio_filename.suffixes)
-    audio_file_dir = f"{audio_stem}_{audio_suffix.lstrip('.')}"
-    map_dir = data_dir / map_file.parent.name / audio_file_dir
+    # Define the global specs directory
+    global_spec_dir = data_dir / "specs"
 
-    spec_path = map_dir / "spec.npz"
-    map_path = map_dir.parent / f"{map_file.stem}.map.npz"
+    # Define the map data path (unique per map)
+    map_data_dir = data_dir / "maps" / map_file.parent.name
+    map_data_dir.mkdir(parents=True, exist_ok=True)
+    map_path = map_data_dir / f"{map_file.stem}.map.npz"
 
     # If the map data already exists, check if the map file is valid, then skip
-    if map_path.exists() and validate_map_data(map_path):
+    if map_path.exists() and validate_map_data(map_path, data_dir):
         return
 
     try:
-        with open(map_file, "r", encoding="utf-8") as f:
+        with map_file.open("r", encoding="utf-8") as f:
             rosu_beatmap = RosuBeatmap(content=f.read())
         rosu_difficulty = RosuDifficulty()
         sr = rosu_difficulty.calculate(rosu_beatmap).stars
@@ -192,9 +213,10 @@ def prepare_map(data_dir: Path, map_file: Path) -> None:
         print(f"[Error] Failed to parse beatmap data {map_file}: {e}")
         return
 
-    spec = get_audio_spec(beatmap, spec_path)
-    if spec is None:
+    spec_result = get_audio_spec(beatmap, global_spec_dir)
+    if spec_result is None:
         return
+    spec, audio_hash = spec_result
 
     frame_times = (
         librosa.frames_to_time(
@@ -203,14 +225,17 @@ def prepare_map(data_dir: Path, map_file: Path) -> None:
             hop_length=HOP_LENGTH,
         )
         * 1000
-    )
+    )  # Convert to milliseconds
 
     x = encode_beatmap(beatmap, frame_times)
     c = normalize_context(map_difficulty)
 
     # Save the processed map data
     try:
-        spec_relative = spec_path.relative_to(map_path.parent).as_posix()
-        np.savez_compressed(map_path, x=x, c=c, spec_path=spec_relative)
+        # Split the hash to reconstruct the relative path
+        first_two, next_two, remaining_hash = split_hash(audio_hash)
+        spec_relative = f"specs/{first_two}/{next_two}/{remaining_hash}.spec.npz"  # Store relative path to global specs
+        with map_path.open("wb") as f:
+            np.savez_compressed(f, x=x, c=c, spec_path=spec_relative)
     except Exception as e:
         print(f"[Error] Failed to save map data {map_path}: {e}")
