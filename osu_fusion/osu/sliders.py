@@ -4,7 +4,7 @@ import bezier
 import numpy as np
 import numpy.typing as npt
 
-from osu_fusion.library.osu.hit_objects import Slider
+from osu_fusion.osu.hit_objects import Slider
 
 np.seterr(divide="raise")
 
@@ -137,7 +137,7 @@ class Bezier(Slider):
 
     def lerp(self: "Bezier", t: npt.NDArray) -> npt.NDArray:
         return np.stack(
-            [self.path_segments[idx].evaluate(t)[:, 0] for idx, t in zip(*self.curve_reparametrize(t))],
+            [self.path_segments[idx].evaluate(t)[:, 0] for idx, t in zip(*self.curve_reparametrize(t), strict=True)],
             axis=0,
         )
 
@@ -145,7 +145,7 @@ class Bezier(Slider):
         return np.stack(
             [
                 self.path_segments[idx].evaluate_hodograph(t)[:, 0] / self.slide_duration
-                for idx, t in zip(*self.curve_reparametrize(t))
+                for idx, t in zip(*self.curve_reparametrize(t), strict=True)
             ],
             axis=0,
         )

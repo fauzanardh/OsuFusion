@@ -1,8 +1,8 @@
 import numpy as np
 import numpy.typing as npt
 
-from osu_fusion.library.osu.beatmap import Beatmap
-from osu_fusion.library.osu.hit_objects import Circle, Slider, Spinner
+from osu_fusion.osu.beatmap import Beatmap
+from osu_fusion.osu.hit_objects import Circle, Slider, Spinner
 
 
 def cursor_signal(beatmap: Beatmap, frame_times: npt.NDArray) -> npt.NDArray:
@@ -12,7 +12,7 @@ def cursor_signal(beatmap: Beatmap, frame_times: npt.NDArray) -> npt.NDArray:
     hit_objects = [start, *beatmap.hit_objects]
     positions = []
 
-    for current_obj, next_obj in zip(hit_objects, hit_objects[1:] + [None]):
+    for current_obj, next_obj in zip(hit_objects, hit_objects[1:] + [None], strict=True):
         if isinstance(current_obj, Spinner):
             current_count = np.sum((frame_times >= current_obj.t) & (frame_times < current_obj.end_time()))
             positions.extend(current_obj.start_pos()[None].repeat(current_count, axis=0))

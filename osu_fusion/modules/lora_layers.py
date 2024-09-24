@@ -9,7 +9,7 @@ from peft.tuners.lora import LoraLayer
 from peft.tuners.lora.dora import DoraLinearLayer
 from peft.tuners.tuners_utils import check_adapters_to_merge
 from peft.utils.integrations import dequantize_module_weight, gather_params_ctx
-from torch.nn import functional as F  # noqa: N812
+from torch.nn import functional as F
 
 
 class DoraConv1dLayer(DoraLinearLayer):

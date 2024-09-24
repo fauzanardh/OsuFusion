@@ -1,6 +1,4 @@
 import hashlib
-import os
-import warnings
 from multiprocessing import Lock
 from pathlib import Path
 from typing import Dict, Optional, Tuple
@@ -8,31 +6,15 @@ from typing import Dict, Optional, Tuple
 import librosa
 import numpy as np
 from audioread.ffdec import FFmpegAudioFile
+from rosu_pp_py import Beatmap as RosuBeatmap
+from rosu_pp_py import Difficulty as RosuDifficulty
 
-from osu_fusion.library.osu.beatmap import Beatmap
-from osu_fusion.library.osu.data.encode import TOTAL_DIM, encode_beatmap
+from osu_fusion.data.const import AUDIO_DIM, BEATMAP_DIM, CONTEXT_DIM, FMIN, HOP_LENGTH, OCTAVE_BINS, SR
+from osu_fusion.data.encode import encode_beatmap
+from osu_fusion.osu.beatmap import Beatmap
 
-# Constants
-SR = 22050
-MS_PER_FRAME = 8
-HOP_LENGTH = (SR // 1000) * MS_PER_FRAME
+_global_lock: Dict[str, Lock] = {}  # type: ignore
 
-FMIN = librosa.note_to_hz("C1")
-N_OCTAVES = 7
-OCTAVE_BINS = 12
-AUDIO_DIM = N_OCTAVES * OCTAVE_BINS
-CONTEXT_DIM = 5
-
-# Suppress FutureWarnings from librosa since we are using an older version
-warnings.filterwarnings("ignore", category=FutureWarning)
-
-if os.getenv("CREATE_DATASET"):
-    from rosu_pp_py import Beatmap as RosuBeatmap
-    from rosu_pp_py import Difficulty as RosuDifficulty
-
-    _global_lock: Dict[str, Lock] = {}  # type: ignore
-
-# Precompute the VQT parameters to avoid recalculating them
 VQT_PARAMS = {
     "sr": SR,
     "hop_length": HOP_LENGTH,
@@ -141,7 +123,7 @@ def validate_map_data(map_file: Path, data_dir: Path) -> bool:
 
         x = data["x"]
         c = data["c"]
-        if x.shape[0] != TOTAL_DIM or c.shape[0] != CONTEXT_DIM:
+        if x.shape[0] != BEATMAP_DIM or c.shape[0] != CONTEXT_DIM:
             print(f"[Error] Invalid data shape in map file {map_file}")
             return False
 

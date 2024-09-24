@@ -13,17 +13,16 @@ from diffusers.optimization import get_cosine_schedule_with_warmup
 from matplotlib import pyplot as plt
 from PIL import Image
 from safetensors.torch import save_file
-from torch.nn import functional as F  # noqa: N812
+from torch.nn import functional as F
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 import wandb
-from osu_fusion.library.dataset import FullSequenceDataset, RandomLengthDataset, SubsequenceDataset
-from osu_fusion.library.osu.data.encode import TOTAL_DIM
-from osu_fusion.modules.autoencoder import AudioAutoEncoder, OsuAutoEncoder
-from osu_fusion.scripts.dataset_creator import AUDIO_DIM
+from osu_fusion.data.const import AUDIO_DIM, BEATMAP_DIM
+from osu_fusion.data.dataset import FullSequenceDataset, SubsequenceDataset
+from osu_fusion.models.autoencoder import AudioAutoEncoder, OsuAutoEncoder
 
 Model = Union[OsuAutoEncoder, AudioAutoEncoder]
 
@@ -117,7 +116,7 @@ def sample_step(
             reconstructed = model.decode(z)
     model.train()
 
-    features = TOTAL_DIM if args.osu_data else AUDIO_DIM
+    features = BEATMAP_DIM if args.osu_data else AUDIO_DIM
     max_features = min(6, features)
 
     w, h = reconstructed.shape[-1] // 150, max_features
@@ -220,7 +219,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         project_name="OsuFusion-AutoEncoder",
     )
 
-    model = OsuAutoEncoder(16, 64) if args.osu_data else AudioAutoEncoder(16, 128)
+    model = OsuAutoEncoder(32, 128) if args.osu_data else AudioAutoEncoder(16, 128)
     if args.full_bf16:
         model.set_full_bf16()
     optimizer = AdamW(model.parameters(), lr=args.lr)
@@ -238,13 +237,10 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     random.shuffle(all_maps)
 
     if args.full_sequence:
-        dataset = FullSequenceDataset(dataset=all_maps, segment_sr=False)
-        collator = collate_fn
-    elif args.random_length:
-        dataset = RandomLengthDataset(dataset=all_maps, segment_sr=False)
+        dataset = FullSequenceDataset(dataset=all_maps, segment_sr=False, load_audio=not args.osu_data)
         collator = collate_fn
     else:
-        dataset = SubsequenceDataset(dataset=all_maps, segment_sr=False)
+        dataset = SubsequenceDataset(dataset=all_maps, segment_sr=False, load_audio=not args.osu_data)
         collator = None
 
     dataloader = DataLoader(
@@ -393,7 +389,6 @@ def main() -> None:
     args.add_argument("--reset-steps", action="store_true")
     args.add_argument("--osu-data", action="store_true")
     args.add_argument("--full-sequence", action="store_true")
-    args.add_argument("--random-length", action="store_true")
     args.add_argument("--max-length", type=int, default=0)
     args.add_argument("--mixed-precision", choices=["no", "fp16", "fp8", "bf16"], default="bf16")
     args.add_argument("--full-bf16", action="store_true")

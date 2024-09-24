@@ -5,10 +5,10 @@ import numpy as np
 import numpy.typing as npt
 from scipy import signal
 
-from osu_fusion.library.osu.beatmap import TimingPoint
-from osu_fusion.library.osu.data.encode import BeatmapEncoding
-from osu_fusion.library.osu.data.fit_bezier import fit_bezier, get_segment_length
-from osu_fusion.library.osu.data.hit import decode_extents, decode_flips
+from osu_fusion.data.encode import BeatmapEncoding
+from osu_fusion.data.fit_bezier import fit_bezier, get_segment_length
+from osu_fusion.data.hit import decode_extents, decode_flips
+from osu_fusion.osu.beatmap import TimingPoint
 
 BEAT_DIVISOR = 16
 SLIDER_MULT = 1.0
@@ -155,14 +155,14 @@ def decode_beatmap(  # noqa: C901
         new_combos[loc2idx[combo_locs]] = True
 
     sustain_ends = [-1] * len(hit_locs)
-    for sustain_start, sustain_end in zip(*decode_extents(hit_signals[BeatmapEncoding.SUSTAIN])):
+    for sustain_start, sustain_end in zip(*decode_extents(hit_signals[BeatmapEncoding.SUSTAIN]), strict=True):
         onset_idx = loc2idx[sustain_start]
         if onset_idx == -1:
             continue
         sustain_ends[onset_idx] = sustain_end
 
     slider_ends = [-1] * len(hit_locs)
-    for slider_start, slider_end in zip(*decode_extents(hit_signals[BeatmapEncoding.SLIDER])):
+    for slider_start, slider_end in zip(*decode_extents(hit_signals[BeatmapEncoding.SLIDER]), strict=True):
         onset_idx = loc2idx[slider_start]
         if onset_idx == -1:
             continue
@@ -182,7 +182,13 @@ def decode_beatmap(  # noqa: C901
     beat_offset = timing_point.t
     tps.append(f"{timing_point.t},{timing_point.beat_length},{timing_point.meter},0,0,50,1,0")
 
-    for hit_loc, new_combo, sustain_end, slider_end in zip(hit_locs, new_combos, sustain_ends, slider_ends):
+    for hit_loc, new_combo, sustain_end, slider_end in zip(
+        hit_locs,
+        new_combos,
+        sustain_ends,
+        slider_ends,
+        strict=False,
+    ):
         x, y = cursor_signals[:, hit_loc].round().astype(int)
         t = frame_times[hit_loc]
         u = frame_times[sustain_end]

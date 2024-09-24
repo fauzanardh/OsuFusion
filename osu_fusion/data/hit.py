@@ -4,8 +4,8 @@ import numpy as np
 import numpy.typing as npt
 from scipy.signal import find_peaks
 
-from osu_fusion.library.osu.beatmap import Beatmap
-from osu_fusion.library.osu.hit_objects import Slider, Spinner
+from osu_fusion.osu.beatmap import Beatmap
+from osu_fusion.osu.hit_objects import Slider, Spinner
 
 
 def flips(beatmap: Beatmap, frame_times: npt.NDArray, combo: bool = False) -> npt.NDArray:

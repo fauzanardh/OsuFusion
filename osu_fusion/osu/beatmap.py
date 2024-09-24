@@ -5,8 +5,8 @@ from typing import Any, Dict, Generator, List, Tuple
 
 import numpy as np
 
-from osu_fusion.library.osu.hit_objects import Circle, HitObject, Slider, Spinner, Timed, TimingPoint
-from osu_fusion.library.osu.sliders import from_control_points
+from osu_fusion.osu.hit_objects import Circle, HitObject, Slider, Spinner, Timed, TimingPoint
+from osu_fusion.osu.sliders import from_control_points
 
 CX, CY = 256, 192
 
@@ -211,7 +211,7 @@ class Beatmap:
             elif isinstance(ho, Slider):
                 return ho.start_pos(), np.inf
 
-        for ho, nho in zip(self.hit_objects, self.hit_objects[1:]):
+        for ho, nho in zip(self.hit_objects, self.hit_objects[1:], strict=False):
             if ho.t <= t < nho.t:
                 break
         else:

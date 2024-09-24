@@ -1,6 +1,6 @@
-import os
 import random
 import traceback
+import warnings
 from argparse import ArgumentParser
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
@@ -8,9 +8,10 @@ from typing import Tuple
 
 from tqdm import tqdm
 
-# Set environment variable before importing dataset_creator
-os.environ["CREATE_DATASET"] = "1"
-from osu_fusion.scripts.dataset_creator import prepare_map
+from osu_fusion.data.prepare_data import prepare_map
+
+# Suppress FutureWarnings from librosa since we are using an older version
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 
 def worker_task(args: Tuple[Path, Path]) -> None:

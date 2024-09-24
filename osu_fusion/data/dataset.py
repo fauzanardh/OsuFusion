@@ -9,15 +9,14 @@ from rosu_pp_py import Beatmap as RosuBeatmap
 from rosu_pp_py import Difficulty as RosuDifficulty
 from torch.utils.data import IterableDataset
 
-from osu_fusion.library.augment import flip_cursor_horizontal, flip_cursor_vertical
-from osu_fusion.library.osu.data.decode import Metadata, decode_beatmap
-from osu_fusion.scripts.dataset_creator import (
+from osu_fusion.data.augment import flip_cursor_horizontal, flip_cursor_vertical
+from osu_fusion.data.const import (
     AUDIO_DIM,
     HOP_LENGTH,
     SR,
-    normalize_context,
-    unnormalize_context,
 )
+from osu_fusion.data.decode import Metadata, decode_beatmap
+from osu_fusion.data.prepare_data import normalize_context, unnormalize_context
 
 
 def load_tensor(map_file: Path, load_audio: bool = True) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:

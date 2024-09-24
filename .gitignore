@@ -161,7 +161,6 @@ cython_debug/
 
 *.ipynb
 weights/
-!weights/.gitkeep
 experiments/
 .vscode/
 wandb/

@@ -1,73 +1,18 @@
-import math
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 import torch
 import torch.nn as nn
 from einops import rearrange, repeat
-from torch.nn import functional as F  # noqa: N812
 
-from osu_fusion.modules.attention import Attend
+from osu_fusion.modules.attention import Attention
+from osu_fusion.modules.positional_embeddings import SinusoidalPositionEmbedding
+from osu_fusion.modules.transformer import FeedForward
 from osu_fusion.modules.utils import prob_mask_like
 
 
 @torch.jit.script
 def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
-
-
-class SinusoidalPositionEmbedding(nn.Module):
-    def __init__(self: "SinusoidalPositionEmbedding", dim: int, theta: int = 10000) -> None:
-        super().__init__()
-        self.dim = dim
-        self.theta = theta
-
-    def forward(self: "SinusoidalPositionEmbedding", x: torch.Tensor) -> torch.Tensor:
-        device = x.device
-        half_dim = self.dim // 2
-        emb = math.log(self.theta) / (half_dim - 1)
-        emb = torch.exp(torch.arange(half_dim, device=device) * -emb)
-        emb = x[:, None] * emb[None, :]
-        emb = torch.cat([emb.sin(), emb.cos()], dim=-1)
-        return emb
-
-
-class CrossEmbedLayer(nn.Module):
-    def __init__(self: "CrossEmbedLayer", dim: int, dim_out: int, kernel_sizes: Tuple[int]) -> None:
-        super().__init__()
-        kernel_sizes = sorted(kernel_sizes)
-        num_scales = len(kernel_sizes)
-
-        dim_scales = [int(dim / (2**i)) for i in range(1, num_scales)]
-        dim_scales = [*dim_scales, dim_out - sum(dim_scales)]
-
-        convs = []
-        for kernel, dim_scale in zip(kernel_sizes, dim_scales):
-            convs.append(nn.Conv1d(dim, dim_scale, kernel, padding=kernel // 2))
-
-        self.convs = nn.ModuleList(convs)
-
-    def forward(self: "CrossEmbedLayer", x: torch.Tensor) -> torch.Tensor:
-        return torch.cat([conv(x) for conv in self.convs], dim=1)
-
-
-class FeedForward(nn.Sequential):
-    def __init__(self: "FeedForward", dim: int, dim_mult: int = 4) -> None:
-        inner_dim = dim * dim_mult
-        super().__init__(
-            nn.Linear(dim, inner_dim),
-            nn.SiLU(),
-            nn.Linear(inner_dim, dim),
-        )
-
-
-class MultiHeadRMSNorm(nn.Module):
-    def __init__(self: "MultiHeadRMSNorm", dim: int, heads: int) -> None:
-        super().__init__()
-        self.scale = dim**0.5
-        self.gamma = nn.Parameter(torch.ones(heads, 1, dim))
-
-    def forward(self: "MultiHeadRMSNorm", x: torch.Tensor) -> torch.Tensor:
-        return F.normalize(x, dim=-1) * self.gamma * self.scale
 
 
 class FinalLayer(nn.Module):
@@ -86,45 +31,15 @@ class FinalLayer(nn.Module):
         return self.linear(x)
 
 
-class DiTAttention(nn.Module):
-    def __init__(
-        self: "DiTAttention",
-        dim: int,
-        heads: int,
-        dim_head: int,
-        qk_norm: bool = True,
-        context_len: int = 4096,
-    ) -> None:
-        super().__init__()
-        self.heads = heads
-        inner_dim = dim_head * heads
-
-        self.to_qkv = nn.Linear(dim, inner_dim * 3, bias=False)
-        self.q_norm = MultiHeadRMSNorm(dim_head, heads=heads) if qk_norm else nn.Identity()
-        self.k_norm = MultiHeadRMSNorm(dim_head, heads=heads) if qk_norm else nn.Identity()
-
-        self.attn = Attend()
-
-    def forward(self: "DiTAttention", x: torch.Tensor) -> torch.Tensor:
-        q, k, v = self.to_qkv(x).chunk(3, dim=-1)
-        q, k, v = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q, k, v))
-
-        q = self.q_norm(q)
-        k = self.k_norm(k)
-
-        out = self.attn(q, k, v)
-        return rearrange(out, "b h n d -> b n (h d)")
-
-
 class DiTBlock(nn.Module):
     def __init__(
         self: "DiTBlock",
         dim_h: int,
         dim_h_mult: int = 4,
-        attn_heads: int = 8,
         attn_dim_head: int = 64,
-        attn_qk_norm: bool = True,
-        attn_context_len: int = 4096,
+        attn_heads: int = 8,
+        attn_kv_heads: int = 1,
+        attn_context_len: int = 8192,
     ) -> None:
         super().__init__()
 
@@ -133,11 +48,11 @@ class DiTBlock(nn.Module):
             nn.Linear(dim_h, dim_h * 6, bias=True),
         )
         self.norm1 = nn.LayerNorm(dim_h, elementwise_affine=False, eps=1e-6)
-        self.attn = DiTAttention(
+        self.attn = Attention(
             dim_h,
-            heads=attn_heads,
             dim_head=attn_dim_head,
-            qk_norm=attn_qk_norm,
+            heads=attn_heads,
+            kv_heads=attn_kv_heads,
             context_len=attn_context_len,
         )
         self.norm2 = nn.LayerNorm(dim_h, elementwise_affine=False, eps=1e-6)
@@ -168,17 +83,16 @@ class DiT(nn.Module):
         dim_h: int,
         dim_h_mult: int = 4,
         depth: int = 12,
-        cross_embed_kernel_sizes: Tuple[int] = (3, 7, 15),
-        attn_heads: int = 8,
         attn_dim_head: int = 64,
-        attn_qk_norm: bool = True,
+        attn_heads: int = 8,
+        attn_kv_heads: int = 1,
         attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
         self.dim_in_x = dim_in_x
 
-        self.preprocess = CrossEmbedLayer(dim_in_x + dim_in_a, dim_h, cross_embed_kernel_sizes)
-        self.postprocess = nn.Conv1d(dim_h, dim_in_x, 1, bias=False)
+        self.preprocess = nn.Conv1d(dim_in_x + dim_in_a, dim_h, 7, paddding=3)
+        self.postprocess = nn.Conv1d(dim_h, dim_in_x, 7, paddding=3)
 
         self.mlp_time = nn.Sequential(
             SinusoidalPositionEmbedding(dim_h),
@@ -203,9 +117,9 @@ class DiT(nn.Module):
                 DiTBlock(
                     dim_h,
                     dim_h_mult=dim_h_mult,
-                    attn_heads=attn_heads,
                     attn_dim_head=attn_dim_head,
-                    attn_qk_norm=attn_qk_norm,
+                    attn_heads=attn_heads,
+                    attn_kv_heads=attn_kv_heads,
                     attn_context_len=attn_context_len,
                 )
                 for _ in range(depth)

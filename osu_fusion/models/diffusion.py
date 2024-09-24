@@ -4,12 +4,11 @@ import torch
 import torch.nn as nn
 from diffusers import DDIMScheduler
 from einops import repeat
-from torch.nn import functional as F  # noqa: N812
+from torch.nn import functional as F
 from tqdm.auto import tqdm
 
-from osu_fusion.library.osu.data.encode import TOTAL_DIM
-from osu_fusion.modules.unet import UNet
-from osu_fusion.scripts.dataset_creator import AUDIO_DIM, CONTEXT_DIM
+from osu_fusion.data.const import AUDIO_DIM, BEATMAP_DIM, CONTEXT_DIM
+from osu_fusion.models.backbone.unet import UNet
 
 
 class OsuFusion(nn.Module):
@@ -19,7 +18,6 @@ class OsuFusion(nn.Module):
         dim_h_mult: Tuple[int] = (1, 2, 3, 4),
         num_layer_blocks: Tuple[int] = (3, 3, 3, 3),
         num_middle_transformers: int = 3,
-        cross_embed_kernel_sizes: Tuple[int] = (3, 7, 15),
         attn_dim_head: int = 64,
         attn_heads: int = 16,
         attn_kv_heads: int = 1,
@@ -31,14 +29,13 @@ class OsuFusion(nn.Module):
         super().__init__()
 
         self.unet = UNet(
-            dim_in_x=TOTAL_DIM,
+            dim_in_x=BEATMAP_DIM,
             dim_in_a=AUDIO_DIM,
             dim_in_c=CONTEXT_DIM,
             dim_h=dim_h,
             dim_h_mult=dim_h_mult,
             num_layer_blocks=num_layer_blocks,
             num_middle_transformers=num_middle_transformers,
-            cross_embed_kernel_sizes=cross_embed_kernel_sizes,
             attn_dim_head=attn_dim_head,
             attn_heads=attn_heads,
             attn_kv_heads=attn_kv_heads,
@@ -66,7 +63,7 @@ class OsuFusion(nn.Module):
     ) -> torch.Tensor:
         (b, _, n), device = a.shape, a.device
         if x is None:
-            x = torch.randn((b, TOTAL_DIM, n), device=device)
+            x = torch.randn((b, BEATMAP_DIM, n), device=device)
 
         self.scheduler.set_timesteps(self.sampling_timesteps)
         for t in tqdm(self.scheduler.timesteps, desc="sampling loop time step", dynamic_ncols=True):
@@ -106,6 +103,6 @@ class OsuFusion(nn.Module):
             mask = torch.ones((b, n), device=x.device)
             for i, orig in enumerate(orig_len):
                 mask[i, orig:] = 0.0
-            mask = repeat(mask, "b n -> b d n", d=TOTAL_DIM)
+            mask = repeat(mask, "b n -> b d n", d=BEATMAP_DIM)
             return (loss * mask).sum() / mask.sum()
         return loss.mean()

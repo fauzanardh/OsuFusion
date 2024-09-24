@@ -12,18 +12,18 @@ from accelerate.utils import FP8RecipeKwargs, ProjectConfiguration
 from diffusers.optimization import get_cosine_schedule_with_warmup
 from matplotlib import pyplot as plt
 from safetensors.torch import save_file
-from torch.nn import functional as F  # noqa: N812
+from torch.nn import functional as F
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 import wandb
-from osu_fusion.library.dataset import FullSequenceDataset, RandomLengthDataset, SubsequenceDataset
-from osu_fusion.library.osu.data.encode import TOTAL_DIM
+from osu_fusion.data.const import BEATMAP_DIM
+from osu_fusion.data.dataset import FullSequenceDataset, SubsequenceDataset
+from osu_fusion.data.prepare_data import load_audio, normalize_context
 from osu_fusion.models.diffusion import OsuFusion as DiffusionOsuFusion
 from osu_fusion.models.rectified_flow import OsuFusion as RectifiedFlowOsuFusion
-from osu_fusion.scripts.dataset_creator import load_audio, normalize_context
 
 wandb.require("core")
 Model = Union[DiffusionOsuFusion, RectifiedFlowOsuFusion]
@@ -118,7 +118,7 @@ def sample_step(
 
     current_rng_state = torch.get_rng_state()
     torch.manual_seed(0)
-    x = torch.randn((b, TOTAL_DIM, n), device=accelerator.device, dtype=dtype)
+    x = torch.randn((b, BEATMAP_DIM, n), device=accelerator.device, dtype=dtype)
     torch.set_rng_state(current_rng_state)
 
     model.eval()
@@ -126,14 +126,14 @@ def sample_step(
         generated = model.sample(a, c, x, cond_scale=1.0)
     model.train()
 
-    w, h = generated.shape[-1] // 150, TOTAL_DIM
+    w, h = generated.shape[-1] // 150, BEATMAP_DIM
     fig, axs = plt.subplots(
         h,
         1,
         figsize=(w, h * 8),
         sharex=True,
     )
-    for feature, ax in zip(generated[0].cpu().to(torch.float32), axs):
+    for feature, ax in zip(generated[0].cpu().to(torch.float32), axs, strict=False):
         ax.plot(feature)
 
     accelerator.log({"generated": wandb.Image(fig)}, step=step)
@@ -243,9 +243,6 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
 
     if args.full_sequence:
         dataset = FullSequenceDataset(dataset=all_maps)
-        collator = collate_fn
-    elif args.random_length:
-        dataset = RandomLengthDataset(dataset=all_maps)
         collator = collate_fn
     else:
         dataset = SubsequenceDataset(dataset=all_maps)
@@ -369,7 +366,6 @@ def main() -> None:
     args.add_argument("--resume", type=Path, default=None)
     args.add_argument("--reset-steps", action="store_true")
     args.add_argument("--full-sequence", action="store_true")
-    args.add_argument("--random-length", action="store_true")
     args.add_argument("--max-length", type=int, default=0)
     args.add_argument("--mixed-precision", type=str, default="bf16", choices=["no", "fp16", "bf16", "fp8"])
     args.add_argument("--full-bf16", action="store_true")

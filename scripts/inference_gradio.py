@@ -13,11 +13,11 @@ from gradio import Blocks
 from safetensors.torch import load_file
 from sanitize_filename import sanitize
 
-from osu_fusion.library.osu.data.decode import Metadata, decode_beatmap
-from osu_fusion.library.osu.data.encode import TOTAL_DIM
+from osu_fusion.data.const import BEATMAP_DIM
+from osu_fusion.data.decode import Metadata, decode_beatmap
+from osu_fusion.data.prepare_data import HOP_LENGTH, SR, load_audio, normalize_context
 from osu_fusion.models.diffusion import OsuFusion as DiffusionOsuFusion
 from osu_fusion.models.rectified_flow import OsuFusion as RectifiedFlowOsuFusion
-from osu_fusion.scripts.dataset_creator import HOP_LENGTH, SR, load_audio, normalize_context
 
 Model = Union[DiffusionOsuFusion, RectifiedFlowOsuFusion]
 
@@ -63,7 +63,7 @@ def create_input(
     context = repeat(context, "c -> b c", b=batch_size)
 
     n = audio.shape[-1]
-    x = torch.randn((batch_size, TOTAL_DIM, n), device=device, dtype=dtype)
+    x = torch.randn((batch_size, BEATMAP_DIM, n), device=device, dtype=dtype)
 
     return x, audio, context
 
