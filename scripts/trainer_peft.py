@@ -28,7 +28,6 @@ from osu_fusion.models.diffusion import OsuFusion as DiffusionOsuFusion
 from osu_fusion.models.rectified_flow import OsuFusion as RectifiedFlowOsuFusion
 from osu_fusion.modules.lora_layers import LoraConv1d
 
-wandb.require("core")
 Model = Union[DiffusionOsuFusion, RectifiedFlowOsuFusion]
 
 

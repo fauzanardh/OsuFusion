@@ -26,8 +26,6 @@ from osu_fusion.models.autoencoder import AudioAutoEncoder, OsuAutoEncoder
 
 Model = Union[OsuAutoEncoder, AudioAutoEncoder]
 
-wandb.require("core")
-
 
 def get_total_norm(parameters: List[torch.Tensor], norm_type: float = 2.0) -> float:
     grads = [p.grad for p in parameters if p.grad is not None]
