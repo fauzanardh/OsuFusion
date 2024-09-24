@@ -27,6 +27,10 @@ dependencies = [
     "wandb>=0.18.1",
 ]
 
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
 [tool.ruff]
 target-version = "py310"
 select = ["E", "W", "F", "B", "N", "ANN", "COM", "C4", "EM", "SIM", "RUF", "C90"]
