@@ -133,7 +133,7 @@ class FullSequenceDataset(StreamPerSample):
 class SubsequenceDataset(StreamPerSample):
     def __init__(self: "SubsequenceDataset", **kwargs: Dict) -> None:
         super().__init__(**kwargs)
-        self.sequence_length = kwargs.pop("sequence_length", 8192)  # 65.536 seconds
+        self.sequence_length = kwargs.pop("sequence_length", 4096)  # 32.768 seconds
 
     def sample_stream(self: StreamPerSample, map_file: Path) -> Generator[torch.Tensor, None, None]:
         try:

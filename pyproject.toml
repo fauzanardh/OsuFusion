@@ -42,5 +42,7 @@ line-length = 120
 dev-dependencies = [
     "ipykernel>=6.29.5",
     "ipywidgets>=8.1.5",
+    "nbformat>=4.2.0",
+    "plotly>=5.24.1",
     "ruff>=0.6.7",
 ]

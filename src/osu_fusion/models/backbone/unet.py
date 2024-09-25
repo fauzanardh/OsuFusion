@@ -109,7 +109,7 @@ class UNet(nn.Module):
         attn_dim_head: int = 64,
         attn_heads: int = 16,
         attn_kv_heads: int = 1,
-        attn_context_len: int = 8192,
+        attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
         self.dim_h = dim_h

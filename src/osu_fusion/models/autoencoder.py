@@ -79,7 +79,7 @@ class Encoder(nn.Module):
         attn_dim_head: int = 64,
         attn_heads: int = 8,
         attn_kv_heads: int = 1,
-        attn_context_len: int = 8192,
+        attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
 
@@ -152,7 +152,7 @@ class Decoder(nn.Module):
         attn_dim_head: int = 64,
         attn_heads: int = 8,
         attn_kv_heads: int = 1,
-        attn_context_len: int = 8192,
+        attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
 
@@ -222,7 +222,7 @@ class OsuAutoEncoder(nn.Module):
         attn_dim_head: int = 64,
         attn_heads: int = 8,
         attn_kv_heads: int = 1,
-        attn_context_len: int = 8192,
+        attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
         # Encoder
@@ -299,7 +299,7 @@ class AudioAutoEncoder(nn.Module):
         attn_dim_head: int = 64,
         attn_heads: int = 8,
         attn_kv_heads: int = 1,
-        attn_context_len: int = 8192,
+        attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
         # Encoder
