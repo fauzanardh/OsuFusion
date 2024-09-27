@@ -117,29 +117,29 @@ def validate_map_data(map_file: Path, data_dir: Path) -> bool:
     try:
         with map_file.open("rb") as f:
             data = np.load(f)
-        if "x" not in data or "c" not in data:
-            print(f"[Error] Missing data in map file {map_file}")
-            return False
+            if "x" not in data or "c" not in data:
+                print(f"[Error] Missing data in map file {map_file}")
+                return False
 
-        x = data["x"]
-        c = data["c"]
-        if x.shape[0] != BEATMAP_DIM or c.shape[0] != CONTEXT_DIM:
-            print(f"[Error] Invalid data shape in map file {map_file}")
-            return False
+            x = data["x"]
+            c = data["c"]
+            if x.shape[0] != BEATMAP_DIM or c.shape[0] != CONTEXT_DIM:
+                print(f"[Error] Invalid data shape in map file {map_file}")
+                return False
 
-        if x.size == 0:
-            print(f"[Error] Empty data in map file {map_file}")
-            return False
+            if x.size == 0:
+                print(f"[Error] Empty data in map file {map_file}")
+                return False
 
-        if "spec_path" not in data:
-            print(f"[Error] Missing `spec_path` key in map file {map_file}")
-            return False
+            if "spec_path" not in data:
+                print(f"[Error] Missing `spec_path` key in map file {map_file}")
+                return False
 
-        spec_relative = data["spec_path"].item()
-        spec_file = data_dir / spec_relative
-        if not spec_file.exists():
-            print(f"[Error] Missing spec file {spec_file}")
-            return False
+            spec_relative = data["spec_path"].item()
+            spec_file = data_dir / spec_relative
+            if not spec_file.exists():
+                print(f"[Error] Missing spec file {spec_file}")
+                return False
     except Exception as e:
         print(f"[Error] Failed to load map data {map_file}: {e}")
         return False
