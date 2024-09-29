@@ -49,11 +49,23 @@ class Block(nn.Module):
         layer_idx: int,
         num_layers: int,
         down_block: bool = False,
+        ff_mult: int = 2,
+        attn_dim_head: int = 64,
+        attn_heads: int = 8,
+        attn_kv_heads: int = 1,
+        attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
         self.init_resnet = ResidualBlock(dim_in, dim_out)
         self.resnet = ResidualBlock(dim_out, dim_out)
-        self.transformer = TransformerBlock(dim_out)
+        self.transformer = TransformerBlock(
+            dim_out,
+            ff_mult=ff_mult,
+            attn_dim_head=attn_dim_head,
+            attn_heads=attn_heads,
+            attn_kv_heads=attn_kv_heads,
+            attn_context_len=attn_context_len,
+        )
 
         if down_block:
             self.sampler = (
@@ -96,6 +108,7 @@ class Encoder(nn.Module):
         down_blocks = []
         for i in range(n_layers):
             layer_dim_in, layer_dim_out = in_out[i]
+            attn_context_len_layer = attn_context_len // (2**i)
             down_blocks.append(
                 Block(
                     layer_dim_in,
@@ -103,6 +116,11 @@ class Encoder(nn.Module):
                     i,
                     n_layers,
                     down_block=True,
+                    ff_mult=ff_mult,
+                    attn_dim_head=attn_dim_head,
+                    attn_heads=attn_heads,
+                    attn_kv_heads=attn_kv_heads,
+                    attn_context_len=attn_context_len_layer,
                 ),
             )
         self.down_blocks = nn.ModuleList(down_blocks)
@@ -181,6 +199,7 @@ class Decoder(nn.Module):
         up_blocks = []
         for i in range(n_layers):
             layer_dim_out, layer_dim_in = in_out[i]
+            attn_context_len_layer = attn_context_len // (2 ** (n_layers - i - 1))
             up_blocks.append(
                 Block(
                     layer_dim_in,
@@ -188,6 +207,11 @@ class Decoder(nn.Module):
                     i,
                     n_layers,
                     down_block=False,
+                    ff_mult=ff_mult,
+                    attn_dim_head=attn_dim_head,
+                    attn_heads=attn_heads,
+                    attn_kv_heads=attn_kv_heads,
+                    attn_context_len=attn_context_len_layer,
                 ),
             )
         self.up_blocks = nn.ModuleList(up_blocks)
