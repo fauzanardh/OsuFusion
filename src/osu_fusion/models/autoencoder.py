@@ -53,6 +53,7 @@ class Block(nn.Module):
         super().__init__()
         self.init_resnet = ResidualBlock(dim_in, dim_out)
         self.resnet = ResidualBlock(dim_out, dim_out)
+        self.transformer = TransformerBlock(dim_out)
 
         if down_block:
             self.sampler = (
@@ -64,6 +65,7 @@ class Block(nn.Module):
     def forward(self: "Block", x: torch.Tensor) -> torch.Tensor:
         x = self.init_resnet(x)
         x = self.resnet(x)
+        x = self.transformer(x)
 
         return self.sampler(x)
 
