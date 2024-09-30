@@ -272,12 +272,12 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
 
                 with accelerator.autocast(), accelerator.accumulate(model):
                     # Forward pass
-                    model_output = model(model_input, output_recon=True)
+                    model_output = model(model_input)
                     if args.osu_data:
-                        hit_loss, cursor_loss, kl_loss, reconstructed = model_output
+                        hit_loss, cursor_loss, kl_loss = model_output
                         loss = hit_loss + cursor_loss + kl_loss * args.kl_weight
                     else:
-                        audio_loss, kl_loss, reconstructed = model_output
+                        audio_loss, kl_loss = model_output
                         loss = audio_loss + kl_loss * args.kl_weight
 
                     # Backward and optimize
