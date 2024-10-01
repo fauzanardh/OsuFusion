@@ -168,3 +168,4 @@ wandb/
 *.sh
 *.ps1
 *_debug.py
+*.npz
