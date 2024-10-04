@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-from osu_fusion.data.const import AUDIO_DIM, BEATMAP_DIM, HIT_DIM
+from osu_fusion.data.const import BEATMAP_DIM, HIT_DIM
 from osu_fusion.modules.residual import ResidualBlock
 from osu_fusion.modules.samplers import Downsample, Upsample
 from osu_fusion.modules.transformer import TransformerBlock
@@ -315,10 +315,10 @@ class OsuAutoEncoder(nn.Module):
         return hit_loss, cursor_loss, kl_loss
 
 
-class AudioAutoEncoder(nn.Module):
+class AudioEncoder(nn.Module):
     def __init__(
-        self: "AudioAutoEncoder",
-        dim_z: int,
+        self: "AudioEncoder",
+        dim_in: int,
         dim_h: int,
         dim_h_mult: Tuple[int] = (1, 2, 3, 4),
         ff_mult: int = 2,
@@ -328,57 +328,57 @@ class AudioAutoEncoder(nn.Module):
         attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
-        # Encoder
-        self.encoder = Encoder(
-            AUDIO_DIM,
-            dim_z,
-            dim_h,
-            dim_h_mult=dim_h_mult,
+
+        self.init_conv = nn.Conv1d(dim_in, dim_h, 7, padding=3)
+
+        dims_h = tuple((dim_h * mult) for mult in dim_h_mult)
+        dims_h = (dim_h, *dims_h)
+        in_out = tuple(itertools.pairwise(dims_h))
+        n_layers = len(in_out)
+
+        # Down
+        down_blocks = []
+        for i in range(n_layers):
+            layer_dim_in, layer_dim_out = in_out[i]
+            attn_context_len_layer = attn_context_len // (2**i)
+            down_blocks.append(
+                Block(
+                    layer_dim_in,
+                    layer_dim_out,
+                    i,
+                    n_layers,
+                    down_block=True,
+                    ff_mult=ff_mult,
+                    attn_dim_head=attn_dim_head,
+                    attn_heads=attn_heads,
+                    attn_kv_heads=attn_kv_heads,
+                    attn_context_len=attn_context_len_layer,
+                ),
+            )
+        self.down_blocks = nn.ModuleList(down_blocks)
+
+        # Middle
+        self.middle_resnet = ResidualBlock(dims_h[-1], dims_h[-1])
+        self.middle_attention = TransformerBlock(
+            dims_h[-1],
             ff_mult=ff_mult,
             attn_dim_head=attn_dim_head,
             attn_heads=attn_heads,
             attn_kv_heads=attn_kv_heads,
-            attn_context_len=attn_context_len,
+            attn_context_len=attn_context_len // (2 ** (n_layers - 1)),
         )
+        self.middle_resnet2 = ResidualBlock(dims_h[-1], dims_h[-1])
 
-        # Decoder
-        self.decoder = Decoder(
-            AUDIO_DIM,
-            dim_z,
-            dim_h,
-            dim_h_mult=dim_h_mult,
-            ff_mult=ff_mult,
-            attn_dim_head=attn_dim_head,
-            attn_heads=attn_heads,
-            attn_kv_heads=attn_kv_heads,
-            attn_context_len=attn_context_len,
-        )
+    def forward(self: "AudioEncoder", x: torch.Tensor) -> torch.Tensor:
+        x = self.init_conv(x)
 
-    def encode(self: "AudioAutoEncoder", x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        mu, logvar = self.encoder(x).chunk(2, dim=1)
-        return mu, logvar
+        # Down
+        for block in self.down_blocks:
+            x = block(x)
 
-    def reparametrize(self: "AudioAutoEncoder", mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
-        return mu + eps * std
+        # Middle
+        x = self.middle_resnet(x)
+        x = self.middle_attention(x)
+        x = self.middle_resnet2(x)
 
-    def decode(self: "AudioAutoEncoder", z: torch.Tensor) -> torch.Tensor:
-        audio = self.decoder(z)
-        return audio
-
-    def forward(self: "AudioAutoEncoder", x: torch.Tensor) -> torch.Tensor:
-        # Pad to nearest power of 2^encoder layers
-        n = x.shape[-1]
-        depth = len(self.encoder.down_blocks)
-        pad_len = (2**depth - (n % (2**depth))) % (2**depth)
-        x = F.pad(x, (0, pad_len), value=0.0)
-
-        mu, logvar = self.encode(x)
-        z = self.reparametrize(mu, logvar)
-        recon_audio = self.decode(z)
-
-        audio_loss = F.mse_loss(recon_audio[:, :, :n], x[:, :, :n])
-        kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1).mean()
-
-        return audio_loss, kl_loss
+        return x

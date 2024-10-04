@@ -19,7 +19,7 @@ from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-from osu_fusion.data.const import AUDIO_DIM, BEATMAP_DIM
+from osu_fusion.data.const import BEATMAP_DIM
 from osu_fusion.data.dataset import FullSequenceDataset, SubsequenceDataset
 from osu_fusion.models.autoencoder import AudioAutoEncoder, OsuAutoEncoder
 
@@ -87,21 +87,18 @@ def visualize_and_log_sample(
         "bf16": torch.bfloat16,
     }.get(accelerator.mixed_precision, torch.float32)
 
-    data_key = "x" if args.osu_data else "a"
-    x = torch.from_numpy(np.load(args.sample_data)[data_key]).unsqueeze(0).to(accelerator.device, dtype)
+    x = torch.from_numpy(np.load(args.sample_data)["x"]).unsqueeze(0).to(accelerator.device, dtype)
 
     model.eval()
     with torch.inference_mode(), accelerator.autocast():
         z, _ = model.encode(x)
-        reconstructed = torch.cat(model.decode(z, apply_act=True), dim=1) if args.osu_data else model.decode(z)
+        reconstructed = torch.cat(model.decode(z, apply_act=True), dim=1)
     model.train()
 
-    features = BEATMAP_DIM if args.osu_data else AUDIO_DIM
-    max_features = min(6, features)
-    width, height = reconstructed.shape[-1] // 150, max_features
+    width, height = reconstructed.shape[-1] // 150, BEATMAP_DIM
 
     fig, axs = plt.subplots(height, 1, figsize=(width, height * 8), sharex=True)
-    for i in range(max_features):
+    for i in range(BEATMAP_DIM):
         axs[i].plot(reconstructed[0, i].cpu(), label="Reconstructed", color="red")
         axs[i].plot(x[0, i].cpu(), label="Original", color="blue", linestyle="--")
         axs[i].legend()
@@ -187,7 +184,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     accelerator.init_trackers(project_name="OsuFusion-AutoEncoder")
 
     # Initialize model
-    model = OsuAutoEncoder(32, 128) if args.osu_data else AudioAutoEncoder(16, 128)
+    model = OsuAutoEncoder(32, 128)
     if args.full_bf16:
         model.set_full_bf16()
 
@@ -207,7 +204,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     random.shuffle(all_maps)
 
     dataset_cls = FullSequenceDataset if args.full_sequence else SubsequenceDataset
-    dataset = dataset_cls(dataset=all_maps, segment_sr=False, load_audio=not args.osu_data)
+    dataset = dataset_cls(dataset=all_maps, segment_sr=False, load_audio=False)
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -258,39 +255,28 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                 "total_loss": 0.0,
                 "kl_loss": 0.0,
                 "total_norm": 0.0,
+                "hit_loss": 0.0,
+                "cursor_loss": 0.0,
             }
-            if args.osu_data:
-                metrics.update({"hit_loss": 0.0, "cursor_loss": 0.0})
-            else:
-                metrics.update({"audio_loss": 0.0})
 
             model.train()
             for _ in range(args.gradient_accumulation_steps):
                 batch = next(dataloader_cycle)
-                x, a, _ = batch
-                model_input = x if args.osu_data else a
+                x, _, _ = batch
 
                 with accelerator.autocast(), accelerator.accumulate(model):
                     # Forward pass
-                    model_output = model(model_input)
-                    if args.osu_data:
-                        hit_loss, cursor_loss, kl_loss = model_output
-                        loss = hit_loss + cursor_loss + kl_loss * args.kl_weight
-                    else:
-                        audio_loss, kl_loss = model_output
-                        loss = audio_loss + kl_loss * args.kl_weight
+                    model_output = model(x)
+                    hit_loss, cursor_loss, kl_loss = model_output
+                    loss = hit_loss + cursor_loss + kl_loss * args.kl_weight
 
                     # Backward and optimize
                     accelerator.backward(loss)
                     metrics["total_norm"] += get_total_norm(model.parameters()) / args.gradient_accumulation_steps
                     metrics["total_loss"] += loss.item() / args.gradient_accumulation_steps
                     metrics["kl_loss"] += kl_loss.item() / args.gradient_accumulation_steps
-
-                    if args.osu_data:
-                        metrics["hit_loss"] += hit_loss.item() / args.gradient_accumulation_steps
-                        metrics["cursor_loss"] += cursor_loss.item() / args.gradient_accumulation_steps
-                    else:
-                        metrics["audio_loss"] += audio_loss.item() / args.gradient_accumulation_steps
+                    metrics["hit_loss"] += hit_loss.item() / args.gradient_accumulation_steps
+                    metrics["cursor_loss"] += cursor_loss.item() / args.gradient_accumulation_steps
 
                     if args.clip_grad_norm > 0.0:
                         torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
@@ -320,15 +306,12 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                     "total_norm": metrics["total_norm"],
                     "lr": scheduler.get_last_lr()[0],
                 }
-                if args.osu_data:
-                    log_data.update(
-                        {
-                            "hit_loss": metrics["hit_loss"],
-                            "cursor_loss": metrics["cursor_loss"],
-                        },
-                    )
-                else:
-                    log_data["audio_loss"] = metrics["audio_loss"]
+                log_data.update(
+                    {
+                        "hit_loss": metrics["hit_loss"],
+                        "cursor_loss": metrics["cursor_loss"],
+                    },
+                )
                 accelerator.log(log_data, step=current_step + 1)
 
             # Save checkpoint
@@ -368,7 +351,6 @@ def main() -> None:
     args.add_argument("--dataset-dir", type=Path, required=True, help="Directory containing the dataset")
     args.add_argument("--resume", type=Path, default=None, help="Path to resume from a checkpoint")
     args.add_argument("--reset-steps", action="store_true", help="Reset training steps when resuming")
-    args.add_argument("--osu-data", action="store_true", help="Use osu! beatmap data")
     args.add_argument("--full-sequence", action="store_true", help="Use full sequence dataset")
     args.add_argument("--max-length", type=int, default=0, help="Maximum length of beatmaps to include")
     args.add_argument(
