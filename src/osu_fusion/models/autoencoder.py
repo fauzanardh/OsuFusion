@@ -369,6 +369,10 @@ class AudioEncoder(nn.Module):
         )
         self.middle_resnet2 = ResidualBlock(dims_h[-1], dims_h[-1])
 
+        # End
+        self.norm_out = nn.GroupNorm(1, dims_h[-1])
+        self.to_out = nn.Conv1d(dims_h[-1], dim_h, 7, padding=3)
+
     def forward(self: "AudioEncoder", x: torch.Tensor) -> torch.Tensor:
         x = self.init_conv(x)
 
@@ -381,4 +385,7 @@ class AudioEncoder(nn.Module):
         x = self.middle_attention(x)
         x = self.middle_resnet2(x)
 
-        return x
+        # End
+        x = self.norm_out(x)
+        x = F.silu(x)
+        return self.to_out(x)

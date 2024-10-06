@@ -11,7 +11,7 @@ from accelerate.utils import FP8RecipeKwargs, ProjectConfiguration
 from diffusers.optimization import get_cosine_schedule_with_warmup
 from matplotlib import pyplot as plt
 from PIL import Image
-from safetensors.torch import save_file
+from safetensors.torch import load_file, save_file
 from torch.nn import functional as F
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
@@ -22,10 +22,10 @@ import wandb
 from osu_fusion.data.const import BEATMAP_DIM
 from osu_fusion.data.dataset import FullSequenceDataset, SubsequenceDataset
 from osu_fusion.data.prepare_data import load_audio, normalize_context
+from osu_fusion.models.autoencoder import OsuAutoEncoder
 from osu_fusion.models.diffusion import OsuFusion as DiffusionOsuFusion
-from osu_fusion.models.rectified_flow import OsuFusion as RectifiedFlowOsuFusion
 
-Model = Union[DiffusionOsuFusion, RectifiedFlowOsuFusion]
+Model = Union[DiffusionOsuFusion]
 
 
 def get_total_norm(parameters: List[torch.Tensor], norm_type: float = 2.0) -> float:
@@ -69,26 +69,12 @@ def clear_checkpoints(project_dir: Path) -> None:
 
 def custom_collate_fn(
     batch: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    out_x = []
-    out_a = []
-    out_c = []
-    orig_len = []
-
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     max_length = max(x.shape[1] for x, _, _ in batch)
-    for x, a, c in batch:
-        orig_len.append(x.shape[1])
-        x_padded = F.pad(x, (0, max_length - x.shape[1]), value=-1.0)
-        a_padded = F.pad(a, (0, max_length - a.shape[1]), value=-23.0)
-        out_x.append(x_padded)
-        out_a.append(a_padded)
-        out_c.append(c)
-
-    out_x = torch.stack(out_x)
-    out_a = torch.stack(out_a)
-    out_c = torch.stack(out_c)
-    orig_len = torch.tensor(orig_len)
-    return out_x, out_a, out_c, orig_len
+    out_x = torch.stack([F.pad(x, (0, max_length - x.shape[1]), value=-1.0) for x, _, _ in batch])
+    out_a = torch.stack([F.pad(a, (0, max_length - a.shape[1]), value=-23.0) for _, a, _ in batch])
+    out_c = torch.stack([c for _, _, c in batch])
+    return out_x, out_a, out_c
 
 
 def visualize_and_log_sample(
@@ -104,7 +90,7 @@ def visualize_and_log_sample(
         "no": torch.float32,
         "fp16": torch.float16,
         "bf16": torch.bfloat16,
-        "fp8": torch.float16,  # Assuming fp8 uses float16 for storage
+        "fp8": torch.float16,
     }.get(accelerator.mixed_precision, torch.float32)
 
     a_tensor = torch.from_numpy(a).unsqueeze(0).to(accelerator.device, dtype)
@@ -119,15 +105,17 @@ def visualize_and_log_sample(
 
     model.eval()
     with torch.inference_mode(), accelerator.autocast():
-        generated = model.sample(a_tensor, c_tensor, x, cond_scale=1.0)
+        x_lat = model.encode_beatmap(x)
+        a_lat = model.encode_audio(a_tensor)
+        c_prep = model.unet.prepare_condition(c_tensor, cond_drop_prob=0.0)
+        generated_lat = model.sample(a_lat, c_prep, x=x_lat, cond_scale=1.0)
+        generated = model.decode_beatmap_latent(generated_lat)
     model.train()
 
     width, height = generated.shape[-1] // 150, BEATMAP_DIM
     fig, axs = plt.subplots(height, 1, figsize=(width, height * 8), sharex=True)
     for i in range(BEATMAP_DIM):
-        axs[i].plot(generated[0, i].cpu(), label="Reconstructed", color="red")
-        axs[i].plot(x[0, i].cpu(), label="Original", color="blue", linestyle="--")
-        axs[i].legend()
+        axs[i].plot(generated[0, i].cpu(), color="red")
 
     fig.canvas.draw()
     pil_img = Image.frombytes("RGBA", fig.canvas.get_width_height(), fig.canvas.buffer_rgba().tobytes())
@@ -136,7 +124,8 @@ def visualize_and_log_sample(
 
 
 def save_model_state(model: Model, project_dir: Path) -> None:
-    save_file(model.state_dict(), project_dir / "model.safetensors")
+    save_file(model.unet.state_dict(), project_dir / "unet.safetensors")
+    save_file(model.audio_encoder.state_dict(), project_dir / "audio_encoder.safetensors")
 
 
 def save_training_checkpoint(
@@ -152,7 +141,8 @@ def save_training_checkpoint(
     print(f"Saving checkpoint to {checkpoint_dir}...")
 
     checkpoint = {
-        "model_state_dict": model.state_dict(),
+        "unet_state_dict": model.unet.state_dict(),
+        "audio_encoder_state_dict": model.audio_encoder.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "scheduler_state_dict": scheduler.state_dict(),
         "rng_state": torch.get_rng_state(),
@@ -173,18 +163,10 @@ def load_training_checkpoint(
     device = next(model.parameters()).device
     checkpoint = torch.load(checkpoint_path / "checkpoint.pt", map_location=device)
 
-    try:
-        model.load_state_dict(checkpoint["model_state_dict"])
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-    except RuntimeError:
-        print("Model changed, loading with strict=False...")
-        incompatible_keys = model.load_state_dict(checkpoint["model_state_dict"], strict=False)
-        if incompatible_keys.missing_keys:
-            print(f"Missing keys: {incompatible_keys.missing_keys}")
-        if incompatible_keys.unexpected_keys:
-            print(f"Unexpected keys: {incompatible_keys.unexpected_keys}")
-
+    model.unet.load_state_dict(checkpoint["unet_state_dict"])
+    model.audio_encoder.load_state_dict(checkpoint["audio_encoder_state_dict"])
     optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
     if not reset_steps:
         scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
 
@@ -208,18 +190,22 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     accelerator.init_trackers(project_name="OsuFusion")
 
     # Initialize model
-    model_class = DiffusionOsuFusion if args.model_type == "diffusion" else RectifiedFlowOsuFusion
-    model = model_class(
-        model_dim=args.model_dim,
-        attn_heads=args.model_attn_heads,
-        depth=args.model_depth,
+    osu_autoencoder = OsuAutoEncoder(32, 128)
+    osu_autoencoder.load_state_dict(load_file(args.osu_autoencoder_sd))
+
+    model = DiffusionOsuFusion(
+        dim_h=args.model_dim,
+        dim_h_a=args.model_audio_dim,
+        osu_autoencoder=osu_autoencoder,
     )
     if args.full_bf16:
         model.set_full_bf16()
     model.unet.set_gradient_checkpointing(args.gradient_checkpointing)
 
     # Initialize optimizer and scheduler
-    optimizer = AdamW(model.parameters(), lr=args.lr)
+    parameters = list(model.trainable_params)
+    print(f"Number of trainable parameters: {sum(p.numel() for p in parameters)}")
+    optimizer = AdamW(parameters, lr=args.lr)
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
         num_training_steps=args.total_steps,
@@ -287,20 +273,23 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
             }
 
             for _ in range(args.gradient_accumulation_steps):
-                batch = next(dataloader_cycle)
+                x, a, c = next(dataloader_cycle)
+                x_lat = model.encode_beatmap(x)
                 with accelerator.autocast(), accelerator.accumulate(model):
                     try:
-                        loss = model(*batch)
+                        a_lat = model.encode_audio(a)
+                        c_prep = model.unet.prepare_condition(c, cond_drop_prob=model.cond_drop_prob)
+                        loss = model(x_lat, a_lat, c_prep)
                     except AssertionError:
                         print(f"AssertionError encountered at step {current_step + 1}, skipping batch.")
                         continue
 
                     accelerator.backward(loss)
-                    metrics["total_norm"] += get_total_norm(model.parameters()) / args.gradient_accumulation_steps
+                    metrics["total_norm"] += get_total_norm(parameters) / args.gradient_accumulation_steps
                     metrics["loss"] += loss.item() / args.gradient_accumulation_steps
 
                     if args.clip_grad_norm > 0.0:
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
+                        torch.nn.utils.clip_grad_norm_(parameters, args.clip_grad_norm)
                     optimizer.step()
                     optimizer.zero_grad(set_to_none=True)
                     scheduler.step()
@@ -373,8 +362,14 @@ def main() -> None:
         "--model-type",
         type=str,
         default="diffusion",
-        choices=["diffusion", "rectified-flow"],
+        choices=["diffusion"],
         help="Type of model to train",
+    )
+    args.add_argument(
+        "--osu-autoencoder-sd",
+        type=Path,
+        required=True,
+        help="Path to osu autoencoder state dict (safetensors)",
     )
     args.add_argument("--resume", type=Path, default=None, help="Path to resume from a checkpoint")
     args.add_argument("--reset-steps", action="store_true", help="Reset training steps when resuming")
@@ -395,11 +390,11 @@ def main() -> None:
         help="Number of gradient accumulation steps",
     )
     args.add_argument("--clip-grad-norm", type=float, default=0.0, help="Gradient clipping norm")
-    args.add_argument("--model-dim", type=int, default=512, help="Dimension of the model")
-    args.add_argument("--model-attn-heads", type=int, default=8, help="Number of attention heads")
-    args.add_argument("--model-depth", type=int, default=12, help="Depth of the model")
+    args.add_argument("--model-dim", type=int, default=128, help="Dimension of the model")
+    args.add_argument("--model-audio-dim", type=int, default=64, help="Dimension of the audio encoder")
+    args.add_argument("--model-attn-heads", type=int, default=16, help="Number of attention heads")
     args.add_argument("--lr", type=float, default=1e-5, help="Learning rate for the optimizer")
-    args.add_argument("--batch-size", type=int, default=4, help="Batch size for training")
+    args.add_argument("--batch-size", type=int, default=8, help="Batch size for training")
     args.add_argument("--num-workers", type=int, default=2, help="Number of data loader workers")
     args.add_argument("--total-steps", type=int, default=1_000_000, help="Total number of training steps")
     args.add_argument("--warmup-steps", type=int, default=1_000, help="Number of warmup steps for scheduler")

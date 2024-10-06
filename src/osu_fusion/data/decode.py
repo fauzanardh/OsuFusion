@@ -155,14 +155,14 @@ def decode_beatmap(  # noqa: C901
         new_combos[loc2idx[combo_locs]] = True
 
     sustain_ends = [-1] * len(hit_locs)
-    for sustain_start, sustain_end in zip(*decode_extents(hit_signals[BeatmapEncoding.SUSTAIN]), strict=True):
+    for sustain_start, sustain_end in zip(*decode_extents(hit_signals[BeatmapEncoding.SUSTAIN]), strict=False):
         onset_idx = loc2idx[sustain_start]
         if onset_idx == -1:
             continue
         sustain_ends[onset_idx] = sustain_end
 
     slider_ends = [-1] * len(hit_locs)
-    for slider_start, slider_end in zip(*decode_extents(hit_signals[BeatmapEncoding.SLIDER]), strict=True):
+    for slider_start, slider_end in zip(*decode_extents(hit_signals[BeatmapEncoding.SLIDER]), strict=False):
         onset_idx = loc2idx[slider_start]
         if onset_idx == -1:
             continue

@@ -87,6 +87,7 @@ class Attend(nn.Module):
             self.can_use_bf16 = False
             self.cuda_backends = [SDPBackend.EFFICIENT_ATTENTION, SDPBackend.CUDNN_ATTENTION]
 
+    @torch.amp.autocast("cuda", enabled=False)
     def forward(
         self: "Attend",
         q: torch.Tensor,

@@ -1,6 +1,6 @@
 import itertools
 import os
-from typing import Dict, List, Optional, Tuple
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -114,11 +114,8 @@ class UNet(nn.Module):
         super().__init__()
         self.dim_h = dim_h
         self.dim_emb = dim_h * 4
-        self.attn_context_len = attn_context_len
 
-        self.init_x = nn.Conv1d(dim_in_x, dim_h, 7, padding=3)
-        self.init_a = nn.Conv1d(dim_in_a, dim_h, 7, padding=3)
-        self.init_resnet = ResidualBlock(dim_h * 2, dim_h, self.dim_emb, self.dim_emb)
+        self.init_resnet = ResidualBlock(dim_in_x + dim_in_a, dim_h, self.dim_emb, self.dim_emb)
         self.final_resnet = ResidualBlock(dim_h * 2, dim_h, self.dim_emb, self.dim_emb)
         self.final_conv = zero_init(nn.Conv1d(dim_h, dim_in_x, 1))
 
@@ -224,13 +221,28 @@ class UNet(nn.Module):
                 module.gradient_checkpointing = value
                 print(f"Set gradient checkpointing to {value} for {name}")
 
-    def forward_with_cond_scale(self: "UNet", *args: List, cond_scale: float = 1.0, **kwargs: Dict) -> torch.Tensor:
-        logits = self(*args, **kwargs)
+    def prepare_condition(self: "UNet", c: torch.Tensor, cond_drop_prob: float = 0.0) -> torch.Tensor:
+        cond_mask = prob_mask_like((c.shape[0],), 1.0 - cond_drop_prob, device=c.device)
+        cond_mask = rearrange(cond_mask, "b -> b 1")
+        null_conds = repeat(self.null_cond, "d -> b d", b=c.shape[0])
+        c = self.cond_mlp(c)
+        return torch.where(cond_mask, c, null_conds)
+
+    def forward_with_cond_scale(
+        self: "UNet",
+        x: torch.Tensor,
+        a: torch.Tensor,
+        t: torch.Tensor,
+        c: torch.Tensor,
+        c_uncond: torch.Tensor,
+        cond_scale: float = 1.0,
+    ) -> torch.Tensor:
+        logits = self.forward(x, a, t, c)
 
         if cond_scale == 1.0:
             return logits
 
-        null_logits = self(*args, **kwargs, cond_drop_prob=1.0)
+        null_logits = self.forward(x, a, t, c_uncond)
         return null_logits + (logits - null_logits) * cond_scale
 
     def forward(
@@ -239,29 +251,20 @@ class UNet(nn.Module):
         a: torch.Tensor,
         t: torch.Tensor,
         c: torch.Tensor,
-        cond_drop_prob: float = 0.0,
     ) -> torch.Tensor:
         n = x.shape[-1]
         # Pad to the multiple of 2^unet depth
         depth = len(self.down_layers)
         pad_len = (2**depth - (n % (2**depth))) % (2**depth)
-        x = F.pad(x, (0, pad_len), value=-1.0)
-        a = F.pad(a, (0, pad_len), value=-23.0)
+        x = F.pad(x, (0, pad_len), value=0.0)
+        a = F.pad(a, (0, pad_len), value=0.0)
 
         t = self.time_mlp(t)
-        x = self.init_x(x)
-        a = self.init_a(a)
-        r = x.clone()
 
-        # Prepare condition
-        cond_mask = prob_mask_like((x.shape[0],), 1.0 - cond_drop_prob, device=x.device)
-        cond_mask = rearrange(cond_mask, "b -> b 1")
-        null_conds = repeat(self.null_cond, "d -> b d", b=x.shape[0])
-        c = self.cond_mlp(c)
-        c = torch.where(cond_mask, c, null_conds)
-
+        # Concat encoded audio signals
         x = torch.cat([x, a], dim=1)
         x = self.init_resnet(x, t, c)
+        r = x.clone()
 
         skip_connection = []
         for down_layer in self.down_layers:
