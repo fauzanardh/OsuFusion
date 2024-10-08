@@ -141,7 +141,7 @@ def decode_beatmap(  # noqa: C901
     hit_signals = encoded_beatmap[
         [BeatmapEncoding.HIT, BeatmapEncoding.SUSTAIN, BeatmapEncoding.SLIDER, BeatmapEncoding.COMBO]
     ]
-    hit_signals = np.where(hit_signals > 0.5, 1.0, 0.0)  # Discretize signals
+    hit_signals = np.where(hit_signals > 0.0, 1.0, 0.0)  # Discretize signals
     cursor_signals = encoded_beatmap[[BeatmapEncoding.CURSOR_X, BeatmapEncoding.CURSOR_Y]]
     cursor_signals = ((cursor_signals + 1) / 2) * np.array([[512], [384]])
 

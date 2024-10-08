@@ -125,7 +125,17 @@ def generate_beatmap(
         dtype,
     )
 
-    generated = global_model.sample(audio, context, x, cond_scale=cfg)
+    audio_lat = global_model.unet.encode_audio(audio)
+    context_prep = global_model.unet.prepare_condition(context)
+    context_uncond_prep = global_model.unet.prepare_condition(context, cond_drop_prob=1.0)
+    generated = global_model.sample(
+        x.shape[-1],
+        audio_lat,
+        context_prep,
+        c_uncond_prep=context_uncond_prep,
+        x=x,
+        cond_scale=cfg,
+    )
 
     frame_times = frame_times = (
         librosa.frames_to_time(np.arange(generated.shape[-1]), sr=SR, hop_length=HOP_LENGTH) * 1000

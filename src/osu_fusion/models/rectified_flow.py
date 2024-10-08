@@ -48,18 +48,26 @@ class OsuFusion(nn.Module):
         self.sample_timesteps = sampling_timesteps
         self.cond_drop_prob = cond_drop_prob
 
+    @property
+    def trainable_params(self: "OsuFusion") -> Tuple[nn.Parameter]:
+        return [param for param in self.parameters() if param.requires_grad]
+
     def set_full_bf16(self: "OsuFusion") -> None:
         self.unet = self.unet.bfloat16()
 
     @torch.inference_mode()
     def sample(
         self: "OsuFusion",
-        a: torch.Tensor,
-        c: torch.Tensor,
+        n: int,
+        a_lat: torch.Tensor,
+        c_prep: torch.Tensor,
+        c_prep_uncond: Optional[torch.Tensor] = None,
         x: Optional[torch.Tensor] = None,
         cond_scale: float = 2.0,
     ) -> torch.Tensor:
-        (b, _, n), device = a.shape, a.device
+        assert cond_scale == 1.0 or c_prep_uncond is not None, "If cond_scale is not 1.0, c_uncond can't be None"
+
+        b, device = a_lat.shape[0], a_lat.device
         if x is None:
             x = torch.randn((b, BEATMAP_DIM, n), device=device)
 
@@ -68,7 +76,14 @@ class OsuFusion(nn.Module):
 
             def ode_fn(t: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
                 t_batched = repeat(t, "... -> b ...", b=b)
-                out = self.unet.forward_with_cond_scale(x, a, t_batched, c, cond_scale=cond_scale)
+                out = self.unet.forward_with_cond_scale(
+                    x,
+                    a_lat,
+                    t_batched,
+                    c_prep,
+                    c_prep_uncond,
+                    cond_scale=cond_scale,
+                )
                 pbar.update(1)
                 return out
 
@@ -78,31 +93,30 @@ class OsuFusion(nn.Module):
     def forward(
         self: "OsuFusion",
         x: torch.Tensor,
-        a: torch.Tensor,
-        c: torch.Tensor,
+        a_lat: torch.Tensor,
+        c_prep: torch.Tensor,
         orig_len: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        assert x.shape[-1] == a.shape[-1], "x and a must have the same number of sequence length"
-
         noise = torch.randn_like(x, device=x.device)
-        times = torch.rand(x.shape[0], device=x.device)
-        padded_times = rearrange(times, "b -> b () ()")
+        timestep = torch.rand(x.shape[0], device=x.device)
+        padded_timestep = rearrange(timestep, "b -> b () ()")
 
-        t = cosmap(padded_times)
+        t = cosmap(padded_timestep)
         x_noisy = t * x + (1 - t) * noise
 
         flow = x - noise
-        pred = self.unet(x_noisy, a, times, c, cond_drop_prob=self.cond_drop_prob)
+        pred = self.unet(x_noisy, a_lat, timestep, c_prep)
 
         # Calculate loss
         loss = F.mse_loss(pred, flow, reduction="none")
-
-        # Create mask for losses to ignore padding
-        if orig_len is not None:
-            b, _, n = x.shape
-            mask = torch.ones((b, n), device=x.device)
-            for i, orig in enumerate(orig_len):
-                mask[i, orig:] = 0.0
-            mask = repeat(mask, "b n -> b d n", d=BEATMAP_DIM)
-            return (loss * mask).sum() / mask.sum()
         return loss.mean()
+
+        # # Create mask for losses to ignore padding
+        # if orig_len is not None:
+        #     b, _, n = x.shape
+        #     mask = torch.ones((b, n), device=x.device)
+        #     for i, orig in enumerate(orig_len):
+        #         mask[i, orig:] = 0.0
+        #     mask = repeat(mask, "b n -> b d n", d=BEATMAP_DIM)
+        #     return (loss * mask).sum() / mask.sum()
+        # return loss.mean()

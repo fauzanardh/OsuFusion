@@ -2,7 +2,6 @@ from typing import List, Tuple, Union
 
 import numpy as np
 import numpy.typing as npt
-from scipy.signal import find_peaks
 
 from osu_fusion.osu.beatmap import Beatmap
 from osu_fusion.osu.hit_objects import Slider, Spinner
@@ -21,10 +20,7 @@ def flips(beatmap: Beatmap, frame_times: npt.NDArray, combo: bool = False) -> np
 
 
 def decode_flips(flips_: npt.NDArray) -> List[int]:
-    signal_gradients = np.gradient(flips_)
-    rising = find_peaks(signal_gradients, height=0.5)[0].tolist()
-    falling = find_peaks(-signal_gradients, height=0.5)[0].tolist()
-    return sorted(rising + falling)
+    return np.where(np.diff(flips_) != 0)[0].tolist()
 
 
 Real = Union[int, float]

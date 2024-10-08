@@ -7,11 +7,11 @@ from typing import Generator, List, Tuple, Union
 import numpy as np
 import torch
 from accelerate import Accelerator
-from accelerate.utils import FP8RecipeKwargs, ProjectConfiguration
+from accelerate.utils import ProjectConfiguration
 from diffusers.optimization import get_cosine_schedule_with_warmup
 from matplotlib import pyplot as plt
 from PIL import Image
-from safetensors.torch import load_file, save_file
+from safetensors.torch import save_file
 from torch.nn import functional as F
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
@@ -22,10 +22,10 @@ import wandb
 from osu_fusion.data.const import BEATMAP_DIM
 from osu_fusion.data.dataset import FullSequenceDataset, SubsequenceDataset
 from osu_fusion.data.prepare_data import load_audio, normalize_context
-from osu_fusion.models.autoencoder import OsuAutoEncoder
 from osu_fusion.models.diffusion import OsuFusion as DiffusionOsuFusion
+from osu_fusion.models.rectified_flow import OsuFusion as RectifiedFlowOsuFusion
 
-Model = Union[DiffusionOsuFusion]
+Model = Union[DiffusionOsuFusion, RectifiedFlowOsuFusion]
 
 
 def get_total_norm(parameters: List[torch.Tensor], norm_type: float = 2.0) -> float:
@@ -90,7 +90,6 @@ def visualize_and_log_sample(
         "no": torch.float32,
         "fp16": torch.float16,
         "bf16": torch.bfloat16,
-        "fp8": torch.float16,
     }.get(accelerator.mixed_precision, torch.float32)
 
     a_tensor = torch.from_numpy(a).unsqueeze(0).to(accelerator.device, dtype)
@@ -105,11 +104,9 @@ def visualize_and_log_sample(
 
     model.eval()
     with torch.inference_mode(), accelerator.autocast():
-        x_lat = model.encode_beatmap(x)
-        a_lat = model.encode_audio(a_tensor)
+        a_lat = model.unet.encode_audio(a_tensor)
         c_prep = model.unet.prepare_condition(c_tensor, cond_drop_prob=0.0)
-        generated_lat = model.sample(a_lat, c_prep, x=x_lat, cond_scale=1.0)
-        generated = model.decode_beatmap_latent(generated_lat)
+        generated = model.sample(n, a_lat, c_prep, x=x, cond_scale=1.0)
     model.train()
 
     width, height = generated.shape[-1] // 150, BEATMAP_DIM
@@ -125,7 +122,6 @@ def visualize_and_log_sample(
 
 def save_model_state(model: Model, project_dir: Path) -> None:
     save_file(model.unet.state_dict(), project_dir / "unet.safetensors")
-    save_file(model.audio_encoder.state_dict(), project_dir / "audio_encoder.safetensors")
 
 
 def save_training_checkpoint(
@@ -142,7 +138,6 @@ def save_training_checkpoint(
 
     checkpoint = {
         "unet_state_dict": model.unet.state_dict(),
-        "audio_encoder_state_dict": model.audio_encoder.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "scheduler_state_dict": scheduler.state_dict(),
         "rng_state": torch.get_rng_state(),
@@ -164,7 +159,6 @@ def load_training_checkpoint(
     checkpoint = torch.load(checkpoint_path / "checkpoint.pt", map_location=device)
 
     model.unet.load_state_dict(checkpoint["unet_state_dict"])
-    model.audio_encoder.load_state_dict(checkpoint["audio_encoder_state_dict"])
     optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
     if not reset_steps:
@@ -176,7 +170,6 @@ def load_training_checkpoint(
 
 def train(args: ArgumentParser) -> None:  # noqa: C901
     print("Initializing...")
-    accelerate_kwargs = [FP8RecipeKwargs(backend="msamp", opt_level="O1")] if args.mixed_precision == "fp8" else None
     accelerator = Accelerator(
         mixed_precision=args.mixed_precision,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
@@ -185,22 +178,15 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
             automatic_checkpoint_naming=True,
         ),
         log_with="wandb",
-        kwargs_handlers=accelerate_kwargs,
     )
     accelerator.init_trackers(project_name="OsuFusion")
 
     # Initialize model
-    osu_autoencoder = OsuAutoEncoder(32, 128)
-    osu_autoencoder.load_state_dict(load_file(args.osu_autoencoder_sd))
-
-    model = DiffusionOsuFusion(
-        dim_h=args.model_dim,
-        dim_h_a=args.model_audio_dim,
-        osu_autoencoder=osu_autoencoder,
-    )
+    model_cls = DiffusionOsuFusion if args.model_type == "diffusion" else RectifiedFlowOsuFusion
+    model = model_cls(dim_h=args.model_dim)
+    model.unet.set_gradient_checkpointing(args.gradient_checkpointing)
     if args.full_bf16:
         model.set_full_bf16()
-    model.unet.set_gradient_checkpointing(args.gradient_checkpointing)
 
     # Initialize optimizer and scheduler
     parameters = list(model.trainable_params)
@@ -274,12 +260,11 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
 
             for _ in range(args.gradient_accumulation_steps):
                 x, a, c = next(dataloader_cycle)
-                x_lat = model.encode_beatmap(x)
                 with accelerator.autocast(), accelerator.accumulate(model):
                     try:
-                        a_lat = model.encode_audio(a)
+                        a_lat = model.unet.encode_audio(a)
                         c_prep = model.unet.prepare_condition(c, cond_drop_prob=model.cond_drop_prob)
-                        loss = model(x_lat, a_lat, c_prep)
+                        loss = model(x, a_lat, c_prep)
                     except AssertionError:
                         print(f"AssertionError encountered at step {current_step + 1}, skipping batch.")
                         continue
@@ -362,14 +347,8 @@ def main() -> None:
         "--model-type",
         type=str,
         default="diffusion",
-        choices=["diffusion"],
+        choices=["diffusion", "rectified-flow"],
         help="Type of model to train",
-    )
-    args.add_argument(
-        "--osu-autoencoder-sd",
-        type=Path,
-        required=True,
-        help="Path to osu autoencoder state dict (safetensors)",
     )
     args.add_argument("--resume", type=Path, default=None, help="Path to resume from a checkpoint")
     args.add_argument("--reset-steps", action="store_true", help="Reset training steps when resuming")
@@ -377,7 +356,7 @@ def main() -> None:
     args.add_argument("--max-length", type=int, default=0, help="Maximum length of beatmaps to include")
     args.add_argument(
         "--mixed-precision",
-        choices=["no", "fp16", "bf16", "fp8"],
+        choices=["no", "fp16", "bf16"],
         default="bf16",
         help="Mixed precision mode",
     )
@@ -391,7 +370,6 @@ def main() -> None:
     )
     args.add_argument("--clip-grad-norm", type=float, default=0.0, help="Gradient clipping norm")
     args.add_argument("--model-dim", type=int, default=128, help="Dimension of the model")
-    args.add_argument("--model-audio-dim", type=int, default=64, help="Dimension of the audio encoder")
     args.add_argument("--model-attn-heads", type=int, default=16, help="Number of attention heads")
     args.add_argument("--lr", type=float, default=1e-5, help="Learning rate for the optimizer")
     args.add_argument("--batch-size", type=int, default=8, help="Batch size for training")

@@ -25,6 +25,6 @@ BeatmapEncoding = IntEnum(
 
 def encode_beatmap(beatmap: Beatmap, frame_times: npt.NDArray) -> npt.NDArray:
     hit = hit_signals(beatmap, frame_times)
-    cursor = cursor_signal(beatmap, frame_times) * 2 - 1
+    cursor = cursor_signal(beatmap, frame_times)
 
-    return np.concatenate([hit, cursor], axis=0)
+    return np.concatenate([hit, cursor], axis=0) * 2 - 1

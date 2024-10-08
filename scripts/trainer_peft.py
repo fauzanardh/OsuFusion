@@ -8,7 +8,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from accelerate import Accelerator
-from accelerate.utils import FP8RecipeKwargs, ProjectConfiguration
+from accelerate.utils import ProjectConfiguration
 from diffusers.optimization import get_cosine_schedule_with_warmup
 from matplotlib import pyplot as plt
 from peft import LoraConfig, PeftModel, get_peft_model
@@ -72,13 +72,12 @@ def clear_checkpoints(project_dir: Path) -> None:
 
 def custom_collate_fn(
     batch: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     max_length = max(x.shape[1] for x, _, _ in batch)
     out_x = torch.stack([F.pad(x, (0, max_length - x.shape[1]), value=-1.0) for x, _, _ in batch])
     out_a = torch.stack([F.pad(a, (0, max_length - a.shape[1]), value=-23.0) for _, a, _ in batch])
     out_c = torch.stack([c for _, _, c in batch])
-    orig_len = torch.tensor([x.shape[1] for x, _, _ in batch])
-    return out_x, out_a, out_c, orig_len
+    return out_x, out_a, out_c
 
 
 def visualize_and_log_sample(
@@ -96,8 +95,8 @@ def visualize_and_log_sample(
         "bf16": torch.bfloat16,
     }.get(accelerator.mixed_precision, torch.float32)
 
-    a = torch.from_numpy(a).unsqueeze(0).to(device=accelerator.device, dtype=dtype)
-    c = torch.from_numpy(c).unsqueeze(0).to(device=accelerator.device, dtype=dtype)
+    a_tensor = torch.from_numpy(a).unsqueeze(0).to(accelerator.device, dtype)
+    c_tensor = torch.from_numpy(c).unsqueeze(0).to(accelerator.device, dtype)
 
     b, _, n = a.shape
 
@@ -108,7 +107,9 @@ def visualize_and_log_sample(
 
     model.eval()
     with torch.inference_mode(), accelerator.autocast():
-        generated = model.sample(a, c, x, cond_scale=1.0)
+        a_lat = model.unet.encode_audio(a_tensor)
+        c_prep = model.unet.prepare_condition(c_tensor, cond_drop_prob=0.0)
+        generated = model.sample(n, a_lat, c_prep, x=x, cond_scale=1.0)
     model.train()
 
     width, height = generated.shape[-1] // 150, BEATMAP_DIM
@@ -127,7 +128,7 @@ def visualize_and_log_sample(
 def load_model(model: Model, model_path: Path) -> None:
     if str(model_path).endswith(".pt"):
         checkpoint = torch.load(model_path)
-        state_dict = checkpoint["model_state_dict"]
+        state_dict = checkpoint["unet_state_dict"]
     else:
         state_dict = load_file(model_path)
     model.load_state_dict(state_dict)
@@ -177,7 +178,6 @@ def load_peft_checkpoint(
 
 def train(args: ArgumentParser) -> None:  # noqa: C901
     print("Initializing...")
-    accelerate_kwargs = [FP8RecipeKwargs(backend="msamp", opt_level="O1")] if args.mixed_precision == "fp8" else None
     accelerator = Accelerator(
         mixed_precision=args.mixed_precision,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
@@ -186,13 +186,12 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
             automatic_checkpoint_naming=True,
         ),
         log_with="wandb",
-        kwargs_handlers=accelerate_kwargs,
     )
     accelerator.init_trackers(project_name="OsuFusion")
 
     # Initialize model
-    model_class = DiffusionOsuFusion if args.model_type == "diffusion" else RectifiedFlowOsuFusion
-    model = model_class(args.model_dim)
+    model_cls = DiffusionOsuFusion if args.model_type == "diffusion" else RectifiedFlowOsuFusion
+    model = model_cls(args.model_dim)
     model.unet.set_gradient_checkpointing(args.gradient_checkpointing)
     load_model(model, args.model_path)
     model.eval()
@@ -276,22 +275,24 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         while current_step < args.total_steps:
             # Initialize batch metrics
             metrics = {
-                "batch_loss": 0.0,
+                "loss": 0.0,
                 "total_norm": 0.0,
             }
 
             # Gradient Accumulation
             for _ in range(args.gradient_accumulation_steps):
-                batch = next(dataloader_cycle)
+                x, a, c = next(dataloader_cycle)
                 with accelerator.autocast(), accelerator.accumulate(model):
                     try:
-                        loss = model(*batch)
+                        a_lat = model.unet.encode_audio(a)
+                        c_prep = model.unet.prepare_condition(c, cond_drop_prob=model.cond_drop_prob)
+                        loss = model(x, a_lat, c_prep)
                     except AssertionError:
                         continue
 
                     accelerator.backward(loss)
                     metrics["total_norm"] += get_total_norm(model.parameters()) / args.gradient_accumulation_steps
-                    metrics["batch_loss"] += loss.item() / args.gradient_accumulation_steps
+                    metrics["loss"] += loss.item() / args.gradient_accumulation_steps
 
                     if args.clip_grad_norm > 0.0:
                         torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
@@ -300,13 +301,13 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                     scheduler.step()
 
             # Update loss history and progress bar
-            loss_history.append(metrics["batch_loss"])
+            loss_history.append(metrics["loss"])
             if len(loss_history) > args.save_every:
                 loss_history.pop(0)
 
             avg_loss = sum(loss_history) / len(loss_history)
             pbar.set_description(
-                f"Steps: {current_step + 1}, Loss: {metrics['batch_loss']:.5f}, "
+                f"Steps: {current_step + 1}, Loss: {metrics['loss']:.5f}, "
                 f"Avg Loss: {avg_loss:.5f}, Norm: {metrics['total_norm']:.5f}, "
                 f"LR: {scheduler.get_last_lr()[0]:.5f}",
             )
@@ -316,7 +317,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
             if accelerator.is_main_process:
                 accelerator.log(
                     {
-                        "loss": metrics["batch_loss"],
+                        "loss": metrics["loss"],
                         "total_norm": metrics["total_norm"],
                         "lr": scheduler.get_last_lr()[0],
                     },
@@ -380,7 +381,7 @@ def main() -> None:
         "--mixed-precision",
         type=str,
         default="bf16",
-        choices=["no", "fp16", "bf16", "fp8"],
+        choices=["no", "fp16", "bf16"],
         help="Mixed precision mode",
     )
     args.add_argument("--full-bf16", action="store_true", help="Use full bfloat16 precision")
