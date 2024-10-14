@@ -183,7 +183,7 @@ class UNet(nn.Module):
         dim_in_a: int,
         dim_in_c: int,
         dim_h: int,
-        dim_h_mult: Tuple[int] = (1, 2, 3, 4),
+        dim_h_mult: Tuple[int] = (1, 2, 4, 4),
         num_layer_blocks: Tuple[int] = (3, 3, 3, 3),
         num_middle_transformers: int = 3,
         attn_dim_head: int = 64,
