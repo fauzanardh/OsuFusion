@@ -184,6 +184,7 @@ class UNet(nn.Module):
         dim_in_c: int,
         dim_h: int,
         dim_h_mult: Tuple[int] = (1, 2, 4, 4),
+        dim_t: int = 256,
         num_layer_blocks: Tuple[int] = (3, 3, 3, 3),
         num_middle_transformers: int = 3,
         attn_dim_head: int = 64,
@@ -210,8 +211,8 @@ class UNet(nn.Module):
         self.final_conv = zero_init(nn.Conv1d(dim_h, dim_in_x, 1))
 
         self.time_mlp = nn.Sequential(
-            SinusoidalPositionEmbedding(self.dim_emb),
-            nn.Linear(self.dim_emb, self.dim_emb),
+            SinusoidalPositionEmbedding(dim_t),
+            nn.Linear(dim_t, self.dim_emb),
             nn.SiLU(),
             nn.Linear(self.dim_emb, self.dim_emb),
         )
