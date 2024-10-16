@@ -7,7 +7,6 @@ import torch.nn as nn
 from einops import rearrange, repeat
 from torch.nn import functional as F
 
-from osu_fusion.modules.attention import Attention
 from osu_fusion.modules.positional_embeddings import SinusoidalPositionEmbedding
 from osu_fusion.modules.residual import ResidualBlock
 from osu_fusion.modules.samplers import Downsample, Upsample
@@ -42,14 +41,14 @@ class UNetBlock(nn.Module):
         attn_context_len: int,
     ) -> None:
         super().__init__()
-        self.init_resnet = ResidualBlock(dim_in if down_block else dim_in + dim_out, dim_in, dim_time, dim_cond)
+        self.init_resnet = ResidualBlock(dim_in if down_block else dim_in * 2, dim_out, dim_time, dim_cond)
         self.resnets = nn.ModuleList(
-            [ResidualBlock(dim_in, dim_in, dim_time, dim_cond) for _ in range(num_blocks)],
+            [ResidualBlock(dim_out, dim_out, dim_time, dim_cond) for _ in range(num_blocks)],
         )
         self.transformers = nn.ModuleList(
             [
                 TransformerBlock(
-                    dim_in,
+                    dim_out,
                     attn_dim_head=attn_dim_head,
                     attn_heads=attn_heads,
                     attn_kv_heads=attn_kv_heads,
@@ -60,13 +59,15 @@ class UNetBlock(nn.Module):
         )
         if down_block:
             self.sampler = (
-                Downsample(dim_in, dim_out)
+                Downsample(dim_out, dim_out)
                 if layer_idx < (num_layers - 1)
-                else nn.Conv1d(dim_in, dim_out, 3, padding=1)
+                else nn.Conv1d(dim_out, dim_out, 3, padding=1)
             )
         else:
             self.sampler = (
-                Upsample(dim_in, dim_out) if layer_idx < (num_layers - 1) else nn.Conv1d(dim_in, dim_out, 3, padding=1)
+                Upsample(dim_out, dim_out)
+                if layer_idx < (num_layers - 1)
+                else nn.Conv1d(dim_out, dim_out, 3, padding=1)
             )
 
         self.gradient_checkpointing = False
@@ -131,12 +132,12 @@ class AudioEncoder(nn.Module):
                             layer_dim_in,
                             layer_dim_out,
                         ),
-                        Attention(
+                        TransformerBlock(
                             layer_dim_out,
-                            attn_dim_head,
-                            attn_heads,
-                            attn_kv_heads,
-                            attn_context_len_layer,
+                            attn_dim_head=attn_dim_head,
+                            attn_heads=attn_heads,
+                            attn_kv_heads=attn_kv_heads,
+                            attn_context_len=attn_context_len_layer,
                         ),
                         Downsample(layer_dim_out, layer_dim_out)
                         if i < (n_layers - 1)
@@ -148,29 +149,25 @@ class AudioEncoder(nn.Module):
 
         # Middle
         self.middle_resnet1 = ResidualBlock(dims_h[-1], dims_h[-1])
-        self.middle_attention = Attention(
+        self.middle_transformer = TransformerBlock(
             dims_h[-1],
-            attn_dim_head,
-            attn_heads,
-            attn_kv_heads,
-            attn_context_len // (2 ** (n_layers - 1)),
+            attn_dim_head=attn_dim_head,
+            attn_heads=attn_heads,
+            attn_kv_heads=attn_kv_heads,
+            attn_context_len=attn_context_len // (2 ** (n_layers - 1)),
         )
         self.middle_resnet2 = ResidualBlock(dims_h[-1], dims_h[-1])
 
     def forward(self: "AudioEncoder", a: torch.Tensor) -> torch.Tensor:
         a = self.init_conv(a)
 
-        for resnet, attn, down in self.down_layers:
+        for resnet, transformer, down in self.down_layers:
             a = resnet(a)
-            a = rearrange(a, "b d n -> b n d")
-            a = a + attn(a)
-            a = rearrange(a, "b n d -> b d n")
+            a = transformer(a)
             a = down(a)
 
         a = self.middle_resnet1(a)
-        a = rearrange(a, "b d n -> b n d")
-        a = a + self.middle_attention(a)
-        a = rearrange(a, "b n d -> b d n")
+        a = self.middle_transformer(a)
         a = self.middle_resnet2(a)
 
         return a
