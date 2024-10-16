@@ -11,22 +11,12 @@ from osu_fusion.modules.utils import dummy_context_manager
 DEBUG = os.environ.get("DEBUG", False)
 
 
-class SwiGLU(nn.Module):
-    def __init__(self: "SwiGLU", dim_in: int, dim_out: int) -> None:
-        super().__init__()
-        self.proj = nn.Linear(dim_in, dim_out * 2)
-        self.act = nn.SiLU()
-
-    def forward(self: "SwiGLU", x: torch.Tensor) -> torch.Tensor:
-        x, gate = self.proj(x).chunk(2, dim=-1)
-        return x * self.act(gate)
-
-
 class FeedForward(nn.Sequential):
     def __init__(self: "FeedForward", dim: int, dim_mult: int = 2) -> None:
         inner_dim = dim * dim_mult
         super().__init__(
-            SwiGLU(dim, inner_dim),
+            nn.Linear(dim, inner_dim),
+            nn.SiLU(),
             nn.Linear(inner_dim, dim),
         )
 
@@ -42,7 +32,7 @@ class TransformerBlock(nn.Module):
         dim: int,
         ff_mult: int = 2,
         attn_dim_head: int = 64,
-        attn_heads: int = 16,
+        attn_heads: int = 8,
         attn_kv_heads: int = 1,
         attn_context_len: int = 4096,
     ) -> None:
