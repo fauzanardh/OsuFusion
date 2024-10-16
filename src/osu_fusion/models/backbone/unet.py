@@ -24,9 +24,9 @@ def zero_init(module: nn.Module) -> nn.Module:
     return module
 
 
-class UNetBlock(nn.Module):
+class UNetDownBlock(nn.Module):
     def __init__(
-        self: "UNetBlock",
+        self: "UNetDownBlock",
         dim_in: int,
         dim_out: int,
         dim_time: Optional[int],
@@ -34,14 +34,13 @@ class UNetBlock(nn.Module):
         layer_idx: int,
         num_layers: int,
         num_blocks: int,
-        down_block: bool,
         attn_dim_head: int,
         attn_heads: int,
         attn_kv_heads: int,
         attn_context_len: int,
     ) -> None:
         super().__init__()
-        self.init_resnet = ResidualBlock(dim_in if down_block else dim_in * 2, dim_out, dim_time, dim_cond)
+        self.init_resnet = ResidualBlock(dim_in, dim_out, dim_time, dim_cond)
         self.resnets = nn.ModuleList(
             [ResidualBlock(dim_out, dim_out, dim_time, dim_cond) for _ in range(num_blocks)],
         )
@@ -57,23 +56,14 @@ class UNetBlock(nn.Module):
                 for _ in range(num_blocks)
             ],
         )
-        if down_block:
-            self.sampler = (
-                Downsample(dim_out, dim_out)
-                if layer_idx < (num_layers - 1)
-                else nn.Conv1d(dim_out, dim_out, 3, padding=1)
-            )
-        else:
-            self.sampler = (
-                Upsample(dim_out, dim_out)
-                if layer_idx < (num_layers - 1)
-                else nn.Conv1d(dim_out, dim_out, 3, padding=1)
-            )
+        self.sampler = (
+            Downsample(dim_out, dim_out) if layer_idx < (num_layers - 1) else nn.Conv1d(dim_out, dim_out, 3, padding=1)
+        )
 
         self.gradient_checkpointing = False
 
     def forward_body(
-        self: "UNetBlock",
+        self: "UNetDownBlock",
         x: torch.Tensor,
         t: Optional[torch.Tensor] = None,
         c: Optional[torch.Tensor] = None,
@@ -87,7 +77,71 @@ class UNetBlock(nn.Module):
         return self.sampler(x), x
 
     def forward(
-        self: "UNetBlock",
+        self: "UNetDownBlock",
+        x: torch.Tensor,
+        t: Optional[torch.Tensor] = None,
+        c: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if self.training and self.gradient_checkpointing:
+            return torch.utils.checkpoint.checkpoint(self.forward_body, x, t, c, use_reentrant=True)
+        else:
+            return self.forward_body(x, t, c)
+
+
+class UNetUpBlock(nn.Module):
+    def __init__(
+        self: "UNetUpBlock",
+        dim_in: int,
+        dim_out: int,
+        dim_time: Optional[int],
+        dim_cond: Optional[int],
+        layer_idx: int,
+        num_layers: int,
+        num_blocks: int,
+        attn_dim_head: int,
+        attn_heads: int,
+        attn_kv_heads: int,
+        attn_context_len: int,
+    ) -> None:
+        super().__init__()
+        self.init_resnet = ResidualBlock(dim_in * 2, dim_in, dim_time, dim_cond)
+        self.resnets = nn.ModuleList(
+            [ResidualBlock(dim_in, dim_in, dim_time, dim_cond) for _ in range(num_blocks)],
+        )
+        self.transformers = nn.ModuleList(
+            [
+                TransformerBlock(
+                    dim_in,
+                    attn_dim_head=attn_dim_head,
+                    attn_heads=attn_heads,
+                    attn_kv_heads=attn_kv_heads,
+                    attn_context_len=attn_context_len,
+                )
+                for _ in range(num_blocks)
+            ],
+        )
+        self.sampler = (
+            Upsample(dim_in, dim_out) if layer_idx < (num_layers - 1) else nn.Conv1d(dim_in, dim_out, 3, padding=1)
+        )
+
+        self.gradient_checkpointing = False
+
+    def forward_body(
+        self: "UNetUpBlock",
+        x: torch.Tensor,
+        t: Optional[torch.Tensor] = None,
+        c: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        x = self.init_resnet(x, t, c)
+
+        for resnet, transformer in zip(self.resnets, self.transformers, strict=True):
+            x = resnet(x, t, c)
+            x = transformer(x)
+
+        return self.sampler(x), x
+
+    def forward(
+        self: "UNetUpBlock",
         x: torch.Tensor,
         t: Optional[torch.Tensor] = None,
         c: Optional[torch.Tensor] = None,
@@ -232,7 +286,7 @@ class UNet(nn.Module):
             num_blocks = num_layer_blocks[i]
             attn_context_len_layer = attn_context_len // (2**i)
             down_layers.append(
-                UNetBlock(
+                UNetDownBlock(
                     layer_dim_in,
                     layer_dim_out,
                     self.dim_emb,
@@ -240,7 +294,6 @@ class UNet(nn.Module):
                     i,
                     n_layers,
                     num_blocks,
-                    True,
                     attn_dim_head,
                     attn_heads,
                     attn_kv_heads,
@@ -286,7 +339,7 @@ class UNet(nn.Module):
             num_blocks = num_layer_blocks[i]
             attn_context_len_layer = attn_context_len // (2 ** (n_layers - i - 1))
             up_layers.append(
-                UNetBlock(
+                UNetUpBlock(
                     layer_dim_in,
                     layer_dim_out,
                     self.dim_emb,
@@ -294,7 +347,6 @@ class UNet(nn.Module):
                     i,
                     n_layers,
                     num_blocks,
-                    False,
                     attn_dim_head,
                     attn_heads,
                     attn_kv_heads,
