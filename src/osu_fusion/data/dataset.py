@@ -13,6 +13,7 @@ from osu_fusion.data.augment import flip_cursor_horizontal, flip_cursor_vertical
 from osu_fusion.data.const import (
     AUDIO_DIM,
     HOP_LENGTH,
+    N_FFT,
     SR,
 )
 from osu_fusion.data.decode import Metadata, decode_beatmap
@@ -47,6 +48,7 @@ def get_new_context(x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
         librosa.frames_to_time(
             np.arange(x.shape[-1]),
             sr=SR,
+            n_fft=N_FFT,
             hop_length=HOP_LENGTH,
         )
         * 1000

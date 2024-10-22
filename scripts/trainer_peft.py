@@ -75,7 +75,7 @@ def custom_collate_fn(
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     max_length = max(x.shape[1] for x, _, _ in batch)
     out_x = torch.stack([F.pad(x, (0, max_length - x.shape[1]), value=-1.0) for x, _, _ in batch])
-    out_a = torch.stack([F.pad(a, (0, max_length - a.shape[1]), value=-23.0) for _, a, _ in batch])
+    out_a = torch.stack([F.pad(a, (0, max_length - a.shape[1]), value=0.0) for _, a, _ in batch])
     out_c = torch.stack([c for _, _, c in batch])
     return out_x, out_a, out_c
 

@@ -9,18 +9,18 @@ from audioread.ffdec import FFmpegAudioFile
 from rosu_pp_py import Beatmap as RosuBeatmap
 from rosu_pp_py import Difficulty as RosuDifficulty
 
-from osu_fusion.data.const import AUDIO_DIM, BEATMAP_DIM, CONTEXT_DIM, FMIN, HOP_LENGTH, OCTAVE_BINS, SR
+from osu_fusion.data.const import AUDIO_DIM, BEATMAP_DIM, CONTEXT_DIM, HOP_LENGTH, N_FFT, N_MELS, SR
 from osu_fusion.data.encode import encode_beatmap
 from osu_fusion.osu.beatmap import Beatmap
 
 _global_lock: Dict[str, Lock] = {}  # type: ignore
 
-VQT_PARAMS = {
+MFCC_PARAMS = {
     "sr": SR,
+    "n_mfcc": AUDIO_DIM,
+    "n_fft": N_FFT,
     "hop_length": HOP_LENGTH,
-    "fmin": FMIN,
-    "n_bins": AUDIO_DIM,
-    "bins_per_octave": OCTAVE_BINS,
+    "n_mels": N_MELS,
 }
 
 
@@ -48,8 +48,13 @@ def load_audio(audio_file: Path) -> np.ndarray:
         msg = f"Empty audio file: {audio_file}"
         raise ValueError(msg)
 
-    vqt = np.abs(librosa.vqt(y=wave, **VQT_PARAMS))
-    return vqt.astype(np.float32)
+    spec = librosa.feature.mfcc(y=wave, **MFCC_PARAMS)
+
+    # Calculate CMVN
+    spec_mean = spec.mean(axis=1, keepdims=True)
+    spec_std = spec.std(axis=1, keepdims=True)
+    spec = (spec - spec_mean) / (spec_std + 1e-6)
+    return spec
 
 
 def normalize_context(context: np.ndarray) -> np.ndarray:
