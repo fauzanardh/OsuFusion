@@ -47,7 +47,6 @@ class OsuFusion(nn.Module):
         self.scheduler = DDIMScheduler(
             num_train_timesteps=train_timesteps,
             beta_schedule="linear",
-            set_alpha_to_one=False,
             thresholding=True,
             dynamic_thresholding_ratio=0.995,  # Allow a little value to exceed the clipping threshold
         )
