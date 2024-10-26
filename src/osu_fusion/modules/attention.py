@@ -9,7 +9,7 @@ from torch.nn import functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from torch.profiler import record_function
 
-from osu_fusion.modules.norms import MultiHeadRMSNorm, RMSNorm
+from osu_fusion.modules.norms import RMSNorm
 from osu_fusion.modules.utils import dummy_context_manager
 
 DEBUG = os.environ.get("DEBUG", False)
@@ -132,8 +132,6 @@ class Attention(nn.Module):
         self.prenorm = RMSNorm(dim_in)
         self.to_q = nn.Linear(dim_in, dim_head * heads, bias=False)
         self.to_kv = nn.Linear(dim_in, dim_head * kv_heads * 2, bias=False)
-        self.q_norm = MultiHeadRMSNorm(dim_head, heads)
-        self.k_norm = MultiHeadRMSNorm(dim_head, kv_heads)
         self.rotary_emb = RotaryPositionEmbedding(dim_head, scale_base=context_len)
 
         self.attn = Attend()
@@ -147,9 +145,6 @@ class Attention(nn.Module):
 
         k, v = self.to_kv(x).chunk(2, dim=-1)
         k, v = (rearrange(t, "b n (h d) -> b h n d", h=self.kv_heads) for t in (k, v))
-
-        q = self.q_norm(q)
-        k = self.k_norm(k)
 
         q, k = self.rotary_emb(q, k)
         q = q * self.scale
