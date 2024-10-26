@@ -1,6 +1,6 @@
 import itertools
 import os
-from typing import Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -22,6 +22,40 @@ def zero_init(module: nn.Module) -> nn.Module:
         nn.init.zeros_(module.bias)
 
     return module
+
+
+class CrossEmbedLayer(nn.Module):
+    def __init__(self: "CrossEmbedLayer", dim: int, dim_out: int, kernel_sizes: Tuple[int]) -> None:
+        super().__init__()
+        kernel_sizes = sorted(kernel_sizes)
+        num_scales = len(kernel_sizes)
+
+        dim_scales = [int(dim / (2**i)) for i in range(1, num_scales)]
+        dim_scales = [*dim_scales, dim_out - sum(dim_scales)]
+
+        convs = []
+        for kernel, dim_scale in zip(kernel_sizes, dim_scales, strict=True):
+            convs.append(nn.Conv1d(dim, dim_scale, kernel, padding=kernel // 2))
+
+        self.convs = nn.ModuleList(convs)
+
+    def forward_body(self: "CrossEmbedLayer", x: torch.Tensor) -> torch.Tensor:
+        return torch.cat([conv(x) for conv in self.convs], dim=1)
+
+    def forward(self: "CrossEmbedLayer", x: torch.Tensor) -> torch.Tensor:
+        if self.training and DEBUG:
+            return torch.utils.checkpoint.checkpoint(self.forward_body, x, use_reentrant=True)
+        else:
+            return self.forward_body(x)
+
+
+class Parallel(nn.Module):
+    def __init__(self: "Parallel", *fns: nn.Module) -> None:
+        super().__init__()
+        self.fns = nn.ModuleList(fns)
+
+    def forward(self: "Parallel", x: torch.Tensor, *args: List, **kwargs: Dict) -> List[torch.Tensor]:
+        return sum([fn(x, *args, **kwargs) for fn in self.fns])
 
 
 class UNetDownBlock(nn.Module):
@@ -57,7 +91,12 @@ class UNetDownBlock(nn.Module):
             ],
         )
         self.sampler = (
-            Downsample(dim_out, dim_out) if layer_idx < (num_layers - 1) else nn.Conv1d(dim_out, dim_out, 3, padding=1)
+            Downsample(dim_out, dim_out)
+            if layer_idx < (num_layers - 1)
+            else Parallel(
+                nn.Conv1d(dim_out, dim_out, 3, padding=1),
+                nn.Conv1d(dim_out, dim_out, 1),
+            )
         )
 
         self.gradient_checkpointing = False
@@ -121,7 +160,12 @@ class UNetUpBlock(nn.Module):
             ],
         )
         self.sampler = (
-            Upsample(dim_in, dim_out) if layer_idx < (num_layers - 1) else nn.Conv1d(dim_in, dim_out, 3, padding=1)
+            Upsample(dim_in, dim_out)
+            if layer_idx < (num_layers - 1)
+            else Parallel(
+                nn.Conv1d(dim_in, dim_out, 3, padding=1),
+                nn.Conv1d(dim_in, dim_out, 1),
+            )
         )
 
         self.gradient_checkpointing = False
@@ -167,7 +211,7 @@ class AudioEncoder(nn.Module):
         super().__init__()
         self.dim_h = dim_h
 
-        self.init_conv = nn.Conv1d(dim_in, dim_h, 7, padding=3)
+        self.init_conv = CrossEmbedLayer(dim_in, dim_h, (3, 7, 15))
 
         # Downsample
         dims_h = tuple((dim_h * mult) for mult in dim_h_mult)
@@ -247,7 +291,7 @@ class UNet(nn.Module):
         self.dim_h = dim_h
         self.dim_emb = dim_h * 4
 
-        self.init_x = nn.Conv1d(dim_in_x, dim_h, 7, padding=3)
+        self.init_x = CrossEmbedLayer(dim_in_x, dim_h, (3, 7, 15))
         self.audio_encoder = AudioEncoder(
             dim_in=dim_in_a,
             dim_h=dim_h,
@@ -261,6 +305,12 @@ class UNet(nn.Module):
         self.final_resnet = ResidualBlock(dim_h * 2, dim_h, self.dim_emb, self.dim_emb)
         self.final_conv = zero_init(nn.Conv1d(dim_h, dim_in_x, 1))
 
+        self.feature_extractor_a = nn.Linear(dim_in_a * 2, self.dim_emb)
+        self.audio_mlp = nn.Sequential(
+            nn.Linear(self.dim_emb, self.dim_emb),
+            nn.SiLU(),
+            nn.Linear(self.dim_emb, self.dim_emb),
+        )
         self.time_mlp = nn.Sequential(
             SinusoidalPositionEmbedding(dim_t),
             nn.Linear(dim_t, self.dim_emb),
@@ -368,28 +418,34 @@ class UNet(nn.Module):
         a = F.pad(a, (0, pad_len), value=0.0)
         return self.audio_encoder(a)
 
-    def prepare_condition(self: "UNet", c: torch.Tensor, cond_drop_prob: float = 0.0) -> torch.Tensor:
+    def prepare_condition(self: "UNet", a: torch.Tensor, c: torch.Tensor, cond_drop_prob: float = 0.0) -> torch.Tensor:
+        mean_a = a.mean(dim=-1)
+        std_a = a.std(dim=-1)
+        h_a = torch.cat([mean_a, std_a], dim=1)
+        h_a = self.feature_extractor_a(h_a)
+
         cond_mask = prob_mask_like((c.shape[0],), 1.0 - cond_drop_prob, device=c.device)
         cond_mask = rearrange(cond_mask, "b -> b 1")
         null_conds = repeat(self.null_cond, "d -> b d", b=c.shape[0])
         c = self.cond_mlp(c)
-        return torch.where(cond_mask, c, null_conds)
+        c = torch.where(cond_mask, c, null_conds)
+        return c + self.audio_mlp(h_a)
 
     def forward_with_cond_scale(
         self: "UNet",
         x: torch.Tensor,
-        a: torch.Tensor,
+        a_lat: torch.Tensor,
         t: torch.Tensor,
         c: torch.Tensor,
         c_uncond: torch.Tensor,
         cond_scale: float = 1.0,
     ) -> torch.Tensor:
-        logits = self.forward(x, a, t, c)
+        logits = self.forward(x, a_lat, t, c)
 
         if cond_scale == 1.0:
             return logits
 
-        null_logits = self.forward(x, a, t, c_uncond)
+        null_logits = self.forward(x, a_lat, t, c_uncond)
         return null_logits + (logits - null_logits) * cond_scale
 
     def forward(

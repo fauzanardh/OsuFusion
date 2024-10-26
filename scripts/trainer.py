@@ -105,7 +105,7 @@ def visualize_and_log_sample(
     model.eval()
     with torch.inference_mode(), accelerator.autocast():
         a_lat = model.unet.encode_audio(a_tensor)
-        c_prep = model.unet.prepare_condition(c_tensor, cond_drop_prob=0.0)
+        c_prep = model.unet.prepare_condition(a_tensor, c_tensor, cond_drop_prob=0.0)
         generated = model.sample(n, a_lat, c_prep, x=x, cond_scale=1.0)
     model.train()
 
@@ -264,7 +264,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                 with accelerator.autocast(), accelerator.accumulate(model):
                     try:
                         a_lat = model.unet.encode_audio(a)
-                        c_prep = model.unet.prepare_condition(c, cond_drop_prob=model.cond_drop_prob)
+                        c_prep = model.unet.prepare_condition(a, c, cond_drop_prob=model.cond_drop_prob)
                         loss = model(x, a_lat, c_prep)
                     except AssertionError:
                         print(f"AssertionError encountered at step {current_step + 1}, skipping batch.")

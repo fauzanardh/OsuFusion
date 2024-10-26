@@ -9,7 +9,7 @@ from torch.nn import functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from torch.profiler import record_function
 
-from osu_fusion.modules.norms import RMSNorm
+from osu_fusion.modules.norms import MultiHeadRMSNorm, RMSNorm
 from osu_fusion.modules.utils import dummy_context_manager
 
 DEBUG = os.environ.get("DEBUG", False)
@@ -129,9 +129,11 @@ class Attention(nn.Module):
         self.heads = heads
         self.kv_heads = kv_heads
 
-        self.norm = RMSNorm(dim_in)
+        self.prenorm = RMSNorm(dim_in)
         self.to_q = nn.Linear(dim_in, dim_head * heads, bias=False)
         self.to_kv = nn.Linear(dim_in, dim_head * kv_heads * 2, bias=False)
+        self.q_norm = MultiHeadRMSNorm(dim_head, heads)
+        self.k_norm = MultiHeadRMSNorm(dim_head, kv_heads)
         self.rotary_emb = RotaryPositionEmbedding(dim_head, scale_base=context_len)
 
         self.attn = Attend()
@@ -139,7 +141,7 @@ class Attention(nn.Module):
 
     def forward_body(self: "Attention", x: torch.Tensor) -> torch.Tensor:
         # Pre-norm
-        x = self.norm(x)
+        x = self.prenorm(x)
 
         q = rearrange(self.to_q(x), "b n (h d) -> b h n d", h=self.heads)
 
@@ -151,6 +153,9 @@ class Attention(nn.Module):
 
         # GQA
         k, v = (repeat(t, "b h n d -> b (r h) n d", r=self.heads // self.kv_heads) for t in (k, v))
+
+        q = self.q_norm(q)
+        k = self.k_norm(k)
 
         out = self.attn(q, k, v)
         out = rearrange(out, "b h n d -> b n (h d)")
