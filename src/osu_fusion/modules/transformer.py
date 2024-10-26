@@ -32,8 +32,8 @@ class TransformerBlock(nn.Module):
         dim: int,
         ff_mult: int = 2,
         attn_dim_head: int = 64,
-        attn_heads: int = 8,
-        attn_kv_heads: int = 1,
+        attn_heads: int = 16,
+        attn_kv_heads: int = 8,
         attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
