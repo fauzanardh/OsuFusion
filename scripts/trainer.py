@@ -109,6 +109,7 @@ def visualize_and_log_sample(
         generated = model.sample(n, a_lat, c_prep, x=x, cond_scale=1.0)
     model.train()
 
+    generated = generated.cpu().detach().float()
     width, height = generated.shape[-1] // 150, BEATMAP_DIM
     fig, axs = plt.subplots(height, 1, figsize=(width, height * 8), sharex=True)
     for i in range(BEATMAP_DIM):
