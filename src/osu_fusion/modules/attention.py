@@ -148,14 +148,14 @@ class Attention(nn.Module):
         k, v = self.to_kv(x).chunk(2, dim=-1)
         k, v = (rearrange(t, "b n (h d) -> b h n d", h=self.kv_heads) for t in (k, v))
 
+        q = self.q_norm(q)
+        k = self.k_norm(k)
+
         q, k = self.rotary_emb(q, k)
         q = q * self.scale
 
         # GQA
         k, v = (repeat(t, "b h n d -> b (r h) n d", r=self.heads // self.kv_heads) for t in (k, v))
-
-        q = self.q_norm(q)
-        k = self.k_norm(k)
 
         out = self.attn(q, k, v)
         out = rearrange(out, "b h n d -> b n (h d)")
