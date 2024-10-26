@@ -239,7 +239,10 @@ class AudioEncoder(nn.Module):
                         ),
                         Downsample(layer_dim_out, layer_dim_out)
                         if i < (n_layers - 1)
-                        else nn.Conv1d(layer_dim_out, layer_dim_out, 3, padding=1),
+                        else Parallel(
+                            nn.Conv1d(layer_dim_out, layer_dim_out, 3, padding=1),
+                            nn.Conv1d(layer_dim_out, layer_dim_out, 1),
+                        ),
                     ],
                 ),
             )
