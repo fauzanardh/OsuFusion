@@ -5,22 +5,22 @@ from typing import Dict, Optional, Tuple
 
 import librosa
 import numpy as np
-from audioread.ffdec import FFmpegAudioFile
+import soundfile as sf
 from rosu_pp_py import Beatmap as RosuBeatmap
 from rosu_pp_py import Difficulty as RosuDifficulty
 
-from osu_fusion.data.const import AUDIO_DIM, BEATMAP_DIM, CONTEXT_DIM, HOP_LENGTH, N_FFT, N_MELS, SR
+from osu_fusion.data.const import AUDIO_DIM, BEATMAP_DIM, CONTEXT_DIM, FMIN, HOP_LENGTH, OCTAVE_BINS, SR
 from osu_fusion.data.encode import encode_beatmap
 from osu_fusion.osu.beatmap import Beatmap
 
 _global_lock: Dict[str, Lock] = {}  # type: ignore
 
-MFCC_PARAMS = {
+VQT_PARAMS = {
     "sr": SR,
-    "n_mfcc": AUDIO_DIM,
-    "n_fft": N_FFT,
     "hop_length": HOP_LENGTH,
-    "n_mels": N_MELS,
+    "fmin": FMIN,
+    "n_bins": AUDIO_DIM,
+    "bins_per_octave": OCTAVE_BINS,
 }
 
 
@@ -38,8 +38,9 @@ def compute_hash(audio_file: Path) -> str:
 
 def load_audio(audio_file: Path) -> np.ndarray:
     try:
-        with FFmpegAudioFile(audio_file) as aro:
-            wave, _ = librosa.load(aro, sr=SR, mono=True, dtype=np.float32)
+        wave, sr = sf.read(audio_file, dtype="float32")
+        wave = librosa.to_mono(wave.T)
+        wave = librosa.resample(wave, orig_sr=sr, target_sr=22050)
     except Exception as e:
         msg = f"Error loading audio file {audio_file}: {e}"
         raise ValueError(msg) from e
@@ -48,13 +49,11 @@ def load_audio(audio_file: Path) -> np.ndarray:
         msg = f"Empty audio file: {audio_file}"
         raise ValueError(msg)
 
-    spec = librosa.feature.mfcc(y=wave, **MFCC_PARAMS)
-
-    # Calculate CMVN
-    spec_mean = spec.mean(axis=1, keepdims=True)
-    spec_std = spec.std(axis=1, keepdims=True)
-    spec = (spec - spec_mean) / (spec_std + 1e-6)
-    return spec
+    vqt = np.log(np.abs(librosa.vqt(y=wave, **VQT_PARAMS)) + 1e-6)
+    vqt_mean = vqt.mean(axis=1, keepdims=True)
+    vqt_std = vqt.std(axis=1, keepdims=True)
+    vqt = (vqt - vqt_mean) / (vqt_std + 1e-6)
+    return vqt
 
 
 def normalize_context(context: np.ndarray) -> np.ndarray:
