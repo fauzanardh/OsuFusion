@@ -58,6 +58,19 @@ class Parallel(nn.Module):
         return sum([fn(x, *args, **kwargs) for fn in self.fns])
 
 
+class GatedFusion(nn.Module):
+    def __init__(self: "GatedFusion", dim: int) -> None:
+        super().__init__()
+        self.gate = nn.Sequential(
+            nn.Conv1d(dim * 2, dim, 1),
+            nn.Sigmoid(),
+        )
+
+    def forward(self: "GatedFusion", x: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
+        z = self.gate(torch.cat([x, a], dim=1))
+        return x * z + a * (1 - z)
+
+
 class UNetDownBlock(nn.Module):
     def __init__(
         self: "UNetDownBlock",
@@ -74,7 +87,8 @@ class UNetDownBlock(nn.Module):
         attn_context_len: int,
     ) -> None:
         super().__init__()
-        self.init_resnet = ResidualBlock(dim_in + dim_out, dim_out, dim_time, dim_cond)
+        self.init_resnet = ResidualBlock(dim_in, dim_out, dim_time, dim_cond)
+        self.fusion = GatedFusion(dim_out)
         self.resnets = nn.ModuleList(
             [ResidualBlock(dim_out, dim_out, dim_time, dim_cond) for _ in range(num_blocks)],
         )
@@ -104,10 +118,12 @@ class UNetDownBlock(nn.Module):
     def forward_body(
         self: "UNetDownBlock",
         x: torch.Tensor,
+        a: torch.Tensor,
         t: Optional[torch.Tensor] = None,
         c: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         x = self.init_resnet(x, t, c)
+        x = self.fusion(x, a)
 
         for resnet, transformer in zip(self.resnets, self.transformers, strict=True):
             x = resnet(x, t, c)
@@ -118,13 +134,14 @@ class UNetDownBlock(nn.Module):
     def forward(
         self: "UNetDownBlock",
         x: torch.Tensor,
+        a: torch.Tensor,
         t: Optional[torch.Tensor] = None,
         c: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if self.training and self.gradient_checkpointing:
-            return torch.utils.checkpoint.checkpoint(self.forward_body, x, t, c, use_reentrant=True)
+            return torch.utils.checkpoint.checkpoint(self.forward_body, x, a, t, c, use_reentrant=True)
         else:
-            return self.forward_body(x, t, c)
+            return self.forward_body(x, a, t, c)
 
 
 class UNetUpBlock(nn.Module):
@@ -359,11 +376,12 @@ class UNet(nn.Module):
 
         # Middle
         self.middle_resnet1 = ResidualBlock(
-            dims_h[-1] * 2,
+            dims_h[-1],
             dims_h[-1],
             self.dim_emb,
             self.dim_emb,
         )
+        self.middle_gated_fusion = GatedFusion(dims_h[-1])
         self.middle_transformer = nn.ModuleList(
             [
                 TransformerBlock(
@@ -473,12 +491,11 @@ class UNet(nn.Module):
 
         skip_connection = []
         for down_layer, a_lat_intermediate in zip(self.down_layers, a_lat_intermediates, strict=True):
-            x = torch.cat([x, a_lat_intermediate], dim=1)
-            x, skip = down_layer(x, t, c_prep)
+            x, skip = down_layer(x, a_lat_intermediate, t, c_prep)
             skip_connection.append(skip)
 
-        x = torch.cat([x, a_lat], dim=1)
         x = self.middle_resnet1(x, t, c_prep)
+        x = self.middle_gated_fusion(x, a_lat)
         for transformer_block in self.middle_transformer:
             x = transformer_block(x)
         x = self.middle_resnet2(x, t, c_prep)
