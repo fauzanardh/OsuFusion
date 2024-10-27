@@ -66,6 +66,7 @@ class OsuFusion(nn.Module):
         self: "OsuFusion",
         n: int,
         a_lat: torch.Tensor,
+        a_lat_intermediates: Optional[torch.Tensor],
         c_prep: torch.Tensor,
         c_uncond_prep: Optional[torch.Tensor] = None,
         x: Optional[torch.Tensor] = None,
@@ -80,7 +81,15 @@ class OsuFusion(nn.Module):
         self.scheduler.set_timesteps(self.sampling_timesteps)
         for t in tqdm(self.scheduler.timesteps, desc="sampling loop time step", dynamic_ncols=True):
             t_batched = repeat(t, "... -> b ...", b=b).long().to(device)
-            pred = self.unet.forward_with_cond_scale(x, a_lat, t_batched, c_prep, c_uncond_prep, cond_scale=cond_scale)
+            pred = self.unet.forward_with_cond_scale(
+                x,
+                a_lat,
+                a_lat_intermediates,
+                t_batched,
+                c_prep,
+                c_uncond_prep,
+                cond_scale=cond_scale,
+            )
             x = self.scheduler.step(pred, t, x).prev_sample
 
         return x
@@ -89,6 +98,7 @@ class OsuFusion(nn.Module):
         self: "OsuFusion",
         x: torch.Tensor,
         a_lat: torch.Tensor,
+        a_lat_intermediates: Optional[torch.Tensor],
         c_prep: torch.Tensor,
     ) -> torch.Tensor:
         noise = torch.randn_like(x, device=x.device)
@@ -101,7 +111,7 @@ class OsuFusion(nn.Module):
         )
         x_noisy = self.scheduler.add_noise(x, noise, timesteps)
 
-        pred = self.unet(x_noisy, a_lat, timesteps, c_prep)
+        pred = self.unet(x_noisy, a_lat, a_lat_intermediates, timesteps, c_prep)
 
         # Calculate loss
         loss = F.mse_loss(pred, noise, reduction="none")

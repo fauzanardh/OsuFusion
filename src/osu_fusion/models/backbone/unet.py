@@ -74,7 +74,7 @@ class UNetDownBlock(nn.Module):
         attn_context_len: int,
     ) -> None:
         super().__init__()
-        self.init_resnet = ResidualBlock(dim_in, dim_out, dim_time, dim_cond)
+        self.init_resnet = ResidualBlock(dim_in + dim_out, dim_out, dim_time, dim_cond)
         self.resnets = nn.ModuleList(
             [ResidualBlock(dim_out, dim_out, dim_time, dim_cond) for _ in range(num_blocks)],
         )
@@ -262,16 +262,18 @@ class AudioEncoder(nn.Module):
     def forward(self: "AudioEncoder", a: torch.Tensor) -> torch.Tensor:
         a = self.init_conv(a)
 
+        intermediates = []
         for resnet, transformer, down in self.down_layers:
             a = resnet(a)
             a = transformer(a)
+            intermediates.append(a)
             a = down(a)
 
         a = self.middle_resnet1(a)
         a = self.middle_transformer(a)
         a = self.middle_resnet2(a)
 
-        return a
+        return a, intermediates
 
 
 class UNet(nn.Module):
@@ -438,23 +440,25 @@ class UNet(nn.Module):
         self: "UNet",
         x: torch.Tensor,
         a_lat: torch.Tensor,
+        a_lat_intermediates: List[torch.Tensor],
         t: torch.Tensor,
         c: torch.Tensor,
         c_uncond: torch.Tensor,
         cond_scale: float = 1.0,
     ) -> torch.Tensor:
-        logits = self.forward(x, a_lat, t, c)
+        logits = self.forward(x, a_lat, a_lat_intermediates, t, c)
 
         if cond_scale == 1.0:
             return logits
 
-        null_logits = self.forward(x, a_lat, t, c_uncond)
+        null_logits = self.forward(x, a_lat, a_lat_intermediates, t, c_uncond)
         return null_logits + (logits - null_logits) * cond_scale
 
     def forward(
         self: "UNet",
         x: torch.Tensor,
         a_lat: torch.Tensor,
+        a_lat_intermediates: List[torch.Tensor],
         t: torch.Tensor,
         c_prep: torch.Tensor,
     ) -> torch.Tensor:
@@ -468,7 +472,8 @@ class UNet(nn.Module):
         r = x.clone()
 
         skip_connection = []
-        for down_layer in self.down_layers:
+        for down_layer, a_lat_intermediate in zip(self.down_layers, a_lat_intermediates, strict=True):
+            x = torch.cat([x, a_lat_intermediate], dim=1)
             x, skip = down_layer(x, t, c_prep)
             skip_connection.append(skip)
 
