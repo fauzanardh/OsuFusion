@@ -29,12 +29,14 @@ class RotaryPositionEmbedding(nn.Module):
     def __init__(
         self: "RotaryPositionEmbedding",
         dim: int,
-        theta: int = 10000,
         scale_base: int = 4096,
+        theta: int = 10000,
+        theta_rescale_factor: float = 1.0,
     ) -> None:
         super().__init__()
         self.scale_base = scale_base
 
+        theta *= theta_rescale_factor ** (dim / (dim - 2))
         inv_freq = 1.0 / (theta ** (torch.arange(0, dim, 2).float() / dim))
         self.register_buffer("inv_freq", inv_freq, persistent=False)
 
@@ -45,13 +47,11 @@ class RotaryPositionEmbedding(nn.Module):
     @torch.amp.autocast("cuda", dtype=torch.float32)
     def _update_cos_sin_tables(self: "RotaryPositionEmbedding", x: torch.Tensor) -> torch.Tensor:
         seq_len = x.shape[-2]
-        if seq_len != self._seq_len_cached or self._cos_cached.device != x.device or self._cos_cached.dtype != x.dtype:
+
+        if self._seq_len_cached != seq_len or self._cos_cached.device != x.device or self._cos_cached.dtype != x.dtype:
             self._seq_len_cached = seq_len
-            t = torch.arange(
-                seq_len,
-                dtype=x.dtype,
-                device=x.device,
-            )
+
+            t = torch.arange(seq_len, dtype=x.dtype, device=x.device)
             t *= self.scale_base / seq_len
             freqs = torch.einsum("i , j -> i j", t, self.inv_freq.to(x.dtype))
             emb = torch.cat([freqs, freqs], dim=-1)
