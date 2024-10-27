@@ -5,7 +5,7 @@ from typing import Dict, Optional, Tuple
 
 import librosa
 import numpy as np
-from audioread.ffdec import FFmpegAudioFile
+import soundfile as sf
 from rosu_pp_py import Beatmap as RosuBeatmap
 from rosu_pp_py import Difficulty as RosuDifficulty
 
@@ -38,8 +38,9 @@ def compute_hash(audio_file: Path) -> str:
 
 def load_audio(audio_file: Path) -> np.ndarray:
     try:
-        with FFmpegAudioFile(audio_file) as aro:
-            wave, _ = librosa.load(aro, sr=SR, mono=True, dtype=np.float32)
+        wave, sr = sf.read(audio_file, dtype="float32")
+        wave = librosa.to_mono(wave.T)
+        wave = librosa.resample(wave, orig_sr=sr, target_sr=22050)
     except Exception as e:
         msg = f"Error loading audio file {audio_file}: {e}"
         raise ValueError(msg) from e
