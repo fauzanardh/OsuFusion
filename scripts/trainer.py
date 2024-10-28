@@ -2,7 +2,7 @@ import random
 import shutil
 from argparse import ArgumentParser
 from pathlib import Path
-from typing import Generator, List, Tuple, Union
+from typing import Dict, Generator, List, Tuple, Union
 
 import numpy as np
 import torch
@@ -148,6 +148,19 @@ def save_training_checkpoint(
     torch.cuda.empty_cache()
 
 
+def filter_state_dict(
+    model: torch.nn.Module,
+    state_dict: Dict[str, torch.Tensor],
+) -> Tuple[Dict[str, torch.Tensor], int, int]:
+    filtered_state_dict = {}
+
+    model_state_dict = model.state_dict()
+    for key, param in model_state_dict.items():
+        if key in state_dict and param.size() == state_dict[key].size():
+            filtered_state_dict[key] = state_dict[key]
+    return filtered_state_dict
+
+
 def load_training_checkpoint(
     model: Model,
     optimizer: AdamW,
@@ -159,8 +172,16 @@ def load_training_checkpoint(
     device = next(model.parameters()).device
     checkpoint = torch.load(checkpoint_path / "checkpoint.pt", map_location=device)
 
-    model.unet.load_state_dict(checkpoint["unet_state_dict"])
-    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    try:
+        model.unet.load_state_dict(checkpoint["unet_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    except RuntimeError:  # Model changed
+        filtered_state_dict = filter_state_dict(model.unet, checkpoint["unet_state_dict"])
+        incompatible_keys = model.unet.load_state_dict(filtered_state_dict, strict=False)
+        if len(incompatible_keys.missing_keys) > 0:
+            print(f"Missing keys: {incompatible_keys.missing_keys}")
+        if len(incompatible_keys.unexpected_keys) > 0:
+            print(f"Unexpected keys: {incompatible_keys.unexpected_keys}")
 
     if not reset_steps:
         scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
