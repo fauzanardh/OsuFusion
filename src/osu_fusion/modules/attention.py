@@ -1,5 +1,5 @@
 import os
-from typing import Optional
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -20,9 +20,15 @@ def rotate_half(x: torch.Tensor) -> torch.Tensor:
     return torch.cat((-x2, x1), dim=-1)
 
 
-@torch.jit.script
-def apply_rotary_pos_emb(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
-    return (x * cos) + (rotate_half(x) * sin)
+def apply_rotary_pos_emb(
+    x: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    scale: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    if scale is None:
+        scale = 1.0
+    return (x * cos * scale) + (rotate_half(x) * sin * scale)
 
 
 class RotaryPositionEmbedding(nn.Module):
@@ -32,41 +38,77 @@ class RotaryPositionEmbedding(nn.Module):
         scale_base: int = 4096,
         theta: int = 10000,
         theta_rescale_factor: float = 1.0,
+        interpolation_factor: float = 1.0,
+        use_xpos: bool = True,
     ) -> None:
         super().__init__()
+        self.dim = dim
         self.scale_base = scale_base
+        self.interpolation_factor = interpolation_factor
+        self.use_xpos = use_xpos
 
         theta *= theta_rescale_factor ** (dim / (dim - 2))
         inv_freq = 1.0 / (theta ** (torch.arange(0, dim, 2).float() / dim))
         self.register_buffer("inv_freq", inv_freq, persistent=False)
 
+        if use_xpos:
+            scale = (torch.arange(0, dim, 2) + 0.4 * dim) / (1.4 * dim)
+            self.register_buffer("scale", scale, persistent=False)
+        else:
+            self.register_buffer("scale", None, persistent=False)
+
         self._seq_len_cached = None
         self._cos_cached = None
         self._sin_cached = None
+        self._scale_cached = None
+
+    def _compute_scale(
+        self: "RotaryPositionEmbedding",
+        seq_len: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> Optional[torch.Tensor]:
+        if not self.use_xpos:
+            return None
+
+        t = torch.arange(seq_len, device=device, dtype=dtype)
+        power = (t - (seq_len // 2)) / self.scale_base
+        scale = self.scale.to(dtype) ** rearrange(power, "n -> n 1")
+        scale = torch.stack([scale, scale], dim=-1)
+        return rearrange(scale, "... d r -> ... (d r)")
 
     @torch.amp.autocast("cuda", dtype=torch.float32)
-    def _update_cos_sin_tables(self: "RotaryPositionEmbedding", x: torch.Tensor) -> torch.Tensor:
+    def _update_cache(
+        self: "RotaryPositionEmbedding",
+        x: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         seq_len = x.shape[-2]
 
         if self._seq_len_cached != seq_len or self._cos_cached.device != x.device or self._cos_cached.dtype != x.dtype:
             self._seq_len_cached = seq_len
 
-            t = torch.arange(seq_len, dtype=x.dtype, device=x.device)
-            t *= self.scale_base / seq_len
-            freqs = torch.einsum("i , j -> i j", t, self.inv_freq.to(x.dtype))
+            t = torch.arange(seq_len, device=x.device, dtype=x.dtype)
+            freqs = torch.einsum("i, j -> i j", t, self.inv_freq.to(x.dtype)) / self.interpolation_factor
             emb = torch.cat([freqs, freqs], dim=-1)
-
             self._cos_cached = rearrange(emb.cos(), "n d -> 1 1 n d")
             self._sin_cached = rearrange(emb.sin(), "n d -> 1 1 n d")
 
-        return self._cos_cached, self._sin_cached
+            self._scale_cached = self._compute_scale(seq_len, x.device, x.dtype)
+            if self._scale_cached is not None:
+                self._scale_cached = rearrange(self._scale_cached, "n d -> 1 1 n d")
 
-    def forward(self: "RotaryPositionEmbedding", q: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
-        self._cos_cached, self._sin_cached = self._update_cos_sin_tables(q)
+        return self._cos_cached, self._sin_cached, self._scale_cached
+
+    def forward(
+        self: "RotaryPositionEmbedding",
+        q: torch.Tensor,
+        k: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        self._cos_cached, self._sin_cached, self._scale_cached = self._update_cache(q)
 
         return (
-            apply_rotary_pos_emb(q, self._cos_cached, self._sin_cached),
-            apply_rotary_pos_emb(k, self._cos_cached, self._sin_cached),
+            apply_rotary_pos_emb(q, self._cos_cached, self._sin_cached, self._scale_cached),
+            apply_rotary_pos_emb(k, self._cos_cached, self._sin_cached, self._scale_cached),
         )
 
 
