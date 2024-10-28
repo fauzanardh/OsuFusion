@@ -46,7 +46,7 @@ class RotaryPositionEmbedding(nn.Module):
         theta: int = 10000,
         theta_rescale_factor: float = 1.0,
         interpolation_factor: float = 1.0,
-        use_xpos: bool = True,
+        use_xpos: bool = False,
     ) -> None:
         super().__init__()
         assert interpolation_factor >= 1.0, "Interpolation factor must be >= 1.0"
