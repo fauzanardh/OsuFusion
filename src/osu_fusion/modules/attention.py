@@ -20,15 +20,22 @@ def rotate_half(x: torch.Tensor) -> torch.Tensor:
     return torch.cat((-x2, x1), dim=-1)
 
 
+@torch.amp.autocast("cuda", dtype=torch.float32)
 def apply_rotary_pos_emb(
-    x: torch.Tensor,
+    t: torch.Tensor,
     cos: torch.Tensor,
     sin: torch.Tensor,
     scale: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-    if scale is None:
-        scale = 1.0
-    return (x * cos * scale) + (rotate_half(x) * sin * scale)
+    rot_dim = cos.shape[-1]
+    orig_dtype = t.dtype
+
+    t, t_unrotated = t[..., :rot_dim], t[..., rot_dim:]
+
+    scale = 1.0 if scale is None else scale
+    t = (t * cos * scale) + (rotate_half(t) * sin * scale)
+    t = torch.cat([t, t_unrotated], dim=-1)
+    return t.to(orig_dtype)
 
 
 class RotaryPositionEmbedding(nn.Module):
@@ -42,6 +49,8 @@ class RotaryPositionEmbedding(nn.Module):
         use_xpos: bool = True,
     ) -> None:
         super().__init__()
+        assert interpolation_factor >= 1.0, "Interpolation factor must be >= 1.0"
+
         self.dim = dim
         self.scale_base = scale_base
         self.interpolation_factor = interpolation_factor
@@ -72,7 +81,8 @@ class RotaryPositionEmbedding(nn.Module):
             return None
 
         t = torch.arange(seq_len, device=device, dtype=dtype)
-        power = (t - (seq_len // 2)) / self.scale_base
+        max_pos = t.max() + 1
+        power = (t - (max_pos // 2)) / self.scale_base
         scale = self.scale.to(dtype) ** rearrange(power, "n -> n 1")
         scale = torch.stack([scale, scale], dim=-1)
         return rearrange(scale, "... d r -> ... (d r)")
