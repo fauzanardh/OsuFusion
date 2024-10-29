@@ -113,7 +113,7 @@ def visualize_and_log_sample(
     width, height = generated.shape[-1] // 150, BEATMAP_DIM
     fig, axs = plt.subplots(height, 1, figsize=(width, height * 8), sharex=True)
     for i in range(BEATMAP_DIM):
-        axs[i].plot(generated[0, i].cpu(), color="red")
+        axs[i].plot(generated[0, i].cpu(), color="red", linewidth=0.5)
 
     fig.canvas.draw()
     pil_img = Image.frombytes("RGBA", fig.canvas.get_width_height(), fig.canvas.buffer_rgba().tobytes())
@@ -228,7 +228,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     random.shuffle(all_maps)
 
     dataset_cls = FullSequenceDataset if args.full_sequence else SubsequenceDataset
-    dataset = dataset_cls(dataset=all_maps)
+    dataset = dataset_cls(dataset=all_maps, sequence_length=8192)
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_size,
