@@ -17,7 +17,7 @@ class OsuFusionDiT(nn.Module):
         dim_h: int,
         dim_h_mult: int = 4,
         dim_t: int = 256,
-        patch_size: int = 16,
+        patch_size: int = 8,
         depth: int = 24,
         attn_dim_head: int = 64,
         attn_heads: int = 16,
