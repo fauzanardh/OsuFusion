@@ -202,7 +202,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     accelerator.init_trackers(project_name="OsuFusion")
 
     # Initialize model
-    model = OsuFusionDiT(dim_h=args.model_dim)
+    model = OsuFusionDiT(dim_h=args.model_dim, attn_context_len=args.train_context_length)
     model.dit.set_gradient_checkpointing(args.gradient_checkpointing)
     if args.full_bf16:
         model.set_full_bf16()
@@ -225,7 +225,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     random.shuffle(all_maps)
 
     dataset_cls = FullSequenceDataset if args.full_sequence else SubsequenceDataset
-    dataset = dataset_cls(dataset=all_maps, sequence_length=8192)
+    dataset = dataset_cls(dataset=all_maps, sequence_length=args.train_context_length)
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -370,6 +370,7 @@ def main() -> None:
     )
     args.add_argument("--resume", type=Path, default=None, help="Path to resume from a checkpoint")
     args.add_argument("--reset-steps", action="store_true", help="Reset training steps when resuming")
+    args.add_argument("--train-context-length", type=int, default=4096, help="Context length for training")
     args.add_argument("--full-sequence", action="store_true", help="Use full sequence dataset")
     args.add_argument("--max-length", type=int, default=0, help="Maximum length of beatmaps to include")
     args.add_argument(
