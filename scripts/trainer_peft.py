@@ -98,7 +98,7 @@ def visualize_and_log_sample(
     a_tensor = torch.from_numpy(a).unsqueeze(0).to(accelerator.device, dtype)
     c_tensor = torch.from_numpy(c).unsqueeze(0).to(accelerator.device, dtype)
 
-    b, _, n = a.shape
+    b, _, n = a_tensor.shape
 
     current_rng_state = torch.get_rng_state()
     torch.manual_seed(0)
