@@ -130,7 +130,7 @@ def load_model(model: Model, model_path: Path) -> None:
         state_dict = checkpoint["unet_state_dict"]
     else:
         state_dict = load_file(model_path)
-    model.load_state_dict(state_dict)
+    model.unet.load_state_dict(state_dict)
 
 
 def save_merged_model_sd(peft_model: PeftModel, project_dir: Path) -> None:
