@@ -107,17 +107,16 @@ def visualize_and_log_sample(
 
     model.eval()
     with torch.inference_mode(), accelerator.autocast():
-        a_lat = model.unet.encode_audio(a_tensor)
-        c_prep = model.unet.prepare_condition(c_tensor, cond_drop_prob=0.0)
-        generated = model.sample(n, a_lat, c_prep, x=x, cond_scale=1.0)
+        a_lat, a_lat_intermediates = model.unet.encode_audio(a_tensor)
+        c_prep = model.unet.prepare_condition(a_tensor, c_tensor, cond_drop_prob=0.0)
+        generated = model.sample(n, a_lat, a_lat_intermediates, c_prep, x=x, cond_scale=1.0)
     model.train()
 
+    generated = generated.cpu().detach().float()
     width, height = generated.shape[-1] // 150, BEATMAP_DIM
     fig, axs = plt.subplots(height, 1, figsize=(width, height * 8), sharex=True)
     for i in range(BEATMAP_DIM):
-        axs[i].plot(generated[0, i].cpu(), label="Reconstructed", color="red")
-        axs[i].plot(x[0, i].cpu(), label="Original", color="blue", linestyle="--")
-        axs[i].legend()
+        axs[i].plot(generated[0, i].cpu(), color="red", linewidth=0.5)
 
     fig.canvas.draw()
     pil_img = Image.frombytes("RGBA", fig.canvas.get_width_height(), fig.canvas.buffer_rgba().tobytes())
@@ -191,7 +190,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
 
     # Initialize model
     model_cls = DiffusionOsuFusion if args.model_type == "diffusion" else RectifiedFlowOsuFusion
-    model = model_cls(args.model_dim)
+    model = model_cls(dim_h=args.model_dim, attn_context_len=args.train_context_length)
     model.unet.set_gradient_checkpointing(args.gradient_checkpointing)
     load_model(model, args.model_path)
     model.eval()
@@ -204,7 +203,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         r=32,
         lora_alpha=32,
         use_dora=True,
-        target_modules=["attn.to_q", "attn.to_kv", "attn.to_out", "block1.proj", "block2.proj"],
+        target_modules=["attn.to_q", "attn.to_kv", "attn.to_out"],
     )
     lora_config._register_custom_module(custom_module_mapping)
     model = get_peft_model(model, lora_config)
@@ -233,12 +232,14 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
 
     print("Loading dataset...")
     all_maps = list(args.dataset_dir.rglob("*.map.npz"))
+    print(f"Number of beatmaps: {len(all_maps)}")
     if args.max_length > 0:
         all_maps = filter_dataset(all_maps, args.max_length)
+        print(f"Number of beatmaps after filtering: {len(all_maps)}")
     random.shuffle(all_maps)
 
     dataset_cls = FullSequenceDataset if args.full_sequence else SubsequenceDataset
-    dataset = dataset_cls(dataset=all_maps, segment_sr=False, load_audio=not args.osu_data)
+    dataset = dataset_cls(dataset=all_maps, sequence_length=args.train_context_length)
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -284,9 +285,9 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                 x, a, c = next(dataloader_cycle)
                 with accelerator.autocast(), accelerator.accumulate(model):
                     try:
-                        a_lat = model.unet.encode_audio(a)
-                        c_prep = model.unet.prepare_condition(c, cond_drop_prob=model.cond_drop_prob)
-                        loss = model(x, a_lat, c_prep)
+                        a_lat, a_lat_intermediates = model.unet.encode_audio(a)
+                        c_prep = model.unet.prepare_condition(a, c, cond_drop_prob=model.cond_drop_prob)
+                        loss = model(x, a_lat, a_lat_intermediates, c_prep)
                     except AssertionError:
                         continue
 
@@ -374,6 +375,7 @@ def main() -> None:
     )
     args.add_argument("--resume", type=Path, default=None, help="Path to resume from a checkpoint")
     args.add_argument("--reset-steps", action="store_true", help="Reset training steps when resuming")
+    args.add_argument("--train-context-length", type=int, default=4096, help="Context length for training")
     args.add_argument("--full-sequence", action="store_true", help="Use full sequence dataset")
     args.add_argument("--random-length", action="store_true", help="Use random length dataset")
     args.add_argument("--max-length", type=int, default=0, help="Maximum length of beatmaps to include")
@@ -395,7 +397,6 @@ def main() -> None:
     args.add_argument("--clip-grad-norm", type=float, default=0.0, help="Gradient clipping norm")
     args.add_argument("--model-dim", type=int, default=512, help="Model dimensionality")
     args.add_argument("--model-attn-heads", type=int, default=8, help="Number of attention heads")
-    args.add_argument("--model-depth", type=int, default=12, help="Depth of the model")
     args.add_argument("--lr", type=float, default=1e-5, help="Learning rate")
     args.add_argument("--batch-size", type=int, default=4, help="Batch size for training")
     args.add_argument("--num-workers", type=int, default=2, help="Number of data loader workers")
