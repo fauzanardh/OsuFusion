@@ -77,12 +77,14 @@ class OsuFusion(nn.Module):
         b, device = a_lat.shape[0], a_lat.device
         if x is None:
             x = torch.randn((b, BEATMAP_DIM, n), device=device)
+        x *= self.scheduler.init_noise_sigma
 
         self.scheduler.set_timesteps(self.sampling_timesteps)
         for t in tqdm(self.scheduler.timesteps, desc="sampling loop time step", dynamic_ncols=True):
             t_batched = repeat(t, "... -> b ...", b=b).long().to(device)
+            x_scaled = self.scheduler.scale_model_input(x, t)
             pred = self.unet.forward_with_cond_scale(
-                x,
+                x_scaled,
                 a_lat,
                 a_lat_intermediates,
                 t_batched,
