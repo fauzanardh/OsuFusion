@@ -105,12 +105,13 @@ def visualize_and_log_sample(
     x = torch.randn((b, BEATMAP_DIM, n), device=accelerator.device, dtype=dtype)
     torch.set_rng_state(current_rng_state)
 
-    model.eval()
+    base_model = accelerator.unwrap_model(model)
+    base_model.eval()
     with torch.inference_mode(), accelerator.autocast():
-        a_lat, a_lat_intermediates = model.encode_audio(a_tensor)
-        c_prep = model.prepare_condition(a_tensor, c_tensor, cond_drop_prob=0.0)
-        generated = model.sample(n, a_lat, a_lat_intermediates, c_prep, x=x, cond_scale=1.0)
-    model.train()
+        a_lat, a_lat_intermediates = base_model.unet.encode_audio(a_tensor)
+        c_prep = base_model.unet.prepare_condition(a_tensor, c_tensor, cond_drop_prob=0.0)
+        generated = base_model.sample(n, a_lat, a_lat_intermediates, c_prep, x=x, cond_scale=1.0)
+    base_model.train()
 
     generated = generated.cpu().detach().float()
     width, height = generated.shape[-1] // 150, BEATMAP_DIM
@@ -285,8 +286,9 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                 x, a, c = next(dataloader_cycle)
                 with accelerator.autocast(), accelerator.accumulate(model):
                     try:
-                        a_lat, a_lat_intermediates = model.encode_audio(a)
-                        c_prep = model.prepare_condition(a, c, cond_drop_prob=0.0)
+                        base_model = accelerator.unwrap_model(model)
+                        a_lat, a_lat_intermediates = base_model.unet.encode_audio(a)
+                        c_prep = base_model.unet.prepare_condition(a, c, cond_drop_prob=base_model.cond_drop_prob)
                         loss = model(x, a_lat, a_lat_intermediates, c_prep)
                     except AssertionError:
                         continue

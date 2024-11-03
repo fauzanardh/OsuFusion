@@ -1,4 +1,4 @@
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -60,17 +60,6 @@ class OsuFusion(nn.Module):
 
     def set_full_bf16(self: "OsuFusion") -> None:
         self.unet = self.unet.bfloat16()
-
-    def encode_audio(self: "OsuFusion", a: torch.Tensor) -> Tuple[torch.Tensor, List[torch.Tensor]]:
-        return self.unet.encode_audio(a)
-
-    def prepare_condition(
-        self: "OsuFusion",
-        a: torch.Tensor,
-        c: torch.Tensor,
-        cond_drop_prob: float = 0.0,
-    ) -> torch.Tensor:
-        return self.unet.prepare_condition(a, c, cond_drop_prob=cond_drop_prob)
 
     @torch.inference_mode()
     def sample(
