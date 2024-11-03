@@ -434,7 +434,7 @@ class UNet(nn.Module):
                 module.gradient_checkpointing = value
                 print(f"Set gradient checkpointing to {value} for {name}")
 
-    def encode_audio(self: "UNet", a: torch.Tensor) -> torch.Tensor:
+    def encode_audio(self: "UNet", a: torch.Tensor) -> Tuple[torch.Tensor, List[torch.Tensor]]:
         n = a.shape[-1]
         depth = len(self.down_layers)
         pad_len = (2**depth - (n % (2**depth))) % (2**depth)
