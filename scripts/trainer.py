@@ -263,7 +263,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     )
 
     model.train()
-    if args.resume is None:
+    if args.resume is None and accelerator.is_main_process:
         print("Clearing old checkpoints...")
         clear_checkpoints(args.project_dir)
 
