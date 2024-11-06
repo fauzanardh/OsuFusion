@@ -7,7 +7,7 @@ from typing import Dict, Generator, List, Tuple, Union
 import numpy as np
 import torch
 from accelerate import Accelerator
-from accelerate.utils import ProjectConfiguration
+from accelerate.utils import DataLoaderConfiguration, ProjectConfiguration
 from diffusers.optimization import get_cosine_schedule_with_warmup
 from matplotlib import pyplot as plt
 from PIL import Image
@@ -200,6 +200,9 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
             project_dir=args.project_dir,
             automatic_checkpoint_naming=True,
         ),
+        dataloader_config=DataLoaderConfiguration(
+            dispatch_batches=False,
+        ),
         log_with="wandb",
     )
     accelerator.init_trackers(project_name="OsuFusion")
@@ -256,12 +259,12 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     )
 
     # Prepare everything with accelerator
-    model, optimizer, scheduler, dataloader = accelerator.prepare(
+    model, optimizer, scheduler = accelerator.prepare(
         model,
         optimizer,
         scheduler,
-        dataloader,
     )
+    dataloader = accelerator.prepare_data_loader(dataloader)
 
     model.train()
     if args.resume is None and accelerator.is_main_process:
