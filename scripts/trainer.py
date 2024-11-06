@@ -242,14 +242,6 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         collate_fn=custom_collate_fn if args.full_sequence else None,
     )
 
-    # Prepare everything with accelerator
-    model, optimizer, scheduler, dataloader = accelerator.prepare(
-        model,
-        optimizer,
-        scheduler,
-        dataloader,
-    )
-
     # Load checkpoint if resuming
     current_step = (
         load_training_checkpoint(
@@ -261,6 +253,14 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         )
         if args.resume
         else 0
+    )
+
+    # Prepare everything with accelerator
+    model, optimizer, scheduler, dataloader = accelerator.prepare(
+        model,
+        optimizer,
+        scheduler,
+        dataloader,
     )
 
     model.train()
