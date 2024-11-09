@@ -2,7 +2,7 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
-from diffusers import DDIMScheduler
+from diffusers import DPMSolverMultistepScheduler
 from einops import repeat
 from torch.nn import functional as F
 from tqdm.auto import tqdm
@@ -44,9 +44,16 @@ class OsuFusion(nn.Module):
             attn_context_len=attn_context_len,
         )
 
-        self.scheduler = DDIMScheduler(
+        # self.scheduler = DDIMScheduler(
+        #     num_train_timesteps=train_timesteps,
+        #     beta_schedule="linear",
+        #     thresholding=True,
+        #     dynamic_thresholding_ratio=0.995,  # Allow a little value to exceed the clipping threshold
+        # )
+        self.scheduler = DPMSolverMultistepScheduler(
             num_train_timesteps=train_timesteps,
             beta_schedule="linear",
+            algorithm_type="sde-dpmsolver++",
             thresholding=True,
             dynamic_thresholding_ratio=0.995,  # Allow a little value to exceed the clipping threshold
         )

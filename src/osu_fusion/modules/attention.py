@@ -44,7 +44,7 @@ class RotaryPositionEmbedding(nn.Module):
         dim: int,
         scale_base: int = 4096,
         theta: int = 10000,
-        theta_rescale_factor: float = 1.0,
+        theta_rescale_factor: float = 4.0,
         interpolation_factor: float = 1.0,
         use_xpos: bool = False,
     ) -> None:

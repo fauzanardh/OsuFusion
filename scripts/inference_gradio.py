@@ -32,13 +32,15 @@ global_temp_dir = tempfile.TemporaryDirectory()
 def create_model_from_checkpoint(model_path: str, model_type: str) -> Model:
     if model_path.endswith(".pt"):
         checkpoint = torch.load(model_path)
-        state_dict = checkpoint["model_state_dict"]
+        state_dict = checkpoint["unet_state_dict"]
     else:
         state_dict = load_file(model_path)
 
-    model_class = DiffusionOsuFusion if model_type == "diffusion" else RectifiedFlowOsuFusion
-    model = model_class(128)
-    model.load_state_dict(state_dict)
+    # model_class = DiffusionOsuFusion if model_type == "diffusion" else RectifiedFlowOsuFusion
+    # model = model_class(128)
+    assert model_type == "diffusion", "Only Diffusion model is supported for now"
+    model = DiffusionOsuFusion(128)
+    model.unet.load_state_dict(state_dict)
     return model.eval()
 
 
@@ -52,20 +54,24 @@ def create_input(
     batch_size: int,
     device: torch.device,
     dtype: torch.dtype,
-) -> torch.Tensor:
-    audio = load_audio(audio_path)
+) -> Tuple[int, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    a = load_audio(audio_path)
     context = normalize_context(np.array([cs, ar, od, hp, sr], dtype=np.float32))
 
-    audio = torch.from_numpy(audio).to(device=device, dtype=dtype)
-    context = torch.from_numpy(context).to(device=device, dtype=dtype)
+    a_tensor = torch.from_numpy(a).to(device=device, dtype=dtype)
+    c_tensor = torch.from_numpy(context).to(device=device, dtype=dtype)
 
-    audio = repeat(audio, "d n -> b d n", b=batch_size)
-    context = repeat(context, "c -> b c", b=batch_size)
+    a_tensor = repeat(a_tensor, "d n -> b d n", b=batch_size)
+    c_tensor = repeat(c_tensor, "c -> b c", b=batch_size)
 
-    n = audio.shape[-1]
+    n = a_tensor.shape[-1]
     x = torch.randn((batch_size, BEATMAP_DIM, n), device=device, dtype=dtype)
 
-    return x, audio, context
+    a_lat, a_lat_intermediates = global_model.unet.encode_audio(a_tensor)
+    c_prep = global_model.unet.prepare_condition(a_tensor, c_tensor)
+    c_prep_uncond = global_model.unet.prepare_condition(a_tensor, c_tensor, cond_drop_prob=1.0)
+
+    return n, a_lat, a_lat_intermediates, c_prep, c_prep_uncond, x
 
 
 def load_model(model_path: str, model_type: str, mixed_precision: str) -> str:
@@ -113,7 +119,7 @@ def generate_beatmap(
         dtype = torch.float16
     elif global_accelerator.mixed_precision == "bf16":
         dtype = torch.bfloat16
-    x, audio, context = create_input(
+    n, a_lat, a_lat_intermediates, c_prep, c_prep_uncond, x = create_input(
         music_path,
         cs,
         ar,
@@ -125,14 +131,12 @@ def generate_beatmap(
         dtype,
     )
 
-    audio_lat = global_model.unet.encode_audio(audio)
-    context_prep = global_model.unet.prepare_condition(context)
-    context_uncond_prep = global_model.unet.prepare_condition(context, cond_drop_prob=1.0)
     generated = global_model.sample(
-        x.shape[-1],
-        audio_lat,
-        context_prep,
-        c_uncond_prep=context_uncond_prep,
+        n,
+        a_lat,
+        a_lat_intermediates,
+        c_prep,
+        c_prep_uncond,
         x=x,
         cond_scale=cfg,
     )
