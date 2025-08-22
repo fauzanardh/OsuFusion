@@ -43,7 +43,7 @@ class Beatmap:
         try:
             self.ar = float(cfg["Difficulty"]["ApproachRate"])
         except KeyError:
-            self.ar = 7
+            self.ar = self.od
 
         self.slider_multiplier = float(cfg["Difficulty"]["SliderMultiplier"])
         self.slider_tick_rate = float(cfg["Difficulty"]["SliderTickRate"])
@@ -116,7 +116,7 @@ class Beatmap:
                 ho = Circle(t, new_combo, x, y)
             elif k & (1 << 1):
                 curve, slides, length = vals[5:8]
-                _, *control_points = curve.split("|")
+                curve_type, *control_points = curve.split("|")
                 control_points = [np.array([x, y], dtype=np.float32)] + [
                     np.array(list(map(int, p.split(":"))), dtype=np.float32) for p in control_points
                 ]
@@ -130,6 +130,7 @@ class Beatmap:
                     int(slides),
                     float(length),
                     control_points,
+                    curve_type,
                 )
             elif k & (1 << 3):
                 ho = Spinner(t, new_combo, int(vals[5]))

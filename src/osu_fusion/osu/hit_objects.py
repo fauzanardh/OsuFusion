@@ -83,12 +83,14 @@ class Slider(HitObject):
         new_combo: bool,
         slides: int,
         length: float,
+        control_points: list[npt.NDArray],
     ) -> None:
         super().__init__(t, new_combo)
         self.slides = slides
         self.length = length
         self.slider_multiplier = slider_multiplier
         self.slide_duration = length / (slider_multiplier * 100) * beat_length
+        self.control_points = control_points
 
     def end_time(self: "Slider") -> int:
         return int(self.t + self.slide_duration * self.slides)

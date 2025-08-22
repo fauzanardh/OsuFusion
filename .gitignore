@@ -164,6 +164,7 @@ weights/
 experiments/
 .vscode/
 wandb/
+misc/
 *.bat
 *.sh
 *.ps1

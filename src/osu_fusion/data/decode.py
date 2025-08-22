@@ -1,16 +1,15 @@
 from dataclasses import asdict, dataclass
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 import numpy.typing as npt
 from scipy import signal
 
-from osu_fusion.data.encode import BeatmapEncoding
-from osu_fusion.data.fit_bezier import fit_bezier, get_segment_length
+from osu_fusion.data.enum import BeatmapEncoding
 from osu_fusion.data.hit import decode_extents, decode_flips
 from osu_fusion.osu.beatmap import TimingPoint
 
-BEAT_DIVISOR = 16
+BEAT_DIVISOR = 8
 SLIDER_MULT = 1.0
 MIN_BPM = 1
 MAX_BPM = 300
@@ -58,26 +57,6 @@ SliderTickRate: 1
 [HitObjects]
 {hit_objects}
 """
-
-
-def slider_decoder(
-    cursor_signal: npt.NDArray,
-    start_idx: int,
-    end_idx: int,
-    num_repeats: int,
-) -> Tuple[float, List[npt.NDArray]]:
-    first_slide_idx = round(start_idx + (end_idx - start_idx) / num_repeats)
-
-    control_points = []
-    length = 0.0
-
-    path = fit_bezier(cursor_signal.T[start_idx : first_slide_idx + 1], max_err=100.0)
-    for segment in path:
-        segment = segment.round()
-        control_points.extend(segment)
-        length += get_segment_length(segment)
-
-    return length, control_points
 
 
 def get_timings(hit_times: npt.NDArray, timing_beat_len: float) -> Tuple[bool, TimingPoint]:
@@ -139,7 +118,16 @@ def decode_beatmap(  # noqa: C901
     verbose: bool = True,
 ) -> str:
     hit_signals = encoded_beatmap[
-        [BeatmapEncoding.HIT, BeatmapEncoding.SUSTAIN, BeatmapEncoding.SLIDER, BeatmapEncoding.COMBO]
+        [
+            BeatmapEncoding.HIT,
+            BeatmapEncoding.SUSTAIN,
+            BeatmapEncoding.SLIDER,
+            BeatmapEncoding.WHITE_BEZIER_ANCHORS,
+            BeatmapEncoding.RED_BEZIER_ANCHORS,
+            BeatmapEncoding.LINE_ANCHORS,
+            BeatmapEncoding.PERFECT_ANCHORS,
+            BeatmapEncoding.COMBO,
+        ]
     ]
     hit_signals = np.where(hit_signals > 0.0, 1.0, 0.0)  # Discretize signals
     cursor_signals = encoded_beatmap[[BeatmapEncoding.CURSOR_X, BeatmapEncoding.CURSOR_Y]]
@@ -167,6 +155,11 @@ def decode_beatmap(  # noqa: C901
         if onset_idx == -1:
             continue
         slider_ends[onset_idx] = slider_end
+
+    white_bezier_anchor_locs = decode_flips(hit_signals[BeatmapEncoding.WHITE_BEZIER_ANCHORS])
+    red_bezier_anchor_locs = decode_flips(hit_signals[BeatmapEncoding.RED_BEZIER_ANCHORS])
+    linear_anchor_locs = decode_flips(hit_signals[BeatmapEncoding.LINE_ANCHORS])
+    perfect_anchor_locs = decode_flips(hit_signals[BeatmapEncoding.PERFECT_ANCHORS])
 
     hos = []
     tps = []
@@ -218,23 +211,53 @@ def decode_beatmap(  # noqa: C901
             continue
 
         # Slider
-        num_slides = max(1, round((sustain_end - hit_loc) / (slider_end - hit_loc)))
-        length, control_points = slider_decoder(cursor_signals, hit_loc, sustain_end, num_slides)
+        anchor_frames = []
+        for frame in range(hit_loc + 1, slider_end):
+            if frame in red_bezier_anchor_locs:
+                anchor_frames.append((frame, "R"))
+            elif frame in white_bezier_anchor_locs:
+                anchor_frames.append((frame, "B"))
+            elif frame in linear_anchor_locs:
+                anchor_frames.append((frame, "L"))
+            elif frame in perfect_anchor_locs:
+                anchor_frames.append((frame, "P"))
 
-        if length == 0:
-            # zero-length slider
+        control_points = [(x, y)]
+        for frame_idx, anchor_type in anchor_frames:
+            ax, ay = cursor_signals[:, frame_idx].round().astype(int)
+            control_points.append((ax, ay))
+            if anchor_type == "R":  # Red anchor, duplicate the point
+                control_points.append((ax, ay))
+        end_x, end_y = cursor_signals[:, slider_end].round().astype(int)
+        control_points.append((end_x, end_y))
+
+        if any(anchor[1] in ("B", "R") for anchor in anchor_frames):
+            slider_char = "B"
+        elif anchor_frames:
+            first_anchor_type = anchor_frames[0][1]
+            slider_char = "L" if first_anchor_type == "L" else "P" if first_anchor_type == "P" else "B"
+        else:
+            slider_char = "B"
+
+        length = 0.0
+        for k in range(len(control_points) - 1):
+            p1, p2 = np.array(control_points[k]), np.array(control_points[k + 1])
+            length += np.linalg.norm(p2 - p1)
+
+        if length < 1e-6:
             hos.append(f"{x},{y},{t},{2**0 + combo_bit},0,0:0:0:0:")
+            continue
 
-        x1, y1 = control_points[0]
-        curve_points = "|".join(f"{x}:{y}" for x, y in control_points[1:])
-        hos.append(f"{x1},{y1},{t},{2**1 + combo_bit},0,B|{curve_points},{num_slides},{length}")
+        num_slides = max(1, round((sustain_end - hit_loc) / (slider_end - hit_loc)))
+        curve_points_str = "|".join(f"{px}:{py}" for px, py in control_points[1:])
+        hos.append(f"{x},{y},{t},{2**1 + combo_bit},0,{slider_char}|{curve_points_str},{num_slides},{length:.2f}")
 
         vel = length * num_slides / (u - t)
         slider_vel = vel / base_slider_vel
         slider_vel = 1 if slider_vel == 0 else slider_vel
         if (slider_vel > 10 or slider_vel < 0.1) and verbose:
             print(f"Warning: slider velocity {slider_vel} is out of bounds, slider will not be good")
-        tps.append(f"{t},{-100/slider_vel},4,0,0,50,0,0")
+        tps.append(f"{t},{-100 / slider_vel},4,0,0,50,0,0")
 
     return map_template.format(
         **asdict(metadata),

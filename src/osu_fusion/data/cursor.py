@@ -6,13 +6,18 @@ from osu_fusion.osu.hit_objects import Circle, Slider, Spinner
 
 
 def cursor_signal(beatmap: Beatmap, frame_times: npt.NDArray) -> npt.NDArray:
-    preempt = 1200 + (120 if beatmap.ar <= 5 else 150) * (5 - beatmap.ar)
+    if beatmap.ar < 5:
+        preempt = 1200 + 600 * (5 - beatmap.ar) / 5
+    elif beatmap.ar == 5:
+        preempt = 1200
+    else:
+        preempt = 1200 - 750 * (beatmap.ar - 5) / 5
 
     start = Circle(0, True, 256, 192)
     hit_objects = [start, *beatmap.hit_objects]
     positions = []
 
-    for current_obj, next_obj in zip(hit_objects, hit_objects[1:] + [None], strict=True):
+    for current_obj, next_obj in zip(hit_objects, [*hit_objects[1:], None], strict=True):
         if isinstance(current_obj, Spinner):
             current_count = np.sum((frame_times >= current_obj.t) & (frame_times < current_obj.end_time()))
             positions.extend(current_obj.start_pos()[None].repeat(current_count, axis=0))
