@@ -17,11 +17,13 @@ class TimingPoint(Timed):
         beat_length: float,
         slider_multiplier: float,
         meter: int,
+        kiai: bool,
     ) -> None:
         super().__init__(t)
         self.beat_length = beat_length
         self.slider_multiplier = slider_multiplier
         self.meter = meter
+        self.kiai = kiai
 
     def __eq__(self: "TimingPoint", other: "TimingPoint") -> bool:
         return all(
@@ -30,6 +32,7 @@ class TimingPoint(Timed):
                 self.beat_length == other.beat_length,
                 self.slider_multiplier == other.slider_multiplier,
                 self.meter == other.meter,
+                self.kiai == other.kiai,
             ],
         )
 

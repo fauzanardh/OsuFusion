@@ -12,6 +12,7 @@ BeatmapEncoding = IntEnum(
         "LINE_ANCHORS",
         "PERFECT_ANCHORS",
         "COMBO",
+        "KIAI",  # Only used to as an auxiliary signal so the model can learn better
         # cursor signals
         "CURSOR_X",
         "CURSOR_Y",

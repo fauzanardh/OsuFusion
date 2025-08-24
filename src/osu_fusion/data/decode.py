@@ -63,7 +63,7 @@ def get_timings(hit_times: npt.NDArray, timing_beat_len: float) -> Tuple[bool, T
     offsets = hit_times % timing_beat_len
     hist, bin_edges = np.histogram(offsets, bins=100, range=(0, timing_beat_len))
     offset = bin_edges[np.argmax(hist)]
-    return True, TimingPoint(offset, timing_beat_len, None, 4)
+    return True, TimingPoint(offset, timing_beat_len, None, 4, False)
 
 
 def calculate_timing_point(
@@ -72,7 +72,7 @@ def calculate_timing_point(
     verbose: bool = True,
 ) -> Tuple[bool, TimingPoint]:
     if not allow_beat_snap:
-        return False, TimingPoint(0, 60000 / 200, None, 4)
+        return False, TimingPoint(0, 60000 / 200, None, 4, False)
 
     time_diffs = np.diff(hit_times)
     autocorr = signal.correlate(time_diffs, time_diffs, mode="full")
@@ -85,7 +85,7 @@ def calculate_timing_point(
     if len(valid_peaks) == 0:
         if verbose:
             print("Warning: no valid BPM found within the range, disabling beat snap")
-        return False, TimingPoint(0, 60000 / 200, None, 4)
+        return False, TimingPoint(0, 60000 / 200, None, 4, False)
 
     best_peak = valid_peaks[np.argmax(autocorr[valid_peaks])]
     initial_bpm = 60000 / best_peak

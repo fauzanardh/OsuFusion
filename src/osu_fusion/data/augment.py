@@ -1,6 +1,6 @@
 import torch
 
-from osu_fusion.data.encode import BeatmapEncoding
+from osu_fusion.data.enum import BeatmapEncoding
 
 
 # Flip cursor horizontally

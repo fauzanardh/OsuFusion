@@ -152,5 +152,6 @@ def hit_signals(beatmap: Beatmap, frame_times: npt.NDArray) -> npt.NDArray:  # n
         frame_times,
         [hit_object.t for hit_object in beatmap.hit_objects if hit_object.new_combo],
     )
+    signals[BeatmapEncoding.KIAI] = extents(frame_times, beatmap.kiai)
 
     return signals

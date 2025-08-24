@@ -1,4 +1,5 @@
 import bisect
+import itertools
 import re
 from pathlib import Path
 from typing import Any, Dict, Generator, List, Tuple
@@ -19,6 +20,7 @@ class Beatmap:
         self.uninherited_timing_points = []
         self.hit_objects = []
         self.events = []
+        self.kiai = []
 
         with open(self.filename, "r", encoding="utf-8") as f:
             cfg = self.parse_beatmap(f.readlines())
@@ -64,10 +66,12 @@ class Beatmap:
         cur_beat_length = None
         cur_slider_multiplier = 1.0
         cur_meter = None
+        cur_kiai = False
 
         for line in lines:
             vals = [float(x) for x in line.strip().split(",")]
             t, x, meter = vals[:3]
+            kiai = bool(int(vals[7]) & 1) if len(vals) > 7 else False
 
             if vals[6] == 0:
                 if len(self.timing_points) == 0:
@@ -82,11 +86,13 @@ class Beatmap:
                 cur_slider_multiplier = 1.0
                 cur_meter = meter
 
+            cur_kiai = kiai
+
             if cur_beat_length is None or cur_meter is None:
                 msg = "inherited timing point appears before any uninherited timing points"
                 raise ValueError(msg)
 
-            tp = TimingPoint(int(t), cur_beat_length, cur_slider_multiplier, int(cur_meter))
+            tp = TimingPoint(int(t), cur_beat_length, cur_slider_multiplier, int(cur_meter), cur_kiai)
             if len(self.timing_points) == 0 or tp != self.timing_points[-1]:
                 self.timing_points.append(tp)
 
@@ -106,6 +112,17 @@ class Beatmap:
             return self.timing_points[0]
 
         return self.timing_points[idx]
+
+    def _calculate_kiai_regions(self: "Beatmap") -> None:
+        if not self.timing_points or not self.hit_objects:
+            return
+
+        end_time = self.hit_objects[-1].end_time() + 1
+        all_points = [*self.timing_points, Timed(end_time)]
+
+        for current_point, next_point in itertools.pairwise(all_points):
+            if current_point.kiai:
+                self.kiai.append((current_point.t, next_point.t))
 
     def parse_hit_object(self: "Beatmap", lines: List[str]) -> None:
         for line in lines:
@@ -159,6 +176,7 @@ class Beatmap:
         del self.unparsed_hit_objects
         self.parse_events(self.unparsed_events)
         del self.unparsed_events
+        self._calculate_kiai_regions()
 
     @staticmethod
     def _process_circle_cursor(ho: Circle, nho: HitObject, t: int) -> Tuple[Tuple[int, int], float]:
