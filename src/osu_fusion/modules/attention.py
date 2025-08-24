@@ -4,10 +4,16 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 from einops import pack, rearrange, repeat, unpack
-from packaging import version
 from torch.nn import functional as F
-from torch.nn.attention import SDPBackend, sdpa_kernel
 from torch.profiler import record_function
+
+try:
+    from flash_attn.flash_attn_interface import flash_attn_func
+
+    print("Using flash attention")
+    FLASH_ATTENTION_AVAILABLE = True
+except ImportError:
+    FLASH_ATTENTION_AVAILABLE = False
 
 from osu_fusion.modules.norms import RMSNorm
 from osu_fusion.modules.utils import dummy_context_manager
@@ -125,19 +131,16 @@ class RotaryPositionEmbedding(nn.Module):
 class Attend(nn.Module):
     def __init__(self: "Attend") -> None:
         super().__init__()
-        assert not version.parse(torch.__version__) < version.parse("2.0.0"), "sdpa requires torch>=2.0.0"
-        self.can_use_bf16 = True
-        self.cpu_backends = [SDPBackend.FLASH_ATTENTION, SDPBackend.MATH, SDPBackend.EFFICIENT_ATTENTION]
-
+        self.use_flash_attention = FLASH_ATTENTION_AVAILABLE
         if not torch.cuda.is_available():
+            self.use_flash_attention = False
             return
 
         device_properties = torch.cuda.get_device_properties(torch.device("cuda"))
         if device_properties.major >= 8 and device_properties.minor >= 0:
-            self.cuda_backends = [SDPBackend.FLASH_ATTENTION]
+            self.can_use_bf16 = True
         else:
             self.can_use_bf16 = False
-            self.cuda_backends = [SDPBackend.EFFICIENT_ATTENTION, SDPBackend.CUDNN_ATTENTION]
 
     @torch.amp.autocast("cuda", enabled=False)
     def forward(
@@ -147,14 +150,18 @@ class Attend(nn.Module):
         v: torch.Tensor,
         attn_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        is_cuda, dtype = v.is_cuda, v.dtype
-        backends = self.cuda_backends if is_cuda else self.cpu_backends
+        dtype = v.dtype
 
         qkv_dtype = torch.bfloat16 if self.can_use_bf16 else torch.float16
-        with sdpa_kernel(backends):
-            q = q.to(qkv_dtype)
-            k = k.to(qkv_dtype)
-            v = v.to(qkv_dtype)
+        q = q.to(qkv_dtype)
+        k = k.to(qkv_dtype)
+        v = v.to(qkv_dtype)
+
+        if self.use_flash_attention and attn_mask is None:
+            q, k, v = (t.transpose(1, 2) for t in (q, k, v))
+            out = flash_attn_func(q, k, v, causal=False)
+            out = out.transpose(1, 2)
+        else:
             attn_mask = attn_mask.to(qkv_dtype) if attn_mask is not None else None
             q, k, v = (t.contiguous() for t in (q, k, v))
             out = F.scaled_dot_product_attention(

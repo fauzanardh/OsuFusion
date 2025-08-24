@@ -230,8 +230,8 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         dataset,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        prefetch_factor=4,
-        persistent_workers=True,
+        prefetch_factor=4 if args.num_workers > 0 else None,
+        persistent_workers=args.num_workers > 0,
         pin_memory=True,
         collate_fn=custom_collate_fn if args.full_sequence else None,
     )

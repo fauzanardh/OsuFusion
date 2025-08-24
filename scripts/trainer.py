@@ -239,8 +239,8 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         dataset,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        prefetch_factor=4,
-        persistent_workers=True,
+        prefetch_factor=4 if args.num_workers > 0 else None,
+        persistent_workers=args.num_workers > 0,
         pin_memory=True,
         collate_fn=custom_collate_fn if args.full_sequence else None,
     )
@@ -399,8 +399,8 @@ def main() -> None:
         help="Number of gradient accumulation steps",
     )
     args.add_argument("--clip-grad-norm", type=float, default=0.0, help="Gradient clipping norm")
-    args.add_argument("--model-dim", type=int, default=128, help="Dimension of the model")
-    args.add_argument("--model-attn-heads", type=int, default=16, help="Number of attention heads")
+    args.add_argument("--model-dim", type=int, default=64, help="Dimension of the model")
+    args.add_argument("--model-attn-heads", type=int, default=8, help="Number of attention heads")
     args.add_argument("--lr", type=float, default=1e-5, help="Learning rate for the optimizer")
     args.add_argument("--batch-size", type=int, default=8, help="Batch size for training")
     args.add_argument("--num-workers", type=int, default=2, help="Number of data loader workers")

@@ -221,14 +221,14 @@ class AudioEncoder(nn.Module):
         dim_h: int,
         dim_h_mult: Tuple[int] = (1, 2, 3, 4),
         attn_dim_head: int = 64,
-        attn_heads: int = 16,
+        attn_heads: int = 8,
         attn_kv_heads: int = 8,
         attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
         self.dim_h = dim_h
 
-        self.init_conv = CrossEmbedLayer(dim_in, dim_h, (3, 7, 15))
+        self.init_conv = nn.Conv1d(dim_in, dim_h, 7, padding=3)
 
         # Downsample
         dims_h = tuple((dim_h * mult) for mult in dim_h_mult)
@@ -300,12 +300,12 @@ class UNet(nn.Module):
         dim_in_a: int,
         dim_in_c: int,
         dim_h: int,
-        dim_h_mult: Tuple[int] = (1, 2, 4, 4),
+        dim_h_mult: Tuple[int] = (1, 2, 4, 8),
         dim_t: int = 256,
         num_layer_blocks: Tuple[int] = (3, 3, 3, 3),
         num_middle_transformers: int = 3,
         attn_dim_head: int = 64,
-        attn_heads: int = 16,
+        attn_heads: int = 8,
         attn_kv_heads: int = 8,
         attn_context_len: int = 4096,
     ) -> None:
@@ -313,7 +313,7 @@ class UNet(nn.Module):
         self.dim_h = dim_h
         self.dim_emb = dim_h * 4
 
-        self.init_x = CrossEmbedLayer(dim_in_x, dim_h, (3, 7, 15))
+        self.init_x = nn.Conv1d(dim_in_x, dim_h, 7, padding=3)
         self.audio_encoder = AudioEncoder(
             dim_in=dim_in_a,
             dim_h=dim_h,

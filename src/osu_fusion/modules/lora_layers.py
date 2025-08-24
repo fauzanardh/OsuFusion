@@ -181,7 +181,7 @@ class LoraConv1d(nn.Module, LoraLayer):
     def dora_init(self: "LoraConv1d", adapter_name: str) -> None:
         if self.lora_magnitude_vector is None:
             # first dora layer being added, add lora_magnitude_vector to the list of learnable parameters
-            self.adapter_layer_names = self.adapter_layer_names[:] + ("lora_magnitude_vector",)
+            self.adapter_layer_names = (*self.adapter_layer_names[:], "lora_magnitude_vector")
         dora_layer = DoraConv1dLayer(fan_in_fan_out=False)
         lora_A = self.lora_A[adapter_name].weight
         lora_B = self.lora_B[adapter_name].weight

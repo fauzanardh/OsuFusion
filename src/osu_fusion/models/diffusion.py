@@ -2,7 +2,7 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
-from diffusers import DPMSolverMultistepScheduler
+from diffusers import DDPMScheduler, DPMSolverMultistepScheduler
 from einops import repeat
 from torch.nn import functional as F
 from tqdm.auto import tqdm
@@ -44,18 +44,16 @@ class OsuFusion(nn.Module):
             attn_context_len=attn_context_len,
         )
 
-        # self.scheduler = DDIMScheduler(
-        #     num_train_timesteps=train_timesteps,
-        #     beta_schedule="linear",
-        #     thresholding=True,
-        #     dynamic_thresholding_ratio=0.995,  # Allow a little value to exceed the clipping threshold
-        # )
-        self.scheduler = DPMSolverMultistepScheduler(
+        self.train_scheduler = DDPMScheduler(
             num_train_timesteps=train_timesteps,
-            beta_schedule="linear",
+            prediction_type="v_prediction",
+            clip_sample=False,
+            rescale_betas_zero_snr=True,
+        )
+        self.sampling_scheduler = DPMSolverMultistepScheduler(
+            num_train_timesteps=train_timesteps,
+            prediction_type="v_prediction",
             algorithm_type="sde-dpmsolver++",
-            thresholding=True,
-            dynamic_thresholding_ratio=0.995,  # Allow a little value to exceed the clipping threshold
         )
         self.train_timesteps = train_timesteps
         self.sampling_timesteps = sampling_timesteps
@@ -84,12 +82,12 @@ class OsuFusion(nn.Module):
         b, device = a_lat.shape[0], a_lat.device
         if x is None:
             x = torch.randn((b, BEATMAP_DIM, n), device=device)
-        x *= self.scheduler.init_noise_sigma
+        x *= self.sampling_scheduler.init_noise_sigma
 
-        self.scheduler.set_timesteps(self.sampling_timesteps)
-        for t in tqdm(self.scheduler.timesteps, desc="sampling loop time step", dynamic_ncols=True):
+        self.sampling_scheduler.set_timesteps(self.sampling_timesteps)
+        for t in tqdm(self.sampling_scheduler.timesteps, desc="sampling loop time step", dynamic_ncols=True):
             t_batched = repeat(t, "... -> b ...", b=b).long().to(device)
-            x_scaled = self.scheduler.scale_model_input(x, t)
+            x_scaled = self.sampling_scheduler.scale_model_input(x, t)
             pred = self.unet.forward_with_cond_scale(
                 x_scaled,
                 a_lat,
@@ -99,7 +97,7 @@ class OsuFusion(nn.Module):
                 c_uncond_prep,
                 cond_scale=cond_scale,
             )
-            x = self.scheduler.step(pred, t, x).prev_sample
+            x = self.sampling_scheduler.step(pred, t, x).prev_sample
 
         return x
 
@@ -113,17 +111,18 @@ class OsuFusion(nn.Module):
         noise = torch.randn_like(x, device=x.device)
         timesteps = torch.randint(
             0,
-            self.scheduler.config.num_train_timesteps,
+            self.train_scheduler.config.num_train_timesteps,
             (x.shape[0],),
             dtype=torch.int64,
             device=x.device,
         )
-        x_noisy = self.scheduler.add_noise(x, noise, timesteps)
+        x_noisy = self.train_scheduler.add_noise(x, noise, timesteps)
 
         pred = self.unet(x_noisy, a_lat, a_lat_intermediates, timesteps, c_prep)
 
         # Calculate loss
-        loss = F.mse_loss(pred, noise, reduction="none")
+        v_target = self.train_scheduler.get_velocity(x, noise, timesteps)
+        loss = F.mse_loss(pred, v_target, reduction="none")
         return loss.mean()
 
         # # Create mask for losses to ignore padding
