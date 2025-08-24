@@ -22,7 +22,7 @@ dependencies = [
     "sanitize-filename>=1.2.0",
     "scipy>=1.16.1",
     "soundfile>=0.13.1",
-    "torch>=2.8.0",
+    "torch>=2.7.0",
     "torchdiffeq>=0.2.5",
     "tqdm>=4.67.1",
     "wandb>=0.21.1",
@@ -44,6 +44,7 @@ dev-dependencies = [
     "ipykernel>=6.30.1",
     "ipywidgets>=8.1.7",
     "nbformat>=5.10.4",
+    "ninja>=1.13.0",
     "plotly>=6.3.0",
     "ruff>=0.12.9",
 ]
