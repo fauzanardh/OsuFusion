@@ -23,8 +23,9 @@ from osu_fusion.data.const import BEATMAP_DIM
 from osu_fusion.data.dataset import FullSequenceDataset, SubsequenceDataset
 from osu_fusion.data.prepare_data import load_audio, normalize_context
 from osu_fusion.models.diffusion_dit import OsuFusionDiT
+from osu_fusion.models.diffusion_mmdit import OsuFusionMMDiT
 
-Model = Union[OsuFusionDiT]
+Model = Union[OsuFusionDiT, OsuFusionMMDiT]
 
 
 def get_total_norm(parameters: List[torch.Tensor], norm_type: float = 2.0) -> float:
@@ -103,8 +104,7 @@ def visualize_and_log_sample(
 
     model.eval()
     with torch.inference_mode(), accelerator.autocast():
-        a_patch, a_mlp_out = model.dit.encode_audio(a_tensor)
-        generated = model.sample(n, a_patch, a_mlp_out, c_tensor, x=x, cond_scale=1.0)
+        generated = model.sample(n, a_tensor, c_tensor, x=x, cond_scale=1.0)
     model.train()
 
     generated = generated.cpu().detach().float()
@@ -202,7 +202,8 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     accelerator.init_trackers(project_name="OsuFusion")
 
     # Initialize model
-    model = OsuFusionDiT(dim_h=args.model_dim, attn_context_len=args.train_context_length)
+    model_cls = OsuFusionDiT if args.model_type == "dit" else OsuFusionMMDiT
+    model = model_cls(dim_h=args.model_dim, attn_context_len=args.train_context_length)
     model.dit.set_gradient_checkpointing(args.gradient_checkpointing)
     if args.full_bf16:
         model.set_full_bf16()
@@ -219,7 +220,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     )
 
     print("Loading dataset...")
-    all_maps = list(args.dataset_dir.rglob("*.map.npz"))
+    all_maps = list(args.dataset_dir.rglob("*.map.h5"))
     if args.max_length > 0:
         all_maps = filter_dataset(all_maps, args.max_length)
     random.shuffle(all_maps)
@@ -281,8 +282,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                 x, a, c = next(dataloader_cycle)
                 with accelerator.autocast(), accelerator.accumulate(model):
                     try:
-                        a_patch, a_mlp_out = model.dit.encode_audio(a)
-                        loss = model(x, a_patch, a_mlp_out, c)
+                        loss = model(x, a, c)
                     except AssertionError:
                         print(f"AssertionError encountered at step {current_step + 1}, skipping batch.")
                         continue
@@ -358,14 +358,14 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
 
 
 def main() -> None:
-    args = ArgumentParser(description="Train OsuFusion U-Net Backbone")
+    args = ArgumentParser(description="Train OsuFusion DiT/MMDiT Backbone")
     args.add_argument("--project-dir", type=Path, required=True, help="Directory for project outputs")
     args.add_argument("--dataset-dir", type=Path, required=True, help="Directory containing the dataset")
     args.add_argument(
         "--model-type",
         type=str,
-        default="diffusion",
-        choices=["diffusion", "rectified-flow"],
+        default="dit",
+        choices=["dit", "mmdit"],
         help="Type of model to train",
     )
     args.add_argument("--resume", type=Path, default=None, help="Path to resume from a checkpoint")
@@ -388,8 +388,7 @@ def main() -> None:
         help="Number of gradient accumulation steps",
     )
     args.add_argument("--clip-grad-norm", type=float, default=0.0, help="Gradient clipping norm")
-    args.add_argument("--model-dim", type=int, default=128, help="Dimension of the model")
-    args.add_argument("--model-attn-heads", type=int, default=16, help="Number of attention heads")
+    args.add_argument("--model-dim", type=int, default=256, help="Dimension of the model")
     args.add_argument("--lr", type=float, default=1e-5, help="Learning rate for the optimizer")
     args.add_argument("--batch-size", type=int, default=8, help="Batch size for training")
     args.add_argument("--num-workers", type=int, default=2, help="Number of data loader workers")

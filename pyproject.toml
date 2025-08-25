@@ -14,6 +14,7 @@ dependencies = [
     "diffusers>=0.35.1",
     "einops>=0.8.1",
     "gradio>=5.43.1",
+    "h5py>=3.14.0",
     "librosa==0.10.2.post1",
     "matplotlib>=3.10.5",
     "peft>=0.17.1",

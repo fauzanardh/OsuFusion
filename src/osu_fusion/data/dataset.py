@@ -3,6 +3,7 @@ from functools import partial
 from pathlib import Path
 from typing import Dict, Generator, NamedTuple, Optional, Tuple
 
+import h5py
 import librosa
 import numpy as np
 import torch
@@ -79,30 +80,28 @@ class TensorLoader:
         return torch.from_numpy(array).to(device=self.device, dtype=torch.float32)
 
     def load_tensor(self: "TensorLoader", map_file: Path, load_audio: bool = True) -> MapData:
-        map_data = np.load(map_file)
-
-        tensors = {
-            "x": self._to_tensor(map_data["x"]),
-            "c": self._to_tensor(map_data["c"]),
-        }
+        with h5py.File(map_file, "r") as map_data:
+            x = self._to_tensor(map_data["x"][:])
+            c = self._to_tensor(map_data["c"][:])
+            spec_path = map_data["spec_path"][()].decode("utf-8")
 
         if load_audio:
-            audio_file = map_file.parent.parent.parent / map_data["spec_path"].tolist()
-            audio_data = np.load(audio_file)
-            tensors["a"] = self._to_tensor(audio_data["a"])
+            audio_file = map_file.parent.parent.parent / spec_path
+            with h5py.File(audio_file, "r") as audio_data:
+                a = self._to_tensor(audio_data["a"][:])
         else:
             # Dummy audio tensor
-            tensors["a"] = torch.zeros((AUDIO_DIM, tensors["x"].shape[-1]), dtype=torch.float32)
+            a = torch.zeros((AUDIO_DIM, x.shape[-1]), dtype=torch.float32)
 
-        if any(torch.isnan(t).any() for t in tensors.values()):
+        if any(torch.isnan(t).any() for t in [x, a, c]):
             msg = "Invalid values in map file"
             raise ValueError(msg)
 
         return MapData(
-            x=tensors["x"],
-            a=tensors["a"],
-            c=tensors["c"],
-            spec_path=map_data["spec_path"].tolist(),
+            x=x,
+            a=a,
+            c=c,
+            spec_path=spec_path,
         )
 
 
@@ -131,33 +130,27 @@ class StreamPerSample(IterableDataset):
 
     def __iter__(self: "StreamPerSample") -> Generator[Tuple[torch.Tensor, torch.Tensor, torch.Tensor], None, None]:
         worker_info = torch.utils.data.get_worker_info()
+        indices = list(range(len(self.dataset)))
+
+        if self.sample_density < 1.0:
+            num_samples = int(len(indices) * self.sample_density)
+            indices = random.sample(indices, num_samples)
+
+        random.shuffle(indices)
         if worker_info is None:
-            num_workers = 1
-            worker_id = 0
-            seed = torch.initial_seed()
+            indices_for_worker = indices
         else:
             num_workers = worker_info.num_workers
             worker_id = worker_info.id
-            seed = worker_info.seed
+            indices_for_worker = indices[worker_id::num_workers]
 
-        random.seed(seed)
-        num_samples = int(len(self.dataset) * self.sample_density)
-        enumerated_dataset = list(enumerate(self.dataset))
-        samples = random.sample(enumerated_dataset, num_samples)
-
-        for i, sample in samples:
-            if i % num_workers != worker_id:
-                continue
-
+        for index in indices_for_worker:
+            sample = self.dataset[index]
             try:
-                for x, a, c in self.sample_stream(sample):
-                    yield x, a, c
+                yield from self.sample_stream(sample)
             except Exception as e:
                 print(f"Error processing sample {sample}: {e}")
                 continue
-
-        # Randomize the dataset order for each epoch
-        random.shuffle(self.dataset)
 
 
 class FullSequenceDataset(StreamPerSample):
@@ -196,18 +189,26 @@ class SubsequenceDataset(StreamPerSample):
         map_file: Path,
     ) -> Generator[Tuple[torch.Tensor, torch.Tensor, torch.Tensor], None, None]:
         try:
-            map_data = self.tensor_loader.load_tensor(map_file, self.load_audio)
-            x, a, c = map_data.x, map_data.a, map_data.c
-        except ValueError:
-            return
+            with h5py.File(map_file, "r") as map_data:
+                n = map_data["x"].shape[-1]
+                if self.sequence_length > n:
+                    return
 
-        n = x.shape[-1]
-        if self.sequence_length > n:
-            return
+                start = random.randint(0, n - self.sequence_length)
+                x = self.tensor_loader._to_tensor(map_data["x"][:, start : start + self.sequence_length])
+                c = self.tensor_loader._to_tensor(map_data["c"][:])
+                spec_path = map_data["spec_path"][()].decode("utf-8")
 
-        start = random.randint(0, n - self.sequence_length)
-        x = x[..., start : start + self.sequence_length]
-        a = a[..., start : start + self.sequence_length]
+            if self.load_audio:
+                audio_file = map_file.parent.parent.parent / spec_path
+                with h5py.File(audio_file, "r") as audio_data:
+                    a = self.tensor_loader._to_tensor(audio_data["a"][:, start : start + self.sequence_length])
+            else:
+                a = torch.zeros((AUDIO_DIM, self.sequence_length), dtype=torch.float32)
+
+        except (ValueError, OSError) as e:
+            print(f"Error processing sample {map_file}: {e}")
+            return
 
         if random.random() < self.flip_horizontal_prob:
             x = flip_cursor_horizontal(x)

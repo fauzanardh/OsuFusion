@@ -8,12 +8,12 @@ from torch.nn import functional as F
 from tqdm.auto import tqdm
 
 from osu_fusion.data.const import AUDIO_DIM, BEATMAP_DIM, CONTEXT_DIM
-from osu_fusion.models.backbone.dit import DiT
+from osu_fusion.models.backbone.mmdit import MMDiT
 
 
-class OsuFusionDiT(nn.Module):
+class OsuFusionMMDiT(nn.Module):
     def __init__(
-        self: "OsuFusionDiT",
+        self: "OsuFusionMMDiT",
         dim_h: int,
         dim_h_mult: int = 4,
         dim_t: int = 256,
@@ -30,7 +30,7 @@ class OsuFusionDiT(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.dit = DiT(
+        self.mmdit = MMDiT(
             dim_in_x=BEATMAP_DIM,
             dim_in_a=AUDIO_DIM,
             dim_in_c=CONTEXT_DIM,
@@ -62,15 +62,15 @@ class OsuFusionDiT(nn.Module):
         self.cond_drop_prob = cond_drop_prob
 
     @property
-    def trainable_params(self: "OsuFusionDiT") -> Tuple[nn.Parameter]:
+    def trainable_params(self: "OsuFusionMMDiT") -> Tuple[nn.Parameter]:
         return (param for param in self.parameters() if param.requires_grad)
 
-    def set_full_bf16(self: "OsuFusionDiT") -> None:
-        self.dit = self.dit.bfloat16()
+    def set_full_bf16(self: "OsuFusionMMDiT") -> None:
+        self.mmdit = self.mmdit.bfloat16()
 
     @torch.inference_mode()
     def sample(
-        self: "OsuFusionDiT",
+        self: "OsuFusionMMDiT",
         n: int,
         a: torch.Tensor,
         c: torch.Tensor,
@@ -86,7 +86,7 @@ class OsuFusionDiT(nn.Module):
         for t in tqdm(self.sampling_scheduler.timesteps, desc="sampling loop time step", dynamic_ncols=True):
             t_batched = repeat(t, "... -> b ...", b=b).long().to(device)
             x_scaled = self.sampling_scheduler.scale_model_input(x, t)
-            pred = self.dit.forward_with_cond_scale(
+            pred = self.mmdit.forward_with_cond_scale(
                 x_scaled,
                 a,
                 t_batched,
@@ -98,7 +98,7 @@ class OsuFusionDiT(nn.Module):
         return x
 
     def forward(
-        self: "OsuFusionDiT",
+        self: "OsuFusionMMDiT",
         x: torch.Tensor,
         a: torch.Tensor,
         c: torch.Tensor,
@@ -113,7 +113,7 @@ class OsuFusionDiT(nn.Module):
         )
         x_noisy = self.sampling_scheduler.add_noise(x, noise, timesteps)
 
-        pred = self.dit(x_noisy, a, timesteps, c, self.cond_drop_prob)
+        pred = self.mmdit(x_noisy, a, timesteps, c, self.cond_drop_prob)
 
         # Calculate loss
         v_target = self.train_scheduler.get_velocity(x, noise, timesteps)

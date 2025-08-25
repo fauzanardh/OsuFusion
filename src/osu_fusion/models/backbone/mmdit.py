@@ -1,10 +1,10 @@
-from typing import Dict, List
-
 import torch
 import torch.nn as nn
 from einops import rearrange, repeat
+from einops.layers.torch import Rearrange
+from torch.nn import functional as F
 
-from osu_fusion.modules.attention import JointAttention
+from osu_fusion.modules.attention import Attention, JointAttention
 from osu_fusion.modules.positional_embeddings import SinusoidalPositionEmbedding
 from osu_fusion.modules.transformer import FeedForward
 from osu_fusion.modules.utils import prob_mask_like
@@ -12,7 +12,57 @@ from osu_fusion.modules.utils import prob_mask_like
 
 @torch.jit.script
 def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+    return x * (1 + scale) + shift
+
+
+class PatchEmbedding(nn.Sequential):
+    def __init__(self: "PatchEmbedding", dim: int, dim_h: int, patch_size: int) -> None:
+        super().__init__(
+            Rearrange("b d (n p) -> b n (p d)", p=patch_size),
+            nn.Linear(dim * patch_size, dim_h),
+            nn.LayerNorm(dim_h),
+        )
+
+
+class DiTBlock(nn.Module):
+    def __init__(
+        self: "DiTBlock",
+        dim_h: int,
+        dim_h_mult: int = 4,
+        attn_dim_head: int = 64,
+        attn_heads: int = 16,
+        attn_kv_heads: int = 8,
+        attn_context_len: int = 4096,
+    ) -> None:
+        super().__init__()
+        self.modulation = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(dim_h, dim_h * 6, bias=True),
+        )
+        self.norm1 = nn.LayerNorm(dim_h, elementwise_affine=False)
+        self.attn = Attention(
+            dim_h,
+            dim_head=attn_dim_head,
+            heads=attn_heads,
+            kv_heads=attn_kv_heads,
+            context_len=attn_context_len,
+        )
+        self.norm2 = nn.LayerNorm(dim_h, elementwise_affine=False)
+        self.ff = FeedForward(dim_h, dim_h_mult)
+
+        self.gradient_checkpointing = False
+
+    def forward_body(self: "DiTBlock", x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+        shift_msa, scale_msa, gate_msa, shift_ff, scale_ff, gate_ff = self.modulation(c).chunk(6, dim=-1)
+        x = x + gate_msa * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
+        x = x + gate_ff * self.ff(modulate(self.norm2(x), shift_ff, scale_ff))
+        return x
+
+    def forward(self: "DiTBlock", x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+        if self.training and self.gradient_checkpointing:
+            return torch.utils.checkpoint.checkpoint(self.forward_body, x, c, use_reentrant=False)
+        else:
+            return self.forward_body(x, c)
 
 
 class MMDiTBlock(nn.Module):
@@ -70,7 +120,7 @@ class MMDiTBlock(nn.Module):
             shift_mlp_x,
             scale_mlp_x,
             gate_mlp_x,
-        ) = self.modulation_x(c).chunk(6, dim=1)
+        ) = self.modulation_x(c).chunk(6, dim=-1)
         (
             shift_attn_a,
             scale_attn_a,
@@ -78,19 +128,19 @@ class MMDiTBlock(nn.Module):
             shift_mlp_a,
             scale_mlp_a,
             gate_mlp_a,
-        ) = self.modulation_a(c).chunk(6, dim=1)
+        ) = self.modulation_a(c).chunk(6, dim=-1)
 
         # Attention
         h_x = modulate(self.norm1_x(x), shift_attn_x, scale_attn_x)
         h_a = modulate(self.norm1_a(a), shift_attn_a, scale_attn_a)
         attn_out_x, attn_out_a = self.attn(h_x, h_a)
 
-        x = x + gate_attn_x.unsqueeze(1) * attn_out_x
-        a = a + gate_attn_a.unsqueeze(1) * attn_out_a
+        x = x + gate_attn_x * attn_out_x
+        a = a + gate_attn_a * attn_out_a
 
         # MLP
-        x = x + gate_mlp_x.unsqueeze(1) * self.mlp_x(modulate(self.norm2_x(x), shift_mlp_x, scale_mlp_x))
-        a = a + gate_mlp_a.unsqueeze(1) * self.mlp_a(modulate(self.norm2_a(a), shift_mlp_a, scale_mlp_a))
+        x = x + gate_mlp_x * self.mlp_x(modulate(self.norm2_x(x), shift_mlp_x, scale_mlp_x))
+        a = a + gate_mlp_a * self.mlp_a(modulate(self.norm2_a(a), shift_mlp_a, scale_mlp_a))
 
         return x, a
 
@@ -107,19 +157,22 @@ class MMDiTBlock(nn.Module):
 
 
 class FinalLayer(nn.Module):
-    def __init__(self: "FinalLayer", dim_h: int, dim_out: int) -> None:
+    def __init__(self: "FinalLayer", dim_h: int, dim_out: int, patch_size: int) -> None:
         super().__init__()
-        self.norm = nn.LayerNorm(dim_h, elementwise_affine=False, eps=1e-6)
+        self.norm = nn.LayerNorm(dim_h, elementwise_affine=False)
         self.modulation = nn.Sequential(
             nn.SiLU(),
             nn.Linear(dim_h, dim_h * 2, bias=True),
         )
-        self.linear = nn.Linear(dim_h, dim_out)
+        self.out = nn.Sequential(
+            nn.Linear(dim_h, dim_out * patch_size),
+            Rearrange("b n (p d) -> b d (n p)", p=patch_size),
+        )
 
     def forward(self: "FinalLayer", x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
-        shift, scale = self.modulation(c).chunk(2, dim=1)
+        shift, scale = self.modulation(c).chunk(2, dim=-1)
         x = modulate(self.norm(x), shift, scale)
-        return self.linear(x)
+        return self.out(x)
 
 
 class MMDiT(nn.Module):
@@ -130,7 +183,10 @@ class MMDiT(nn.Module):
         dim_in_c: int,
         dim_h: int,
         dim_h_mult: int = 4,
+        dim_t: int = 256,
+        patch_size: int = 8,
         depth: int = 12,
+        audio_cond_depth: int = 4,
         attn_dim_head: int = 64,
         attn_heads: int = 16,
         attn_kv_heads: int = 8,
@@ -142,20 +198,37 @@ class MMDiT(nn.Module):
         self.dim_in_x = dim_in_x
         self.attn_context_len = attn_context_len * 2  # We have two modalities
 
-        self.init_x = nn.Conv1d(dim_in_x, dim_h, 7, padding=3)
-        self.init_a = nn.Conv1d(dim_in_a, dim_h, 7, padding=3)
+        self.patch_size = patch_size
+        self.x_patch = PatchEmbedding(dim_in_x, dim_h, patch_size)
+        self.a_patch = PatchEmbedding(dim_in_a, dim_h, patch_size)
 
-        self.feature_extractor_a = nn.Linear(dim_in_a * 2, dim_h)
-        self.mlp_a = FeedForward(dim_h, dim_mult=dim_h_mult)
-        self.mlp_time = nn.Sequential(
-            SinusoidalPositionEmbedding(dim_h),
-            FeedForward(dim_h, dim_mult=dim_h_mult),
+        self.time_mlp = nn.Sequential(
+            SinusoidalPositionEmbedding(dim_t),
+            nn.Linear(dim_t, dim_h),
+            nn.SiLU(),
+            nn.Linear(dim_h, dim_h),
         )
-        self.mlp_cond = nn.Sequential(
+        self.cond_mlp = nn.Sequential(
             nn.Linear(dim_in_c, dim_h),
-            FeedForward(dim_h, dim_mult=dim_h_mult),
+            nn.SiLU(),
+            nn.Linear(dim_h, dim_h),
         )
         self.null_cond = nn.Parameter(torch.randn(dim_h))
+
+        self.audio_cond_encoder = nn.ModuleList(
+            [
+                DiTBlock(
+                    dim_h,
+                    dim_h_mult=dim_h_mult,
+                    attn_dim_head=attn_dim_head,
+                    attn_heads=attn_heads,
+                    attn_kv_heads=attn_kv_heads,
+                    attn_context_len=attn_context_len,
+                )
+                for _ in range(audio_cond_depth)
+            ],
+        )
+
         self.blocks = nn.ModuleList(
             [
                 MMDiTBlock(
@@ -164,14 +237,12 @@ class MMDiT(nn.Module):
                     attn_dim_head=attn_dim_head,
                     attn_heads=attn_heads,
                     attn_kv_heads=attn_kv_heads,
-                    attn_context_len=self.attn_context_len,
+                    attn_context_len=attn_context_len,
                 )
                 for _ in range(depth)
             ],
         )
-
-        self.final_layer = FinalLayer(dim_h, dim_h)
-        self.out = nn.Conv1d(dim_h, dim_in_x, 1)
+        self.final_layer = FinalLayer(dim_h, dim_in_x, patch_size)
 
         self.initialize_weights()
 
@@ -186,12 +257,10 @@ class MMDiT(nn.Module):
         self.apply(_basic_init)
 
         # Initialize embedder
-        nn.init.normal_(self.mlp_a[0].weight, std=0.02)
-        nn.init.normal_(self.mlp_a[2].weight, std=0.02)
-        nn.init.normal_(self.mlp_time[1][0].weight, std=0.02)
-        nn.init.normal_(self.mlp_time[1][2].weight, std=0.02)
-        nn.init.normal_(self.mlp_cond[1][0].weight, std=0.02)
-        nn.init.normal_(self.mlp_cond[1][2].weight, std=0.02)
+        nn.init.normal_(self.time_mlp[1].weight, std=0.02)
+        nn.init.normal_(self.time_mlp[3].weight, std=0.02)
+        nn.init.normal_(self.cond_mlp[0].weight, std=0.02)
+        nn.init.normal_(self.cond_mlp[2].weight, std=0.02)
 
         # Zero-out adaLN layers
         for block in self.blocks:
@@ -203,10 +272,6 @@ class MMDiT(nn.Module):
         # Zero-out output layer
         nn.init.zeros_(self.final_layer.modulation[1].weight)
         nn.init.zeros_(self.final_layer.modulation[1].bias)
-        nn.init.zeros_(self.final_layer.linear.weight)
-        nn.init.zeros_(self.final_layer.linear.bias)
-        nn.init.zeros_(self.out.weight)
-        nn.init.zeros_(self.out.bias)
 
     def set_gradient_checkpointing(self: "MMDiT", value: bool) -> None:
         for name, module in self.named_modules():
@@ -214,13 +279,20 @@ class MMDiT(nn.Module):
                 module.gradient_checkpointing = value
                 print(f"Set gradient checkpointing to {value} for {name}")
 
-    def forward_with_cond_scale(self: "MMDiT", *args: List, cond_scale: float = 1.0, **kwargs: Dict) -> torch.Tensor:
-        logits = self(*args, **kwargs)
+    def forward_with_cond_scale(
+        self: "MMDiT",
+        x: torch.Tensor,
+        a: torch.Tensor,
+        t: torch.Tensor,
+        c: torch.Tensor,
+        cond_scale: float = 1.0,
+    ) -> torch.Tensor:
+        logits = self.forward(x, a, t, c, cond_drop_prob=0.0)
 
         if cond_scale == 1.0:
             return logits
 
-        null_logits = self(*args, **kwargs, cond_drop_prob=1.0)
+        null_logits = self.forward(x, a, t, c, cond_drop_prob=1.0)
         return null_logits + (logits - null_logits) * cond_scale
 
     def forward(
@@ -231,32 +303,29 @@ class MMDiT(nn.Module):
         c: torch.Tensor,
         cond_drop_prob: float = 0.0,
     ) -> torch.Tensor:
-        # Statistic audio features pooling
-        mean_features = a.mean(dim=-1)
-        std_features = a.std(dim=-1)
-        h_a = torch.cat([mean_features, std_features], dim=1)
-        h_a = self.feature_extractor_a(h_a)
+        n = x.shape[-1]
+        pad_len = (self.patch_size - (n % self.patch_size)) % self.patch_size
+        x = F.pad(x, (0, pad_len))
+        a = F.pad(a, (0, pad_len))
 
-        x = self.init_x(x)
-        a = self.init_a(a)
-        x, a = (rearrange(t, "b d n -> b n d") for t in (x, a))
+        x_patch = self.x_patch(x)
+        a_patch = self.a_patch(a)
 
-        # Add positional embedding and condition
-        cond_mask = prob_mask_like((x.shape[0],), 1.0 - cond_drop_prob, device=x.device)
+        cond_mask = prob_mask_like((c.shape[0],), 1.0 - cond_drop_prob, device=c.device)
         cond_mask = rearrange(cond_mask, "b -> b 1")
-        null_conds = repeat(self.null_cond, "d -> b d", b=x.shape[0])
-        c = self.mlp_cond(c)
-        c = torch.where(cond_mask, c, null_conds)
+        null_conds = repeat(self.null_cond, "d -> b d", b=c.shape[0])
+        c_global = self.cond_mlp(c)
+        c_global = torch.where(cond_mask, c_global, null_conds)
+        c_global = c_global + self.time_mlp(t)
 
-        c = c + self.mlp_time(t) + self.mlp_a(h_a)
+        c_audio = a_patch
+        for block in self.audio_cond_encoder:
+            c_audio = block(c_audio, c_global.unsqueeze(1))
 
-        # Run the blocks
+        c_final = c_audio + c_global.unsqueeze(1)
+
         for block in self.blocks:
-            x, a = block(x, a, c)
+            x_patch, a_patch = block(x_patch, a_patch, c_final)
 
-        # Run the final layer
-        x = self.final_layer(x, c)
-
-        # Unpatchify the output
-        x = rearrange(x, "b n d -> b d n")
-        return self.out(x)
+        x = self.final_layer(x_patch, c_final)
+        return x[:, :, :n]

@@ -221,6 +221,56 @@ class Attention(nn.Module):
             return self.forward_body(x)
 
 
+class CrossAttention(nn.Module):
+    def __init__(
+        self: "CrossAttention",
+        dim_in: int,
+        dim_head: int,
+        heads: int,
+        kv_heads: int,
+        context_len: int = 4096,
+    ) -> None:
+        super().__init__()
+        self.scale = dim_head**-0.5
+        self.heads = heads
+        self.kv_heads = kv_heads
+
+        self.norm_x = RMSNorm(dim_in)
+        self.norm_a = RMSNorm(dim_in)
+
+        self.to_q = nn.Linear(dim_in, dim_head * heads, bias=False)
+        self.to_kv = nn.Linear(dim_in, dim_head * kv_heads * 2, bias=False)
+        self.rotary_emb = RotaryPositionEmbedding(dim_head, scale_base=context_len)
+
+        self.attn = Attend()
+        self.to_out = nn.Linear(dim_head * heads, dim_in)
+
+    def forward_body(self: "CrossAttention", x: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
+        # Pre-norm
+        x = self.norm_x(x)
+        a = self.norm_a(a)
+
+        q = rearrange(self.to_q(x), "b n (h d) -> b h n d", h=self.heads)
+
+        k, v = self.to_kv(a).chunk(2, dim=-1)
+        k, v = (rearrange(t, "b n (h d) -> b h n d", h=self.kv_heads) for t in (k, v))
+
+        q, k = self.rotary_emb(q, k)
+        q = q * self.scale
+
+        # GQA
+        k, v = (repeat(t, "b h n d -> b (r h) n d", r=self.heads // self.kv_heads) for t in (k, v))
+
+        out = self.attn(q, k, v)
+        out = rearrange(out, "b h n d -> b n (h d)")
+        return self.to_out(out)
+
+    def forward(self: "CrossAttention", x: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
+        context_manager = dummy_context_manager() if DEBUG else record_function("CrossAttention")
+        with context_manager:
+            return self.forward_body(x, a)
+
+
 class JointAttention(nn.Module):
     def __init__(
         self: "JointAttention",

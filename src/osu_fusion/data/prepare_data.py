@@ -3,6 +3,7 @@ from multiprocessing import Lock
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
+import h5py
 import librosa
 import numpy as np
 import soundfile as sf
@@ -89,18 +90,17 @@ def get_audio_spec(beatmap: Beatmap, global_spec_dir: Path) -> Optional[Tuple[np
 
     # Split the hash to create hierarchical directories
     first_two, next_two, remaining_hash = split_hash(audio_hash)
-    spec_filename = f"{remaining_hash}.spec.npz"
+    spec_filename = f"{remaining_hash}.spec.h5"
     spec_path = global_spec_dir / first_two / next_two / spec_filename
 
     lock = get_lock(str(spec_path))
     with lock:
         if spec_path.exists():
             try:
-                with spec_path.open("rb") as f:
-                    data = np.load(f)
-                    spec = data["a"]
+                with h5py.File(spec_path, "r") as f:
+                    spec = f["a"][:]
                 return spec, audio_hash
-            except (ValueError, EOFError):
+            except (ValueError, EOFError, OSError):
                 # Spec file is corrupted; attempt to regenerate
                 spec_path.unlink(missing_ok=True)
                 print(f"[Warning] Corrupted spec file {spec_path} removed.")
@@ -109,8 +109,8 @@ def get_audio_spec(beatmap: Beatmap, global_spec_dir: Path) -> Optional[Tuple[np
             spec = load_audio(audio_file)
             # Ensure the hierarchical spec directory exists
             spec_path.parent.mkdir(parents=True, exist_ok=True)
-            with spec_path.open("wb") as f:
-                np.savez_compressed(f, a=spec)
+            with h5py.File(spec_path, "w") as f:
+                f.create_dataset("a", data=spec)
             return spec, audio_hash
         except Exception as e:
             print(f"[Error] Failed to process audio {audio_file}: {e}")
@@ -119,14 +119,13 @@ def get_audio_spec(beatmap: Beatmap, global_spec_dir: Path) -> Optional[Tuple[np
 
 def validate_map_data(map_file: Path, data_dir: Path) -> bool:
     try:
-        with map_file.open("rb") as f:
-            data = np.load(f)
-            if "x" not in data or "c" not in data:
+        with h5py.File(map_file, "r") as f:
+            if "x" not in f or "c" not in f:
                 print(f"[Error] Missing data in map file {map_file}")
                 return False
 
-            x = data["x"]
-            c = data["c"]
+            x = f["x"][:]
+            c = f["c"][:]
             if x.shape[0] != BEATMAP_DIM or c.shape[0] != CONTEXT_DIM:
                 print(f"[Error] Invalid data shape in map file {map_file}")
                 return False
@@ -135,11 +134,11 @@ def validate_map_data(map_file: Path, data_dir: Path) -> bool:
                 print(f"[Error] Empty data in map file {map_file}")
                 return False
 
-            if "spec_path" not in data:
+            if "spec_path" not in f:
                 print(f"[Error] Missing `spec_path` key in map file {map_file}")
                 return False
 
-            spec_relative = data["spec_path"].item()
+            spec_relative = f["spec_path"][()].decode("utf-8")
             spec_file = data_dir / spec_relative
             if not spec_file.exists():
                 print(f"[Error] Missing spec file {spec_file}")
@@ -167,7 +166,7 @@ def prepare_map(data_dir: Path, map_file: Path) -> None:
     # Define the map data path (unique per map)
     map_data_dir = data_dir / "maps" / map_file.parent.name
     map_data_dir.mkdir(parents=True, exist_ok=True)
-    map_path = map_data_dir / f"{map_file.stem}.map.npz"
+    map_path = map_data_dir / f"{map_file.stem}.map.h5"
 
     # If the map data already exists, check if the map file is valid, then skip
     if map_path.exists() and validate_map_data(map_path, data_dir):
@@ -191,6 +190,11 @@ def prepare_map(data_dir: Path, map_file: Path) -> None:
         )
     except Exception as e:
         print(f"[Error] Rosu failed to process beatmap {map_file}: {e}")
+        return
+
+    # HARDCODE: Max SR is 9 to test the model
+    if sr > 9:
+        print(f"[Warning] Skipping map {map_file.name} with SR {sr} > 9")
         return
 
     try:
@@ -220,8 +224,10 @@ def prepare_map(data_dir: Path, map_file: Path) -> None:
     try:
         # Split the hash to reconstruct the relative path
         first_two, next_two, remaining_hash = split_hash(audio_hash)
-        spec_relative = f"specs/{first_two}/{next_two}/{remaining_hash}.spec.npz"  # Store relative path to global specs
-        with map_path.open("wb") as f:
-            np.savez_compressed(f, x=x, c=c, spec_path=spec_relative)
+        spec_relative = f"specs/{first_two}/{next_two}/{remaining_hash}.spec.h5"  # Store relative path to global specs
+        with h5py.File(map_path, "w") as f:
+            f.create_dataset("x", data=x)
+            f.create_dataset("c", data=c)
+            f.create_dataset("spec_path", data=spec_relative.encode("utf-8"))
     except Exception as e:
         print(f"[Error] Failed to save map data {map_path}: {e}")

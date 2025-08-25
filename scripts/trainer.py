@@ -226,7 +226,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     )
 
     print("Loading dataset...")
-    all_maps = list(args.dataset_dir.rglob("*.map.npz"))
+    all_maps = list(args.dataset_dir.rglob("*.map.h5"))
     print(f"Number of beatmaps: {len(all_maps)}")
     if args.max_length > 0:
         all_maps = filter_dataset(all_maps, args.max_length)
