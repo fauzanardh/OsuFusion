@@ -388,7 +388,7 @@ def main() -> None:
         help="Number of gradient accumulation steps",
     )
     args.add_argument("--clip-grad-norm", type=float, default=0.0, help="Gradient clipping norm")
-    args.add_argument("--model-dim", type=int, default=256, help="Dimension of the model")
+    args.add_argument("--model-dim", type=int, default=384, help="Dimension of the model")
     args.add_argument("--lr", type=float, default=1e-5, help="Learning rate for the optimizer")
     args.add_argument("--batch-size", type=int, default=8, help="Batch size for training")
     args.add_argument("--num-workers", type=int, default=2, help="Number of data loader workers")

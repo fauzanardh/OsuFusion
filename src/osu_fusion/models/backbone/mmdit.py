@@ -188,8 +188,8 @@ class MMDiT(nn.Module):
         depth: int = 12,
         audio_cond_depth: int = 4,
         attn_dim_head: int = 64,
-        attn_heads: int = 16,
-        attn_kv_heads: int = 8,
+        attn_heads: int = 6,
+        attn_kv_heads: int = 3,
         attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
@@ -322,10 +322,8 @@ class MMDiT(nn.Module):
         for block in self.audio_cond_encoder:
             c_audio = block(c_audio, c_global.unsqueeze(1))
 
-        c_final = c_audio + c_global.unsqueeze(1)
-
         for block in self.blocks:
-            x_patch, a_patch = block(x_patch, a_patch, c_final)
+            x_patch, a_patch = block(x_patch, a_patch, c_global.unsqueeze(1))
 
-        x = self.final_layer(x_patch, c_final)
+        x = self.final_layer(x_patch, c_audio + c_global.unsqueeze(1))
         return x[:, :, :n]
