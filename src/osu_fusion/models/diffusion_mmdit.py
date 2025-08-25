@@ -65,6 +65,11 @@ class OsuFusionMMDiT(nn.Module):
     def trainable_params(self: "OsuFusionMMDiT") -> Tuple[nn.Parameter]:
         return (param for param in self.parameters() if param.requires_grad)
 
+    # For compatibility with for training scripts
+    @property
+    def dit(self: "OsuFusionMMDiT") -> MMDiT:
+        return self.mmdit
+
     def set_full_bf16(self: "OsuFusionMMDiT") -> None:
         self.mmdit = self.mmdit.bfloat16()
 

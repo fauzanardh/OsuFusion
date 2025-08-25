@@ -59,7 +59,7 @@ class ContextGenerator:
             segment_sr = rosu_difficulty.calculate(segment_beatmap).stars
         except Exception as e:
             print(f"Error calculating SR: {e}")
-            segment_sr = original_sr
+            raise e
 
         c = normalize_context(np.array([cs, ar, od, hp, segment_sr], dtype=np.float32))
         return torch.from_numpy(c)

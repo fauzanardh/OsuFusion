@@ -182,7 +182,8 @@ def decode_beatmap(  # noqa: C901
         slider_ends,
         strict=False,
     ):
-        x, y = cursor_signals[:, hit_loc].round().astype(int)
+        with np.errstate(invalid="raise"):
+            x, y = cursor_signals[:, hit_loc].round().astype(int)
         t = frame_times[hit_loc]
         u = frame_times[sustain_end]
         combo_bit = 2**2 if new_combo else 0
@@ -223,13 +224,14 @@ def decode_beatmap(  # noqa: C901
                 anchor_frames.append((frame, "P"))
 
         control_points = [(x, y)]
-        for frame_idx, anchor_type in anchor_frames:
-            ax, ay = cursor_signals[:, frame_idx].round().astype(int)
-            control_points.append((ax, ay))
-            if anchor_type == "R":  # Red anchor, duplicate the point
+        with np.errstate(invalid="raise"):
+            for frame_idx, anchor_type in anchor_frames:
+                ax, ay = cursor_signals[:, frame_idx].round().astype(int)
                 control_points.append((ax, ay))
-        end_x, end_y = cursor_signals[:, slider_end].round().astype(int)
-        control_points.append((end_x, end_y))
+                if anchor_type == "R":  # Red anchor, duplicate the point
+                    control_points.append((ax, ay))
+            end_x, end_y = cursor_signals[:, slider_end].round().astype(int)
+            control_points.append((end_x, end_y))
 
         if any(anchor[1] in ("B", "R") for anchor in anchor_frames):
             slider_char = "B"
