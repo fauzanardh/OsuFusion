@@ -68,8 +68,8 @@ def create_input(
     x = torch.randn((batch_size, BEATMAP_DIM, n), device=device, dtype=dtype)
 
     a_lat, a_lat_intermediates = global_model.unet.encode_audio(a_tensor)
-    c_prep = global_model.unet.prepare_condition(a_tensor, c_tensor)
-    c_prep_uncond = global_model.unet.prepare_condition(a_tensor, c_tensor, cond_drop_prob=1.0)
+    c_prep = global_model.unet.prepare_condition(c_tensor)
+    c_prep_uncond = global_model.unet.prepare_condition(c_tensor, cond_drop_prob=1.0)
 
     return n, a_lat, a_lat_intermediates, c_prep, c_prep_uncond, x
 

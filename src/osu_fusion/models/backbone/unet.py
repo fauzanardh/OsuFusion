@@ -221,8 +221,6 @@ class AudioEncoder(nn.Module):
         dim_h: int,
         dim_h_mult: Tuple[int] = (1, 2, 3, 4),
         attn_dim_head: int = 64,
-        attn_heads: int = 8,
-        attn_kv_heads: int = 8,
         attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
@@ -240,6 +238,8 @@ class AudioEncoder(nn.Module):
         for i in range(n_layers):
             layer_dim_in, layer_dim_out = in_out[i]
             attn_context_len_layer = attn_context_len // (2**i)
+            attn_heads = layer_dim_out // attn_dim_head
+            attn_kv_heads = max(1, attn_heads // 2)
             down_layers.append(
                 nn.ModuleList(
                     [
@@ -267,6 +267,8 @@ class AudioEncoder(nn.Module):
 
         # Middle
         self.middle_resnet1 = ResidualBlock(dims_h[-1], dims_h[-1])
+        attn_heads = dims_h[-1] // attn_dim_head
+        attn_kv_heads = max(1, attn_heads // 2)
         self.middle_transformer = TransformerBlock(
             dims_h[-1],
             attn_dim_head=attn_dim_head,
@@ -300,13 +302,11 @@ class UNet(nn.Module):
         dim_in_a: int,
         dim_in_c: int,
         dim_h: int,
-        dim_h_mult: Tuple[int] = (1, 2, 4, 8),
+        dim_h_mult: Tuple[int] = (1, 2, 3, 4),
         dim_t: int = 256,
-        num_layer_blocks: Tuple[int] = (3, 3, 3, 3),
-        num_middle_transformers: int = 3,
+        num_layer_blocks: Tuple[int] = (2, 2, 2, 2),
+        num_middle_transformers: int = 2,
         attn_dim_head: int = 64,
-        attn_heads: int = 8,
-        attn_kv_heads: int = 8,
         attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
@@ -319,20 +319,12 @@ class UNet(nn.Module):
             dim_h=dim_h,
             dim_h_mult=dim_h_mult,
             attn_dim_head=attn_dim_head,
-            attn_heads=attn_heads,
-            attn_kv_heads=attn_kv_heads,
             attn_context_len=attn_context_len,
         )
 
         self.final_resnet = ResidualBlock(dim_h * 2, dim_h, self.dim_emb, self.dim_emb)
         self.final_conv = zero_init(nn.Conv1d(dim_h, dim_in_x, 1))
 
-        self.feature_extractor_a = nn.Linear(dim_in_a * 2, self.dim_emb)
-        self.audio_mlp = nn.Sequential(
-            nn.Linear(self.dim_emb, self.dim_emb),
-            nn.SiLU(),
-            nn.Linear(self.dim_emb, self.dim_emb),
-        )
         self.time_mlp = nn.Sequential(
             SinusoidalPositionEmbedding(dim_t),
             nn.Linear(dim_t, self.dim_emb),
@@ -356,6 +348,8 @@ class UNet(nn.Module):
         for i in range(n_layers):
             layer_dim_in, layer_dim_out = in_out[i]
             num_blocks = num_layer_blocks[i]
+            attn_heads = layer_dim_out // attn_dim_head
+            attn_kv_heads = max(1, attn_heads // 2)
             attn_context_len_layer = attn_context_len // (2**i)
             down_layers.append(
                 UNetDownBlock(
@@ -382,6 +376,8 @@ class UNet(nn.Module):
             self.dim_emb,
         )
         self.middle_gated_fusion = GatedFusion(dims_h[-1])
+        attn_heads = dims_h[-1] // attn_dim_head
+        attn_kv_heads = max(1, attn_heads // 2)
         self.middle_transformer = nn.ModuleList(
             [
                 TransformerBlock(
@@ -410,6 +406,8 @@ class UNet(nn.Module):
         for i in range(n_layers):
             layer_dim_out, layer_dim_in = in_out[i]
             num_blocks = num_layer_blocks[i]
+            attn_heads = layer_dim_in // attn_dim_head
+            attn_kv_heads = max(1, attn_heads // 2)
             attn_context_len_layer = attn_context_len // (2 ** (n_layers - i - 1))
             up_layers.append(
                 UNetUpBlock(
@@ -441,18 +439,13 @@ class UNet(nn.Module):
         a = F.pad(a, (0, pad_len), value=0.0)
         return self.audio_encoder(a)
 
-    def prepare_condition(self: "UNet", a: torch.Tensor, c: torch.Tensor, cond_drop_prob: float = 0.0) -> torch.Tensor:
-        mean_a = a.mean(dim=-1)
-        std_a = a.std(dim=-1)
-        h_a = torch.cat([mean_a, std_a], dim=1)
-        h_a = self.feature_extractor_a(h_a)
-
+    def prepare_condition(self: "UNet", c: torch.Tensor, cond_drop_prob: float = 0.0) -> torch.Tensor:
         cond_mask = prob_mask_like((c.shape[0],), 1.0 - cond_drop_prob, device=c.device)
         cond_mask = rearrange(cond_mask, "b -> b 1")
         null_conds = repeat(self.null_cond, "d -> b d", b=c.shape[0])
         c = self.cond_mlp(c)
         c = torch.where(cond_mask, c, null_conds)
-        return c + self.audio_mlp(h_a)
+        return c
 
     def forward_with_cond_scale(
         self: "UNet",

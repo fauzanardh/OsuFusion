@@ -110,7 +110,7 @@ def visualize_and_log_sample(
     base_model.eval()
     with torch.inference_mode(), accelerator.autocast():
         a_lat, a_lat_intermediates = base_model.unet.encode_audio(a_tensor)
-        c_prep = base_model.unet.prepare_condition(a_tensor, c_tensor, cond_drop_prob=0.0)
+        c_prep = base_model.unet.prepare_condition(c_tensor, cond_drop_prob=0.0)
         generated = base_model.sample(n, a_lat, a_lat_intermediates, c_prep, x=x, cond_scale=1.0)
     base_model.train()
 
@@ -289,7 +289,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                     try:
                         base_model = accelerator.unwrap_model(model)
                         a_lat, a_lat_intermediates = base_model.unet.encode_audio(a)
-                        c_prep = base_model.unet.prepare_condition(a, c, cond_drop_prob=base_model.cond_drop_prob)
+                        c_prep = base_model.unet.prepare_condition(c, cond_drop_prob=base_model.cond_drop_prob)
                         loss = model(x, a_lat, a_lat_intermediates, c_prep, orig_lens)
                     except AssertionError:
                         continue

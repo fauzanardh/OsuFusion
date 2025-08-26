@@ -107,7 +107,7 @@ def visualize_and_log_sample(
     base_model.eval()
     with torch.inference_mode(), accelerator.autocast():
         a_lat, a_lat_intermediates = base_model.unet.encode_audio(a_tensor)
-        c_prep = base_model.unet.prepare_condition(a_tensor, c_tensor, cond_drop_prob=0.0)
+        c_prep = base_model.unet.prepare_condition(c_tensor, cond_drop_prob=0.0)
         generated = base_model.sample(n, a_lat, a_lat_intermediates, c_prep, x=x, cond_scale=1.0)
     base_model.train()
 
@@ -293,7 +293,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                     try:
                         base_model = accelerator.unwrap_model(model)
                         a_lat, a_lat_intermediates = base_model.unet.encode_audio(a)
-                        c_prep = base_model.unet.prepare_condition(a, c, cond_drop_prob=base_model.cond_drop_prob)
+                        c_prep = base_model.unet.prepare_condition(c, cond_drop_prob=base_model.cond_drop_prob)
                         loss = model(x, a_lat, a_lat_intermediates, c_prep, orig_lens)
                     except AssertionError:
                         print(f"AssertionError encountered at step {current_step + 1}, skipping batch.")
@@ -400,8 +400,7 @@ def main() -> None:
         help="Number of gradient accumulation steps",
     )
     args.add_argument("--clip-grad-norm", type=float, default=0.0, help="Gradient clipping norm")
-    args.add_argument("--model-dim", type=int, default=64, help="Dimension of the model")
-    args.add_argument("--model-attn-heads", type=int, default=8, help="Number of attention heads")
+    args.add_argument("--model-dim", type=int, default=128, help="Dimension of the model")
     args.add_argument("--lr", type=float, default=1e-5, help="Learning rate for the optimizer")
     args.add_argument("--batch-size", type=int, default=8, help="Batch size for training")
     args.add_argument("--num-workers", type=int, default=2, help="Number of data loader workers")

@@ -15,13 +15,11 @@ class OsuFusion(nn.Module):
     def __init__(
         self: "OsuFusion",
         dim_h: int,
-        dim_h_mult: Tuple[int] = (1, 2, 4, 4),
+        dim_h_mult: Tuple[int] = (1, 2, 3, 4),
         dim_t: int = 256,
-        num_layer_blocks: Tuple[int] = (3, 3, 3, 3),
-        num_middle_transformers: int = 3,
+        num_layer_blocks: Tuple[int] = (2, 2, 2, 2),
+        num_middle_transformers: int = 2,
         attn_dim_head: int = 64,
-        attn_heads: int = 16,
-        attn_kv_heads: int = 8,
         attn_context_len: int = 4096,
         cond_drop_prob: float = 0.5,
         train_timesteps: int = 1000,
@@ -39,8 +37,6 @@ class OsuFusion(nn.Module):
             num_layer_blocks=num_layer_blocks,
             num_middle_transformers=num_middle_transformers,
             attn_dim_head=attn_dim_head,
-            attn_heads=attn_heads,
-            attn_kv_heads=attn_kv_heads,
             attn_context_len=attn_context_len,
         )
 
