@@ -107,6 +107,7 @@ class OsuFusionMMDiT(nn.Module):
         x: torch.Tensor,
         a: torch.Tensor,
         c: torch.Tensor,
+        orig_lens: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         noise = torch.randn_like(x, device=x.device)
         timesteps = torch.randint(
@@ -123,14 +124,13 @@ class OsuFusionMMDiT(nn.Module):
         # Calculate loss
         v_target = self.train_scheduler.get_velocity(x, noise, timesteps)
         loss = F.mse_loss(pred, v_target, reduction="none")
-        return loss.mean()
 
-        # # Create mask for losses to ignore padding
-        # if orig_len is not None:
-        #     b, _, n = x.shape
-        #     mask = torch.ones((b, n), device=x.device)
-        #     for i, orig in enumerate(orig_len):
-        #         mask[i, orig:] = 0.0
-        #     mask = repeat(mask, "b n -> b d n", d=BEATMAP_LATENT_DIM)
-        #     return (loss * mask).sum() / mask.sum()
-        # return loss.mean()
+        # Create mask for losses to ignore padding
+        if orig_lens is not None:
+            b, _, n = x.shape
+            mask = torch.ones((b, n), device=x.device)
+            for i, orig in enumerate(orig_lens):
+                mask[i, orig:] = 0.0
+            mask = repeat(mask, "b n -> b d n", d=BEATMAP_DIM)
+            return (loss * mask).sum() / mask.sum()
+        return loss.mean()

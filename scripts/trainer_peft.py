@@ -72,12 +72,13 @@ def clear_checkpoints(project_dir: Path) -> None:
 
 def custom_collate_fn(
     batch: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    orig_lens = torch.tensor([x.shape[1] for x, _, _ in batch], dtype=torch.int32)
     max_length = max(x.shape[1] for x, _, _ in batch)
     out_x = torch.stack([F.pad(x, (0, max_length - x.shape[1]), value=-1.0) for x, _, _ in batch])
     out_a = torch.stack([F.pad(a, (0, max_length - a.shape[1]), value=0.0) for _, a, _ in batch])
     out_c = torch.stack([c for _, _, c in batch])
-    return out_x, out_a, out_c
+    return out_x, out_a, out_c, orig_lens
 
 
 def visualize_and_log_sample(
@@ -245,10 +246,10 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         dataset,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        prefetch_factor=4,
-        persistent_workers=True,
+        prefetch_factor=4 if args.num_workers > 0 else None,
+        persistent_workers=args.num_workers > 0,
         pin_memory=True,
-        collate_fn=custom_collate_fn if args.full_sequence else None,
+        collate_fn=custom_collate_fn,
     )
 
     # Prepare with accelerator
@@ -283,13 +284,13 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
 
             # Gradient Accumulation
             for _ in range(args.gradient_accumulation_steps):
-                x, a, c = next(dataloader_cycle)
+                x, a, c, orig_lens = next(dataloader_cycle)
                 with accelerator.autocast(), accelerator.accumulate(model):
                     try:
                         base_model = accelerator.unwrap_model(model)
                         a_lat, a_lat_intermediates = base_model.unet.encode_audio(a)
                         c_prep = base_model.unet.prepare_condition(a, c, cond_drop_prob=base_model.cond_drop_prob)
-                        loss = model(x, a_lat, a_lat_intermediates, c_prep)
+                        loss = model(x, a_lat, a_lat_intermediates, c_prep, orig_lens)
                     except AssertionError:
                         continue
 
