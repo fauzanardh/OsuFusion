@@ -51,11 +51,13 @@ class OsuFusionDiT(nn.Module):
             prediction_type="v_prediction",
             clip_sample=False,
             rescale_betas_zero_snr=True,
+            thresholding=True,
         )
         self.sampling_scheduler = DPMSolverMultistepScheduler(
             num_train_timesteps=train_timesteps,
             prediction_type="v_prediction",
             algorithm_type="sde-dpmsolver++",
+            thresholding=True,
         )
         self.train_timesteps = train_timesteps
         self.sampling_timesteps = sampling_timesteps

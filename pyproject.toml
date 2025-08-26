@@ -34,7 +34,7 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
 select = ["E", "W", "F", "B", "N", "ANN", "COM", "C4", "EM", "SIM", "RUF", "C90"]
 ignore = ["N803", "N806", "N812"]
 task-tags = ["TODO", "FIXME"]

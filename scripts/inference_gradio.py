@@ -16,7 +16,7 @@ from sanitize_filename import sanitize
 from osu_fusion.data.const import BEATMAP_DIM
 from osu_fusion.data.decode import Metadata, decode_beatmap
 from osu_fusion.data.prepare_data import HOP_LENGTH, SR, load_audio, normalize_context
-from osu_fusion.models.diffusion import OsuFusion as DiffusionOsuFusion
+from osu_fusion.models.diffusion_unet import OsuFusionUNet as DiffusionOsuFusion
 from osu_fusion.models.rectified_flow import OsuFusion as RectifiedFlowOsuFusion
 
 Model = Union[DiffusionOsuFusion, RectifiedFlowOsuFusion]

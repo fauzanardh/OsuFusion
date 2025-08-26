@@ -11,9 +11,9 @@ from osu_fusion.data.const import AUDIO_DIM, BEATMAP_DIM, CONTEXT_DIM
 from osu_fusion.models.backbone.unet import UNet
 
 
-class OsuFusion(nn.Module):
+class OsuFusionUNet(nn.Module):
     def __init__(
-        self: "OsuFusion",
+        self: "OsuFusionUNet",
         dim_h: int,
         dim_h_mult: Tuple[int] = (1, 2, 3, 4),
         dim_t: int = 256,
@@ -45,26 +45,28 @@ class OsuFusion(nn.Module):
             prediction_type="v_prediction",
             clip_sample=False,
             rescale_betas_zero_snr=True,
+            thresholding=True,
         )
         self.sampling_scheduler = DPMSolverMultistepScheduler(
             num_train_timesteps=train_timesteps,
             prediction_type="v_prediction",
             algorithm_type="sde-dpmsolver++",
+            thresholding=True,
         )
         self.train_timesteps = train_timesteps
         self.sampling_timesteps = sampling_timesteps
         self.cond_drop_prob = cond_drop_prob
 
     @property
-    def trainable_params(self: "OsuFusion") -> Tuple[nn.Parameter]:
+    def trainable_params(self: "OsuFusionUNet") -> Tuple[nn.Parameter]:
         return (param for param in self.parameters() if param.requires_grad)
 
-    def set_full_bf16(self: "OsuFusion") -> None:
+    def set_full_bf16(self: "OsuFusionUNet") -> None:
         self.unet = self.unet.bfloat16()
 
     @torch.inference_mode()
     def sample(
-        self: "OsuFusion",
+        self: "OsuFusionUNet",
         n: int,
         a_lat: torch.Tensor,
         a_lat_intermediates: Optional[torch.Tensor],
@@ -98,7 +100,7 @@ class OsuFusion(nn.Module):
         return x
 
     def forward(
-        self: "OsuFusion",
+        self: "OsuFusionUNet",
         x: torch.Tensor,
         a_lat: torch.Tensor,
         a_lat_intermediates: Optional[torch.Tensor],
