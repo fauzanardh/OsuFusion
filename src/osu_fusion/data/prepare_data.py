@@ -202,16 +202,7 @@ def prepare_map(data_dir: Path, map_file: Path) -> None:
         return
     spec, audio_hash = spec_result
 
-    frame_times = (
-        librosa.frames_to_time(
-            np.arange(spec.shape[-1]),
-            sr=SR,
-            hop_length=HOP_LENGTH,
-        )
-        * 1000
-    )  # Convert to milliseconds
-
-    x = encode_beatmap(beatmap, frame_times)
+    x = encode_beatmap(beatmap)
     c = normalize_context(map_difficulty)
 
     # Save the processed map data

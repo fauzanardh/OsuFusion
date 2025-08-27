@@ -5,13 +5,14 @@ from typing import Optional, Tuple
 import numpy as np
 import numpy.typing as npt
 from scipy import signal
-from slider.beatmap import TimingPoint
+from slider.beatmap import Circle, Slider, Spinner, TimingPoint
+from slider.curve import Curve, MultiBezier
+from slider.position import Position
 
-from osu_fusion.data.enum import BeatmapEncoding
-from osu_fusion.data.hit import decode_extents, decode_flips
+from osu_fusion.data.event import EventType
+from osu_fusion.data.slider_path import SliderPath, position_to_progress
 
 BEAT_DIVISOR = 8
-SLIDER_MULT = 1.0
 MIN_BPM = 1
 MAX_BPM = 300
 
@@ -26,6 +27,8 @@ class Metadata:
     ar: float
     od: float
     hp: float
+    slider_multiplier: float
+    slider_tick_rate: float
 
 
 map_template = """osu file format v14
@@ -49,8 +52,8 @@ HPDrainRate: {hp}
 CircleSize: {cs}
 OverallDifficulty: {od}
 ApproachRate: {ar}
-SliderMultiplier: 1
-SliderTickRate: 1
+SliderMultiplier: {slider_multiplier}
+SliderTickRate: {slider_tick_rate}
 
 [TimingPoints]
 {timing_points}
@@ -140,159 +143,143 @@ def snap_to_beat(t: float, u: float, beat_offset: float, beat_length: float) -> 
 def decode_beatmap(  # noqa: C901
     metadata: Metadata,
     encoded_beatmap: npt.NDArray,
-    frame_times: npt.NDArray,
     bpm: Optional[float],
     allow_beat_snap: bool = True,
     verbose: bool = True,
 ) -> str:
-    hit_signals = encoded_beatmap[
-        [
-            BeatmapEncoding.HIT,
-            BeatmapEncoding.SUSTAIN,
-            BeatmapEncoding.SLIDER,
-            BeatmapEncoding.WHITE_BEZIER_ANCHORS,
-            BeatmapEncoding.RED_BEZIER_ANCHORS,
-            BeatmapEncoding.LINEAR_ANCHORS,
-            BeatmapEncoding.PERFECT_ANCHORS,
-            BeatmapEncoding.COMBO,
-        ]
-    ]
-    hit_signals = np.where(hit_signals > 0.0, 1.0, 0.0)  # Discretize signals
-    cursor_signals = encoded_beatmap[[BeatmapEncoding.CURSOR_X, BeatmapEncoding.CURSOR_Y]]
-    cursor_signals = ((cursor_signals + 1) / 2) * np.array([[512], [384]])
+    seq = np.swapaxes(encoded_beatmap, 0, 1)
+    seq_len = seq.shape[0]
+    hit_objects = []
+    timing_points = []
+    curr_object = None
+    curr_slider_path = []
+    curr_slider_type = None
+    span_duration = 0
 
-    hit_locs = decode_flips(hit_signals[BeatmapEncoding.HIT])
-    loc2idx = np.full_like(frame_times, -1, dtype=int)
-    for i, onset_idx in enumerate(hit_locs):
-        loc2idx[onset_idx] = i
-
-    new_combos = [False] * len(hit_locs)
-    for combo_locs in decode_flips(hit_signals[BeatmapEncoding.COMBO]):
-        new_combos[loc2idx[combo_locs]] = True
-
-    sustain_ends = [-1] * len(hit_locs)
-    for sustain_start, sustain_end in zip(*decode_extents(hit_signals[BeatmapEncoding.SUSTAIN]), strict=False):
-        onset_idx = loc2idx[sustain_start]
-        if onset_idx == -1:
-            continue
-        sustain_ends[onset_idx] = sustain_end
-
-    slider_ends = [-1] * len(hit_locs)
-    for slider_start, slider_end in zip(*decode_extents(hit_signals[BeatmapEncoding.SLIDER]), strict=False):
-        onset_idx = loc2idx[slider_start]
-        if onset_idx == -1:
-            continue
-        slider_ends[onset_idx] = slider_end
-
-    white_bezier_anchor_locs = decode_flips(hit_signals[BeatmapEncoding.WHITE_BEZIER_ANCHORS])
-    red_bezier_anchor_locs = decode_flips(hit_signals[BeatmapEncoding.RED_BEZIER_ANCHORS])
-    linear_anchor_locs = decode_flips(hit_signals[BeatmapEncoding.LINEAR_ANCHORS])
-    perfect_anchor_locs = decode_flips(hit_signals[BeatmapEncoding.PERFECT_ANCHORS])
-
-    hos = []
-    tps = []
-
-    hit_times = frame_times[hit_locs]
+    hit_times = seq[:, 2]
     if bpm is not None:
         beat_snap, timing_point = get_timings(hit_times, 60000 / bpm)
     else:
         beat_snap, timing_point = calculate_timing_point(hit_times, allow_beat_snap, verbose)
 
-    beat_length = timing_point.ms_per_beat
-    base_slider_vel = SLIDER_MULT * 100 / beat_length
-    beat_offset = timing_point.offset.total_seconds() * 1000
-    tps.append(
-        f"{timing_point.offset.total_seconds() * 1000},{timing_point.ms_per_beat},{timing_point.meter},0,0,50,1,0",
-    )
+    timing_points.append(timing_point)
 
-    for hit_loc, new_combo, sustain_end, slider_end in zip(
-        hit_locs,
-        new_combos,
-        sustain_ends,
-        slider_ends,
-        strict=False,
-    ):
-        with np.errstate(invalid="raise"):
-            x, y = cursor_signals[:, hit_loc].round().astype(int)
-        t = frame_times[hit_loc]
-        u = frame_times[sustain_end]
-        combo_bit = 2**2 if new_combo else 0
+    for j in range(seq_len):
+        x = round(float(seq[j, 0]))
+        y = round(float(seq[j, 1]))
+        time = timedelta(seconds=float(seq[j, 2] / 1000))
+        type_index = int(np.argmax(seq[j, 3:]))
+        pos = Position(x, y)
 
-        if beat_snap:
-            t, u = snap_to_beat(t, u, beat_offset, beat_length)
+        if type_index == EventType.CIRCLE:
+            hit_objects.append(Circle(pos, time, 0, new_combo=False))
+        elif type_index == EventType.CIRCLE_NEW_COMBO:
+            hit_objects.append(Circle(pos, time, 0, new_combo=True))
+        elif type_index == EventType.SPINNER_START:
+            curr_object = Spinner(pos, time, 0, time, new_combo=True)
+        elif type_index == EventType.SPINNER_END and isinstance(curr_object, Spinner):
+            curr_object.end_time = time
+            hit_objects.append(curr_object)
+        elif type_index == EventType.SLIDER_HEAD:
+            curr_object = Slider(
+                position=pos,
+                time=time,
+                combo_skip=0,
+                end_time=time,
+                hitsound=0,
+                curve=MultiBezier([pos], 0),
+                repeat=0,
+                length=0,
+                ticks=0,
+                num_beats=0,
+                tick_rate=metadata.slider_tick_rate,
+                ms_per_beat=0,
+                edge_sounds=[],
+                edge_additions=[],
+                new_combo=False,
+            )
+            curr_slider_path = [pos]
+            curr_slider_type = "B"
+        elif type_index == EventType.SLIDER_HEAD_NEW_COMBO:
+            curr_object = Slider(
+                position=pos,
+                time=time,
+                combo_skip=0,
+                end_time=time,
+                hitsound=0,
+                curve=MultiBezier([pos], 0),
+                repeat=0,
+                length=0,
+                ticks=0,
+                num_beats=0,
+                tick_rate=metadata.slider_tick_rate,
+                ms_per_beat=0,
+                edge_sounds=[],
+                edge_additions=[],
+                new_combo=True,
+            )
+            curr_slider_path = [pos]
+            curr_slider_type = "B"
+        elif type_index == EventType.BEZIER_ANCHOR and isinstance(curr_object, Slider):
+            curr_slider_path.append(pos)
+        elif type_index == EventType.PERFECT_ANCHOR and isinstance(curr_object, Slider):
+            curr_slider_path.append(pos)
+            curr_slider_type = "P"
+        elif type_index == EventType.CATMULL_ANCHOR and isinstance(curr_object, Slider):
+            curr_slider_path.append(pos)
+            curr_slider_type = "C"
+        elif type_index == EventType.LINEAR_ANCHOR and isinstance(curr_object, Slider):
+            curr_slider_path.append(pos)
+            curr_slider_path.append(pos)
+        elif type_index == EventType.LAST_ANCHOR and isinstance(curr_object, Slider):
+            curr_slider_path.append(pos)
+            span_duration = (time - curr_object.time).total_seconds() * 1000
+        elif type_index >= EventType.SLIDER_END_REPEAT_1 and isinstance(curr_object, Slider):
+            slider_path = SliderPath(
+                curr_slider_type,
+                np.array(curr_slider_path, dtype=float),
+            )
+            req_length = slider_path.get_distance() * position_to_progress(
+                slider_path,
+                np.array(pos),
+            )
+            curr_object.curve = Curve.from_kind_and_points(
+                curr_slider_type,
+                [Position(p[0], p[1]) for p in slider_path.control_points],
+                req_length,
+            )
+            curr_object.length = req_length
+            curr_object.end_time = time
+            duration = (time - curr_object.time).total_seconds() * 1000
+            curr_object.repeat = (
+                round(duration / span_duration)
+                if type_index > EventType.SLIDER_END_REPEAT_3
+                else type_index - EventType.SLIDER_END_REPEAT_1 + 1
+            )
+            curr_object.edge_sounds = [0] * curr_object.repeat
+            curr_object.edge_additions = ["0:0"] * curr_object.repeat
+            hit_objects.append(curr_object)
 
-        if sustain_end == -1:
-            # No sustain
-            hos.append(f"{x},{y},{t},{2**0 + combo_bit},0,0:0:0:0:")
-            continue
-
-        if sustain_end - hit_loc < 4:
-            # Sustain too short
-            hos.append(f"{x},{y},{t},{2**0 + combo_bit},0,0:0:0:0:")
-            continue
-
-        if slider_end == -1:
-            # Spinner
-            hos.append(f"256,192,{t},{2**3 + combo_bit},0,{u}")
-            continue
-
-        if slider_end - hit_loc < 4:
-            # Slider too short
-            hos.append(f"{x},{y},{t},{2**0 + combo_bit},0,0:0:0:0:")
-            continue
-
-        # Slider
-        anchor_frames = []
-        for frame in range(hit_loc + 1, slider_end):
-            if frame in red_bezier_anchor_locs:
-                anchor_frames.append((frame, "R"))
-            elif frame in white_bezier_anchor_locs:
-                anchor_frames.append((frame, "B"))
-            elif frame in linear_anchor_locs:
-                anchor_frames.append((frame, "L"))
-            elif frame in perfect_anchor_locs:
-                anchor_frames.append((frame, "P"))
-
-        control_points = [(x, y)]
-        with np.errstate(invalid="raise"):
-            for frame_idx, anchor_type in anchor_frames:
-                ax, ay = cursor_signals[:, frame_idx].round().astype(int)
-                control_points.append((ax, ay))
-                if anchor_type == "R":  # Red anchor, duplicate the point
-                    control_points.append((ax, ay))
-            end_x, end_y = cursor_signals[:, slider_end].round().astype(int)
-            control_points.append((end_x, end_y))
-
-        if any(anchor[1] in ("B", "R") for anchor in anchor_frames):
-            slider_char = "B"
-        elif anchor_frames:
-            first_anchor_type = anchor_frames[0][1]
-            slider_char = "L" if first_anchor_type == "L" else "P" if first_anchor_type == "P" else "B"
-        else:
-            slider_char = "B"
-
-        length = 0.0
-        for k in range(len(control_points) - 1):
-            p1, p2 = np.array(control_points[k]), np.array(control_points[k + 1])
-            length += np.linalg.norm(p2 - p1)
-
-        if length < 1e-6:
-            hos.append(f"{x},{y},{t},{2**0 + combo_bit},0,0:0:0:0:")
-            continue
-
-        num_slides = max(1, round((sustain_end - hit_loc) / (slider_end - hit_loc)))
-        curve_points_str = "|".join(f"{px}:{py}" for px, py in control_points[1:])
-        hos.append(f"{x},{y},{t},{2**1 + combo_bit},0,{slider_char}|{curve_points_str},{num_slides},{length:.2f}")
-
-        vel = length * num_slides / (u - t)
-        slider_vel = vel / base_slider_vel
-        slider_vel = 1 if slider_vel == 0 else slider_vel
-        if (slider_vel > 10 or slider_vel < 0.1) and verbose:
-            print(f"Warning: slider velocity {slider_vel} is out of bounds, slider will not be good")
-        tps.append(f"{t},{-100 / slider_vel},4,0,0,50,0,0")
+            tp = timing_point
+            parent = tp.parent if tp.parent is not None else tp
+            ms_per_beat = tp.parent.ms_per_beat if tp.parent is not None else tp.ms_per_beat
+            global_sv = metadata.slider_multiplier
+            new_sv_multiplier = req_length * ms_per_beat / (100 * global_sv * span_duration)
+            timing_points.append(
+                TimingPoint(
+                    curr_object.time,
+                    -100 / new_sv_multiplier if new_sv_multiplier > 0 else -100,
+                    tp.meter,
+                    tp.sample_type,
+                    tp.sample_set,
+                    tp.volume,
+                    parent,
+                    tp.kiai_mode,
+                ),
+            )
 
     return map_template.format(
         **asdict(metadata),
-        timing_points="\n".join(tps),
-        hit_objects="\n".join(hos),
+        timing_points="\n".join([tp.pack() for tp in timing_points]),
+        hit_objects="\n".join([ho.pack() for ho in hit_objects]),
     )
