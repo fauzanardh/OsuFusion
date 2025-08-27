@@ -57,18 +57,6 @@ def load_audio(audio_file: Path) -> np.ndarray:
     return vqt
 
 
-def normalize_context(context: np.ndarray) -> np.ndarray:
-    context[:4] = context[:4] / 5.0 - 1.0  # CS, AR, OD, HP
-    context[4] = context[4] / 10.0 - 1.0  # SR
-    return context
-
-
-def unnormalize_context(context: np.ndarray) -> np.ndarray:
-    context[:4] = (context[:4] + 1.0) * 5.0  # CS, AR, OD, HP
-    context[4] = (context[4] + 1.0) * 10.0  # SR
-    return context
-
-
 def get_lock(path_str: str) -> Lock:  # type: ignore
     if path_str not in _global_lock:
         _global_lock[path_str] = Lock()
@@ -177,14 +165,15 @@ def prepare_map(data_dir: Path, map_file: Path) -> None:
             rosu_beatmap = RosuBeatmap(content=f.read())
         rosu_difficulty = RosuDifficulty()
         sr = rosu_difficulty.calculate(rosu_beatmap).stars
-        sr = np.clip(sr, 0, 20)  # Clip SR to [0, 20]
-        map_difficulty = np.array(
+        c = np.array(
             [
                 rosu_beatmap.cs,
                 rosu_beatmap.ar,
                 rosu_beatmap.od,
                 rosu_beatmap.hp,
                 sr,
+                rosu_beatmap.slider_multiplier,
+                rosu_beatmap.slider_tick_rate,
             ],
             dtype=np.float32,
         )
@@ -200,10 +189,9 @@ def prepare_map(data_dir: Path, map_file: Path) -> None:
     spec_result = get_audio_spec(beatmap, global_spec_dir)
     if spec_result is None:
         return
-    spec, audio_hash = spec_result
+    _, audio_hash = spec_result
 
     x = encode_beatmap(beatmap)
-    c = normalize_context(map_difficulty)
 
     # Save the processed map data
     try:

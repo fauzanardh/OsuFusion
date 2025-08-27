@@ -18,7 +18,6 @@ from osu_fusion.data.const import (
     SR,
 )
 from osu_fusion.data.decode import Metadata, decode_beatmap
-from osu_fusion.data.prepare_data import normalize_context, unnormalize_context
 
 
 class ContextGenerator:
@@ -34,7 +33,7 @@ class ContextGenerator:
 
     @torch.no_grad()
     def get_new_context(self: "ContextGenerator", x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
-        cs, ar, od, hp, original_sr = unnormalize_context(c.clone()).tolist()
+        cs, ar, od, hp, _, slider_multiplier, slider_tick_rate = c.tolist()
 
         n_frames = x.shape[-1]
         frames_indices = np.arange(n_frames)
@@ -50,6 +49,8 @@ class ContextGenerator:
             ar,
             od,
             hp,
+            slider_multiplier,
+            slider_tick_rate,
         )
 
         try:
@@ -61,7 +62,7 @@ class ContextGenerator:
             print(f"Error calculating SR: {e}")
             raise e
 
-        c = normalize_context(np.array([cs, ar, od, hp, segment_sr], dtype=np.float32))
+        c = np.array([cs, ar, od, hp, segment_sr, slider_multiplier, slider_tick_rate], dtype=np.float32)
         return torch.from_numpy(c)
 
 

@@ -15,7 +15,7 @@ from sanitize_filename import sanitize
 
 from osu_fusion.data.const import BEATMAP_DIM
 from osu_fusion.data.decode import Metadata, decode_beatmap
-from osu_fusion.data.prepare_data import HOP_LENGTH, SR, load_audio, normalize_context
+from osu_fusion.data.prepare_data import HOP_LENGTH, SR, load_audio
 from osu_fusion.models.diffusion_unet import OsuFusionUNet as DiffusionOsuFusion
 from osu_fusion.models.rectified_flow import OsuFusion as RectifiedFlowOsuFusion
 
@@ -51,12 +51,14 @@ def create_input(
     od: float,
     hp: float,
     sr: float,
+    slider_multiplier: float,
+    slider_tick_rate: float,
     batch_size: int,
     device: torch.device,
     dtype: torch.dtype,
 ) -> Tuple[int, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     a = load_audio(audio_path)
-    context = normalize_context(np.array([cs, ar, od, hp, sr], dtype=np.float32))
+    context = np.array([cs, ar, od, hp, sr, slider_multiplier, slider_tick_rate], dtype=np.float32)
 
     a_tensor = torch.from_numpy(a).to(device=device, dtype=dtype)
     c_tensor = torch.from_numpy(context).to(device=device, dtype=dtype)

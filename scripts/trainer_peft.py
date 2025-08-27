@@ -23,7 +23,7 @@ from tqdm.auto import tqdm
 import wandb
 from osu_fusion.data.const import BEATMAP_DIM
 from osu_fusion.data.dataset import FullSequenceDataset, SubsequenceDataset
-from osu_fusion.data.prepare_data import load_audio, normalize_context
+from osu_fusion.data.prepare_data import load_audio
 from osu_fusion.models.diffusion_unet import OsuFusionUNet as DiffusionOsuFusion
 from osu_fusion.models.rectified_flow import OsuFusion as RectifiedFlowOsuFusion
 from osu_fusion.modules.lora_layers import LoraConv1d
@@ -88,7 +88,7 @@ def visualize_and_log_sample(
     step: int,
 ) -> None:
     a = load_audio(audio_path)
-    c = normalize_context(np.array([4.0, 9.5, 9.5, 4.0, 6.0], dtype=np.float32))
+    c = np.array([4.0, 9.5, 9.5, 4.0, 6.0, 1.4, 1.0], dtype=np.float32)
 
     dtype = {
         "no": torch.float32,
