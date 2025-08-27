@@ -2,8 +2,8 @@ from typing import List, Tuple, Union
 
 import numpy as np
 import numpy.typing as npt
-from slider.beatmap import Beatmap, Slider
-from slider.curve import Linear, MultiBezier, Perfect
+from slider.beatmap import Beatmap, Slider, Spinner
+from slider.curve import Catmull, Linear, MultiBezier, Perfect
 
 from osu_fusion.data.enum import BeatmapEncoding
 
@@ -88,7 +88,7 @@ def hit_signals(beatmap: Beatmap, frame_times: npt.NDArray) -> npt.NDArray:  # n
         [
             (ho.time.total_seconds() * 1000, ho.end_time.total_seconds() * 1000)
             for ho in hit_objects
-            if isinstance(ho, Slider)
+            if hasattr(ho, "end_time")
         ],
     )
     signals[BeatmapEncoding.SLIDER] = extents(
@@ -103,8 +103,16 @@ def hit_signals(beatmap: Beatmap, frame_times: npt.NDArray) -> npt.NDArray:  # n
             if isinstance(ho, Slider)
         ],
     )
-    linear_anchors, perfect_anchors = [], []
-    white_bezier_anchors, red_bezier_anchors = [], []
+    signals[BeatmapEncoding.SPINNER] = extents(
+        frame_times,
+        [
+            (ho.time.total_seconds() * 1000, ho.end_time.total_seconds() * 1000)
+            for ho in hit_objects
+            if isinstance(ho, Spinner)
+        ],
+    )
+
+    linear_anchors, perfect_anchors, bezier_anchors, catmull_anchors, last_anchors, slider_ends = [], [], [], [], [], []
     for hit_object in hit_objects:
         if not isinstance(hit_object, Slider):
             continue
@@ -117,6 +125,18 @@ def hit_signals(beatmap: Beatmap, frame_times: npt.NDArray) -> npt.NDArray:  # n
             (hit_object.end_time.total_seconds() - hit_object.time.total_seconds()) * 1000 / hit_object.repeat
         )
         start_time = hit_object.time.total_seconds() * 1000
+        slider_ends.append(start_time + slide_duration)
+
+        # LAST_ANCHOR logic
+        if isinstance(hit_object.curve, (Linear, MultiBezier, Catmull)):
+            control_points = np.array(hit_object.curve.points)
+            if len(control_points) > 2:
+                cumulative_lengths, total_length = get_path_arc_lengths(control_points)
+                if total_length > 1e-6:
+                    length_to_last_anchor = get_path_arc_lengths(control_points[:-1])[1]
+                    time_proportion = length_to_last_anchor / total_length
+                    anchor_time = start_time + time_proportion * slide_duration
+                    last_anchors.append(anchor_time)
 
         if isinstance(hit_object.curve, Perfect):
             anchor_time = start_time + 0.5 * slide_duration
@@ -153,15 +173,28 @@ def hit_signals(beatmap: Beatmap, frame_times: npt.NDArray) -> npt.NDArray:  # n
                 is_red_anchor = (i + 1 < len(path_points)) and np.array_equal(path_points[i], path_points[i + 1])
 
                 if is_red_anchor:
-                    red_bezier_anchors.append(anchor_time)
+                    linear_anchors.append(anchor_time)
                 elif not np.array_equal(path_points[i], path_points[i - 1]):
-                    white_bezier_anchors.append(anchor_time)
+                    bezier_anchors.append(anchor_time)
 
-    signals[BeatmapEncoding.WHITE_BEZIER_ANCHORS] = flips(frame_times, sorted(white_bezier_anchors))
-    signals[BeatmapEncoding.RED_BEZIER_ANCHORS] = flips(frame_times, sorted(red_bezier_anchors))
-    signals[BeatmapEncoding.LINEAR_ANCHORS] = flips(frame_times, sorted(linear_anchors))
-    signals[BeatmapEncoding.PERFECT_ANCHORS] = flips(frame_times, sorted(perfect_anchors))
-    signals[BeatmapEncoding.COMBO] = flips(
+        elif isinstance(hit_object.curve, Catmull):
+            control_points = np.array(hit_object.curve.points)
+            if len(control_points) <= 2:
+                continue
+            anchor_distances, _ = get_path_arc_lengths(control_points)
+            for i in range(1, len(control_points) - 1):
+                dist_to_anchor = anchor_distances[i]
+                time_proportion = dist_to_anchor / total_slider_length
+                anchor_time = start_time + time_proportion * slide_duration
+                catmull_anchors.append(anchor_time)
+
+    signals[BeatmapEncoding.BEZIER_ANCHOR] = flips(frame_times, sorted(bezier_anchors))
+    signals[BeatmapEncoding.LINEAR_ANCHOR] = flips(frame_times, sorted(linear_anchors))
+    signals[BeatmapEncoding.PERFECT_ANCHOR] = flips(frame_times, sorted(perfect_anchors))
+    signals[BeatmapEncoding.CATMULL_ANCHOR] = flips(frame_times, sorted(catmull_anchors))
+    signals[BeatmapEncoding.LAST_ANCHOR] = flips(frame_times, sorted(last_anchors))
+    signals[BeatmapEncoding.SLIDER_END] = flips(frame_times, sorted(slider_ends))
+    signals[BeatmapEncoding.NEW_COMBO] = flips(
         frame_times,
         [ho.time.total_seconds() * 1000 for ho in hit_objects if ho.new_combo],
     )

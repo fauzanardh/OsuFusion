@@ -151,11 +151,14 @@ def decode_beatmap(  # noqa: C901
             BeatmapEncoding.HIT,
             BeatmapEncoding.SUSTAIN,
             BeatmapEncoding.SLIDER,
-            BeatmapEncoding.WHITE_BEZIER_ANCHORS,
-            BeatmapEncoding.RED_BEZIER_ANCHORS,
-            BeatmapEncoding.LINEAR_ANCHORS,
-            BeatmapEncoding.PERFECT_ANCHORS,
-            BeatmapEncoding.COMBO,
+            BeatmapEncoding.BEZIER_ANCHOR,
+            BeatmapEncoding.PERFECT_ANCHOR,
+            BeatmapEncoding.CATMULL_ANCHOR,
+            BeatmapEncoding.LINEAR_ANCHOR,
+            BeatmapEncoding.LAST_ANCHOR,
+            BeatmapEncoding.SLIDER_END,
+            BeatmapEncoding.SPINNER,
+            BeatmapEncoding.NEW_COMBO,
         ]
     ]
     hit_signals = np.where(hit_signals > 0.0, 1.0, 0.0)  # Discretize signals
@@ -168,7 +171,7 @@ def decode_beatmap(  # noqa: C901
         loc2idx[onset_idx] = i
 
     new_combos = [False] * len(hit_locs)
-    for combo_locs in decode_flips(hit_signals[BeatmapEncoding.COMBO]):
+    for combo_locs in decode_flips(hit_signals[BeatmapEncoding.NEW_COMBO]):
         new_combos[loc2idx[combo_locs]] = True
 
     sustain_ends = [-1] * len(hit_locs)
@@ -185,10 +188,10 @@ def decode_beatmap(  # noqa: C901
             continue
         slider_ends[onset_idx] = slider_end
 
-    white_bezier_anchor_locs = decode_flips(hit_signals[BeatmapEncoding.WHITE_BEZIER_ANCHORS])
-    red_bezier_anchor_locs = decode_flips(hit_signals[BeatmapEncoding.RED_BEZIER_ANCHORS])
-    linear_anchor_locs = decode_flips(hit_signals[BeatmapEncoding.LINEAR_ANCHORS])
-    perfect_anchor_locs = decode_flips(hit_signals[BeatmapEncoding.PERFECT_ANCHORS])
+    bezier_anchor_locs = decode_flips(hit_signals[BeatmapEncoding.BEZIER_ANCHOR])
+    perfect_anchor_locs = decode_flips(hit_signals[BeatmapEncoding.PERFECT_ANCHOR])
+    catmull_anchor_locs = decode_flips(hit_signals[BeatmapEncoding.CATMULL_ANCHOR])
+    linear_anchor_locs = decode_flips(hit_signals[BeatmapEncoding.LINEAR_ANCHOR])
 
     hos = []
     tps = []
@@ -245,32 +248,34 @@ def decode_beatmap(  # noqa: C901
         # Slider
         anchor_frames = []
         for frame in range(hit_loc + 1, slider_end):
-            if frame in red_bezier_anchor_locs:
-                anchor_frames.append((frame, "R"))
-            elif frame in white_bezier_anchor_locs:
+            if frame in bezier_anchor_locs:
                 anchor_frames.append((frame, "B"))
-            elif frame in linear_anchor_locs:
-                anchor_frames.append((frame, "L"))
             elif frame in perfect_anchor_locs:
                 anchor_frames.append((frame, "P"))
+            elif frame in catmull_anchor_locs:
+                anchor_frames.append((frame, "C"))
+            elif frame in linear_anchor_locs:
+                anchor_frames.append((frame, "L"))
 
         control_points = [(x, y)]
         with np.errstate(invalid="raise"):
             for frame_idx, anchor_type in anchor_frames:
                 ax, ay = cursor_signals[:, frame_idx].round().astype(int)
                 control_points.append((ax, ay))
-                if anchor_type == "R":  # Red anchor, duplicate the point
+                # For bezier sliders, red anchors are encoded as linear anchors
+                if anchor_type == "L" and any(frame in bezier_anchor_locs for frame in range(hit_loc + 1, slider_end)):
                     control_points.append((ax, ay))
             end_x, end_y = cursor_signals[:, slider_end].round().astype(int)
             control_points.append((end_x, end_y))
 
-        if any(anchor[1] in ("B", "R") for anchor in anchor_frames):
+        if any(frame in bezier_anchor_locs for frame in range(hit_loc + 1, slider_end)):
             slider_char = "B"
-        elif anchor_frames:
-            first_anchor_type = anchor_frames[0][1]
-            slider_char = "L" if first_anchor_type == "L" else "P" if first_anchor_type == "P" else "B"
+        elif any(frame in perfect_anchor_locs for frame in range(hit_loc + 1, slider_end)):
+            slider_char = "P"
+        elif any(frame in catmull_anchor_locs for frame in range(hit_loc + 1, slider_end)):
+            slider_char = "C"
         else:
-            slider_char = "B"
+            slider_char = "L"
 
         length = 0.0
         for k in range(len(control_points) - 1):

@@ -3,17 +3,20 @@ from enum import IntEnum
 BeatmapEncoding = IntEnum(
     "BeatmapEncoding",
     [
-        # hit signals
+        # Hit signals
         "HIT",
         "SUSTAIN",
         "SLIDER",
-        "WHITE_BEZIER_ANCHORS",
-        "RED_BEZIER_ANCHORS",
-        "LINEAR_ANCHORS",
-        "PERFECT_ANCHORS",
-        "COMBO",
-        "KIAI",  # Only used to as an auxiliary signal so the model can learn better
-        # cursor signals
+        "BEZIER_ANCHOR",
+        "PERFECT_ANCHOR",
+        "CATMULL_ANCHOR",
+        "LINEAR_ANCHOR",
+        "LAST_ANCHOR",
+        "SLIDER_END",
+        "SPINNER",
+        "NEW_COMBO",
+        "KIAI",
+        # Cursor signals
         "CURSOR_X",
         "CURSOR_Y",
     ],
