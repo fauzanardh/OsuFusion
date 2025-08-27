@@ -189,9 +189,18 @@ def prepare_map(data_dir: Path, map_file: Path) -> None:
     spec_result = get_audio_spec(beatmap, global_spec_dir)
     if spec_result is None:
         return
-    _, audio_hash = spec_result
+    spec, audio_hash = spec_result
 
-    x = encode_beatmap(beatmap)
+    frame_times = (
+        librosa.frames_to_time(
+            np.arange(spec.shape[-1]),
+            sr=SR,
+            hop_length=HOP_LENGTH,
+        )
+        * 1000
+    )  # Convert to milliseconds
+
+    x = encode_beatmap(beatmap, frame_times)
 
     # Save the processed map data
     try:
