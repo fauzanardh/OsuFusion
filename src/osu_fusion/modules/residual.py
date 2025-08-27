@@ -1,9 +1,10 @@
 import os
-from typing import Optional
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
 from einops import rearrange
+from torch.nn import functional as F
 from torch.profiler import record_function
 
 from osu_fusion.modules.utils import dummy_context_manager
@@ -71,7 +72,11 @@ class ResidualUnit(nn.Module):
         self.norm = nn.GroupNorm(1, dim_out) if norm else nn.Identity()
         self.activation = nn.SiLU()
 
-    def forward_body(self: "ResidualUnit", x: torch.Tensor, scale_shift: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward_body(
+        self: "ResidualUnit",
+        x: torch.Tensor,
+        scale_shift: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+    ) -> torch.Tensor:
         x = self.proj(x)
         x = self.norm(x)
 
@@ -82,7 +87,11 @@ class ResidualUnit(nn.Module):
         x = self.activation(x)
         return x
 
-    def forward(self: "ResidualUnit", x: torch.Tensor, scale_shift: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(
+        self: "ResidualUnit",
+        x: torch.Tensor,
+        scale_shift: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+    ) -> torch.Tensor:
         context_manager = dummy_context_manager() if DEBUG else record_function("ResidualUnit")
         with context_manager:
             return self.forward_body(x, scale_shift)
@@ -93,45 +102,69 @@ class ResidualBlock(nn.Module):
         self: "ResidualBlock",
         dim_in: int,
         dim_out: int,
+        dim_audio: Optional[int] = None,
         dim_time: Optional[int] = None,
         dim_cond: Optional[int] = None,
         use_gca: bool = False,
     ) -> None:
         super().__init__()
-        self.has_time_cond = dim_time is not None
-        self.has_cond = dim_cond is not None
-
-        self.mlp = (
+        total_global_cond_dim = int(dim_time or 0) + int(dim_cond or 0)
+        self.global_mlp = (
             nn.Sequential(
                 nn.SiLU(),
-                nn.Linear(int(dim_time) + int(dim_cond), dim_out * 2),
+                nn.Linear(total_global_cond_dim, 2 * dim_out),
             )
-            if dim_time or dim_cond
+            if total_global_cond_dim > 0
             else None
         )
-        self.block1 = ResidualUnit(dim_in, dim_out)
-        self.block2 = ResidualUnit(dim_out, dim_out)
+        self.audio_conv = (
+            nn.Sequential(
+                nn.SiLU(),
+                nn.Conv1d(dim_audio, 2 * dim_out, 3, padding=1),
+            )
+            if dim_audio is not None and dim_audio > 0
+            else None
+        )
 
+        self.block1 = ResidualUnit(dim_in, dim_out, norm=True)
+        self.block2 = ResidualUnit(dim_out, dim_out, norm=True)
         self.res_conv = nn.Conv1d(dim_in, dim_out, 1) if dim_in != dim_out else nn.Identity()
         self.se = GlobalContext(dim_out, dim_out) if use_gca else SqueezeExcite(dim_out, dim_out)
 
     def forward(
         self: "ResidualBlock",
         x: torch.Tensor,
+        a: Optional[torch.Tensor] = None,
         t: Optional[torch.Tensor] = None,
         c: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        scale_shift = None
-        if self.mlp is not None and (self.has_time_cond or self.has_cond):
-            cond_emb = tuple(filter(lambda tensor: tensor is not None, (t, c)))
-            cond_emb = torch.cat(cond_emb, dim=-1)
-            cond_emb = self.mlp(cond_emb)
-            cond_emb = rearrange(cond_emb, "b c -> b c 1")
-            scale_shift = cond_emb.chunk(2, dim=1)
+        scale, shift = 0.0, 0.0
 
-        h = self.block1(x, scale_shift=scale_shift)
+        if self.global_mlp is not None:
+            global_cond_emb = tuple(filter(lambda t: t is not None, (t, c)))
+            if global_cond_emb:
+                global_cond_emb = torch.cat(global_cond_emb, dim=-1)
+                global_cond_emb = self.global_mlp(global_cond_emb)
+                global_cond_emb = rearrange(global_cond_emb, "b d -> b d 1")
+                scale_global, shift_global = global_cond_emb.chunk(2, dim=1)
+                scale = scale + scale_global
+                shift = shift + shift_global
+
+        if self.audio_conv is not None and a is not None:
+            if a.shape[-1] != x.shape[-1]:
+                a = F.interpolate(a, size=x.shape[-1], mode="nearest", align_corners=False)
+
+            audio_cond_emb = self.audio_conv(a)
+            scale_local, shift_local = audio_cond_emb.chunk(2, dim=1)
+            scale = scale + scale_local
+            shift = shift + shift_local
+
+        h = self.block1(
+            x,
+            scale_shift=(scale, shift)
+            if (self.global_mlp is not None or self.audio_conv is not None)
+            else None,  # Janky check
+        )
         h = self.block2(h)
-
         h = h * self.se(h)
-
         return h + self.res_conv(x)

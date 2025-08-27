@@ -1,6 +1,6 @@
 import itertools
 import os
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import torch
 import torch.nn as nn
@@ -58,26 +58,14 @@ class Parallel(nn.Module):
         return sum([fn(x, *args, **kwargs) for fn in self.fns])
 
 
-class GatedFusion(nn.Module):
-    def __init__(self: "GatedFusion", dim: int) -> None:
-        super().__init__()
-        self.gate = nn.Sequential(
-            nn.Conv1d(dim * 2, dim, 1),
-            nn.Sigmoid(),
-        )
-
-    def forward(self: "GatedFusion", x: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
-        z = self.gate(torch.cat([x, a], dim=1))
-        return x * z + a * (1 - z)
-
-
 class UNetDownBlock(nn.Module):
     def __init__(
         self: "UNetDownBlock",
         dim_in: int,
         dim_out: int,
-        dim_time: Optional[int],
-        dim_cond: Optional[int],
+        dim_audio: int,
+        dim_time: int,
+        dim_cond: int,
         layer_idx: int,
         num_layers: int,
         num_blocks: int,
@@ -87,10 +75,12 @@ class UNetDownBlock(nn.Module):
         attn_context_len: int,
     ) -> None:
         super().__init__()
-        self.init_resnet = ResidualBlock(dim_in, dim_out, dim_time, dim_cond)
-        self.fusion = GatedFusion(dim_out)
+        self.init_resnet = ResidualBlock(dim_in, dim_out, dim_audio=dim_audio, dim_time=dim_time, dim_cond=dim_cond)
         self.resnets = nn.ModuleList(
-            [ResidualBlock(dim_out, dim_out, dim_time, dim_cond) for _ in range(num_blocks)],
+            [
+                ResidualBlock(dim_out, dim_out, dim_audio=dim_audio, dim_time=dim_time, dim_cond=dim_cond)
+                for _ in range(num_blocks)
+            ],
         )
         self.transformers = nn.ModuleList(
             [
@@ -119,14 +109,13 @@ class UNetDownBlock(nn.Module):
         self: "UNetDownBlock",
         x: torch.Tensor,
         a: torch.Tensor,
-        t: Optional[torch.Tensor] = None,
-        c: Optional[torch.Tensor] = None,
+        t: torch.Tensor,
+        c: torch.Tensor,
     ) -> torch.Tensor:
-        x = self.init_resnet(x, t, c)
-        x = self.fusion(x, a)
+        x = self.init_resnet(x, a, t, c)
 
         for resnet, transformer in zip(self.resnets, self.transformers, strict=True):
-            x = resnet(x, t, c)
+            x = resnet(x, a, t, c)
             x = transformer(x)
 
         return self.sampler(x), x
@@ -135,8 +124,8 @@ class UNetDownBlock(nn.Module):
         self: "UNetDownBlock",
         x: torch.Tensor,
         a: torch.Tensor,
-        t: Optional[torch.Tensor] = None,
-        c: Optional[torch.Tensor] = None,
+        t: torch.Tensor,
+        c: torch.Tensor,
     ) -> torch.Tensor:
         if self.training and self.gradient_checkpointing:
             return torch.utils.checkpoint.checkpoint(self.forward_body, x, a, t, c, use_reentrant=True)
@@ -149,8 +138,9 @@ class UNetUpBlock(nn.Module):
         self: "UNetUpBlock",
         dim_in: int,
         dim_out: int,
-        dim_time: Optional[int],
-        dim_cond: Optional[int],
+        dim_audio: int,
+        dim_time: int,
+        dim_cond: int,
         layer_idx: int,
         num_layers: int,
         num_blocks: int,
@@ -160,9 +150,12 @@ class UNetUpBlock(nn.Module):
         attn_context_len: int,
     ) -> None:
         super().__init__()
-        self.init_resnet = ResidualBlock(dim_in * 2, dim_in, dim_time, dim_cond)
+        self.init_resnet = ResidualBlock(dim_in * 2, dim_in, dim_audio=dim_audio, dim_time=dim_time, dim_cond=dim_cond)
         self.resnets = nn.ModuleList(
-            [ResidualBlock(dim_in, dim_in, dim_time, dim_cond) for _ in range(num_blocks)],
+            [
+                ResidualBlock(dim_in, dim_in, dim_audio=dim_audio, dim_time=dim_time, dim_cond=dim_cond)
+                for _ in range(num_blocks)
+            ],
         )
         self.transformers = nn.ModuleList(
             [
@@ -190,13 +183,14 @@ class UNetUpBlock(nn.Module):
     def forward_body(
         self: "UNetUpBlock",
         x: torch.Tensor,
-        t: Optional[torch.Tensor] = None,
-        c: Optional[torch.Tensor] = None,
+        a: torch.Tensor,
+        t: torch.Tensor,
+        c: torch.Tensor,
     ) -> torch.Tensor:
-        x = self.init_resnet(x, t, c)
+        x = self.init_resnet(x, a, t, c)
 
         for resnet, transformer in zip(self.resnets, self.transformers, strict=True):
-            x = resnet(x, t, c)
+            x = resnet(x, a, t, c)
             x = transformer(x)
 
         return self.sampler(x), x
@@ -204,13 +198,14 @@ class UNetUpBlock(nn.Module):
     def forward(
         self: "UNetUpBlock",
         x: torch.Tensor,
-        t: Optional[torch.Tensor] = None,
-        c: Optional[torch.Tensor] = None,
+        a: torch.Tensor,
+        t: torch.Tensor,
+        c: torch.Tensor,
     ) -> torch.Tensor:
         if self.training and self.gradient_checkpointing:
-            return torch.utils.checkpoint.checkpoint(self.forward_body, x, t, c, use_reentrant=True)
+            return torch.utils.checkpoint.checkpoint(self.forward_body, x, a, t, c, use_reentrant=True)
         else:
-            return self.forward_body(x, t, c)
+            return self.forward_body(x, a, t, c)
 
 
 class AudioEncoder(nn.Module):
@@ -322,7 +317,13 @@ class UNet(nn.Module):
             attn_context_len=attn_context_len,
         )
 
-        self.final_resnet = ResidualBlock(dim_h * 2, dim_h, self.dim_emb, self.dim_emb)
+        self.final_resnet = ResidualBlock(
+            dim_h * 2,
+            dim_h,
+            dim_audio=dim_h,
+            dim_time=self.dim_emb,
+            dim_cond=self.dim_emb,
+        )
         self.final_conv = zero_init(nn.Conv1d(dim_h, dim_in_x, 1))
 
         self.time_mlp = nn.Sequential(
@@ -355,6 +356,7 @@ class UNet(nn.Module):
                 UNetDownBlock(
                     layer_dim_in,
                     layer_dim_out,
+                    layer_dim_out,
                     self.dim_emb,
                     self.dim_emb,
                     i,
@@ -372,10 +374,10 @@ class UNet(nn.Module):
         self.middle_resnet1 = ResidualBlock(
             dims_h[-1],
             dims_h[-1],
-            self.dim_emb,
-            self.dim_emb,
+            dim_audio=dims_h[-1],
+            dim_time=self.dim_emb,
+            dim_cond=self.dim_emb,
         )
-        self.middle_gated_fusion = GatedFusion(dims_h[-1])
         attn_heads = dims_h[-1] // attn_dim_head
         attn_kv_heads = max(1, attn_heads // 2)
         self.middle_transformer = nn.ModuleList(
@@ -393,8 +395,9 @@ class UNet(nn.Module):
         self.middle_resnet2 = ResidualBlock(
             dims_h[-1],
             dims_h[-1],
-            self.dim_emb,
-            self.dim_emb,
+            dim_audio=dims_h[-1],
+            dim_time=self.dim_emb,
+            dim_cond=self.dim_emb,
         )
 
         # Upsample
@@ -413,6 +416,7 @@ class UNet(nn.Module):
                 UNetUpBlock(
                     layer_dim_in,
                     layer_dim_out,
+                    layer_dim_in,
                     self.dim_emb,
                     self.dim_emb,
                     i,
@@ -487,17 +491,21 @@ class UNet(nn.Module):
             x, skip = down_layer(x, a_lat_intermediate, t, c_prep)
             skip_connection.append(skip)
 
-        x = self.middle_resnet1(x, t, c_prep)
-        x = self.middle_gated_fusion(x, a_lat)
+        x = self.middle_resnet1(x, a_lat, t, c_prep)
         for transformer_block in self.middle_transformer:
             x = transformer_block(x)
-        x = self.middle_resnet2(x, t, c_prep)
+        x = self.middle_resnet2(x, a_lat, t, c_prep)
 
-        for up_layer, skip in zip(self.up_layers, reversed(skip_connection), strict=True):
+        for up_layer, skip, a_lat_intermediate in zip(
+            self.up_layers,
+            reversed(skip_connection),
+            reversed(a_lat_intermediates),
+            strict=True,
+        ):
             x = torch.cat([x, skip], dim=1)
-            x, _ = up_layer(x, t, c_prep)
+            x, _ = up_layer(x, a_lat_intermediate, t, c_prep)
 
         x = torch.cat([x, r], dim=1)
-        x = self.final_resnet(x, t, c_prep)
+        x = self.final_resnet(x, a_lat_intermediates[0], t, c_prep)
 
         return self.final_conv(x)[:, :, :n]
