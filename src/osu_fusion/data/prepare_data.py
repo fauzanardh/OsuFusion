@@ -9,10 +9,10 @@ import numpy as np
 import soundfile as sf
 from rosu_pp_py import Beatmap as RosuBeatmap
 from rosu_pp_py import Difficulty as RosuDifficulty
+from slider.beatmap import Beatmap
 
 from osu_fusion.data.const import AUDIO_DIM, BEATMAP_DIM, CONTEXT_DIM, FMIN, HOP_LENGTH, OCTAVE_BINS, SR
 from osu_fusion.data.encode import encode_beatmap
-from osu_fusion.osu.beatmap import Beatmap
 
 _global_lock: Dict[str, Lock] = {}  # type: ignore
 
@@ -152,7 +152,7 @@ def validate_map_data(map_file: Path, data_dir: Path) -> bool:
 
 def prepare_map(data_dir: Path, map_file: Path) -> None:
     try:
-        beatmap = Beatmap(map_file, meta_only=True)
+        beatmap = Beatmap.from_path(map_file)
     except Exception as e:
         print(f"[Error] Failed to load beatmap {map_file}: {e}")
         return
@@ -195,12 +195,6 @@ def prepare_map(data_dir: Path, map_file: Path) -> None:
     # HARDCODE: Max SR is 9 to test the model
     if sr > 9:
         print(f"[Warning] Skipping map {map_file.name} with SR {sr} > 9")
-        return
-
-    try:
-        beatmap.parse_map_data()
-    except Exception as e:
-        print(f"[Error] Failed to parse beatmap data {map_file}: {e}")
         return
 
     spec_result = get_audio_spec(beatmap, global_spec_dir)

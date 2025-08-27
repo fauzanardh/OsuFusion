@@ -1,9 +1,9 @@
 import numpy as np
 import numpy.typing as npt
+from slider.beatmap import Beatmap
 
 from osu_fusion.data.cursor import cursor_signal
 from osu_fusion.data.hit import hit_signals
-from osu_fusion.osu.beatmap import Beatmap
 
 
 def encode_beatmap(beatmap: Beatmap, frame_times: npt.NDArray) -> npt.NDArray:

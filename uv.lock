@@ -1698,6 +1698,7 @@ dependencies = [
     { name = "rosu-pp-py" },
     { name = "sanitize-filename" },
     { name = "scipy" },
+    { name = "slider" },
     { name = "soundfile" },
     { name = "torch", version = "2.7.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
     { name = "torch", version = "2.7.1+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
@@ -1731,6 +1732,7 @@ requires-dist = [
     { name = "rosu-pp-py", specifier = ">=3.1.0" },
     { name = "sanitize-filename", specifier = ">=1.2.0" },
     { name = "scipy", specifier = ">=1.16.1" },
+    { name = "slider", git = "https://github.com/llllllllll/slider" },
     { name = "soundfile", specifier = ">=0.13.1" },
     { name = "torch", marker = "sys_platform != 'linux' and sys_platform != 'win32'", specifier = ">=2.7.0" },
     { name = "torch", marker = "sys_platform == 'linux' or sys_platform == 'win32'", specifier = ">=2.7.0", index = "https://download.pytorch.org/whl/cu128" },
@@ -2756,6 +2758,16 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/94/e7/b2c673351809dca68a0e064b6af791aa332cf192da575fd474ed7d6f16a2/six-1.17.0.tar.gz", hash = "sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81", size = 34031 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl", hash = "sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274", size = 11050 },
+]
+
+[[package]]
+name = "slider"
+version = "0.8.3"
+source = { git = "https://github.com/llllllllll/slider#2f092e38c2a417d6fc69ce0b2f8132c2b9efe515" }
+dependencies = [
+    { name = "numpy" },
+    { name = "requests" },
+    { name = "scipy" },
 ]
 
 [[package]]

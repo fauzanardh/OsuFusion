@@ -2,17 +2,16 @@ from typing import List, Tuple, Union
 
 import numpy as np
 import numpy.typing as npt
+from slider.beatmap import Beatmap, Slider
+from slider.curve import Linear, MultiBezier, Perfect
 
 from osu_fusion.data.enum import BeatmapEncoding
-from osu_fusion.osu.beatmap import Beatmap
-from osu_fusion.osu.hit_objects import Slider
-from osu_fusion.osu.sliders import Bezier, Line, Perfect
 
 
 def get_path_arc_lengths(path_points: npt.NDArray) -> Tuple[npt.NDArray, float]:
     """
     Calculates the cumulative arc length along a path defined by points.
-    This is used for calculating anchor timings in Line sliders.
+    This is used for calculating anchor timings in Linear sliders.
     """
     if len(path_points) < 2:
         return np.array([0.0]), 0.0
@@ -45,11 +44,11 @@ Real = Union[int, float]
 def combo_regions(beatmap: Beatmap) -> List[Tuple[Real, Real]]:
     new_combo_regions = []
     region_end = None
-    for hit_object in beatmap.hit_objects[::-1]:
+    for hit_object in beatmap.hit_objects()[::-1]:
         if region_end is None:
-            region_end = hit_object.end_time() + 1
+            region_end = hit_object.end_time.total_seconds() * 1000 + 1
         if hit_object.new_combo:
-            new_combo_regions.insert(0, (hit_object.t, region_end))
+            new_combo_regions.insert(0, (hit_object.time.total_seconds() * 1000, region_end))
             region_end = None
     return new_combo_regions
 
@@ -81,23 +80,32 @@ def decode_extents(extents_: npt.NDArray) -> Tuple[List[int], List[int]]:
 
 
 def hit_signals(beatmap: Beatmap, frame_times: npt.NDArray) -> npt.NDArray:  # noqa: C901
+    hit_objects = beatmap.hit_objects()
     signals = np.zeros((len(BeatmapEncoding) - 2, len(frame_times)), dtype=np.float32)
-    signals[BeatmapEncoding.HIT] = flips(frame_times, [hit_object.t for hit_object in beatmap.hit_objects])
+    signals[BeatmapEncoding.HIT] = flips(frame_times, [ho.time.total_seconds() * 1000 for ho in hit_objects])
     signals[BeatmapEncoding.SUSTAIN] = extents(
         frame_times,
-        [(hit_object.t, hit_object.end_time()) for hit_object in beatmap.hit_objects if isinstance(hit_object, Slider)],
+        [
+            (ho.time.total_seconds() * 1000, ho.end_time.total_seconds() * 1000)
+            for ho in hit_objects
+            if isinstance(ho, Slider)
+        ],
     )
     signals[BeatmapEncoding.SLIDER] = extents(
         frame_times,
         [
-            (hit_object.t, hit_object.t + hit_object.slide_duration)
-            for hit_object in beatmap.hit_objects
-            if isinstance(hit_object, Slider)
+            (
+                ho.time.total_seconds() * 1000,
+                ho.time.total_seconds() * 1000
+                + (ho.end_time.total_seconds() - ho.time.total_seconds()) * 1000 / ho.repeat,
+            )
+            for ho in hit_objects
+            if isinstance(ho, Slider)
         ],
     )
-    line_anchors, perfect_anchors = [], []
+    linear_anchors, perfect_anchors = [], []
     white_bezier_anchors, red_bezier_anchors = [], []
-    for hit_object in beatmap.hit_objects:
+    for hit_object in hit_objects:
         if not isinstance(hit_object, Slider):
             continue
 
@@ -105,27 +113,32 @@ def hit_signals(beatmap: Beatmap, frame_times: npt.NDArray) -> npt.NDArray:  # n
         if total_slider_length <= 1e-6:
             continue
 
-        if isinstance(hit_object, Perfect):
-            anchor_time = hit_object.t + 0.5 * hit_object.slide_duration
+        slide_duration = (
+            (hit_object.end_time.total_seconds() - hit_object.time.total_seconds()) * 1000 / hit_object.repeat
+        )
+        start_time = hit_object.time.total_seconds() * 1000
+
+        if isinstance(hit_object.curve, Perfect):
+            anchor_time = start_time + 0.5 * slide_duration
             perfect_anchors.append(anchor_time)
 
-        elif isinstance(hit_object, Line):
-            control_points = np.array(hit_object.control_points)
+        elif isinstance(hit_object.curve, Linear):
+            control_points = np.array(hit_object.curve.points)
             if len(control_points) <= 2:
                 continue
             anchor_distances, _ = get_path_arc_lengths(control_points)
             for i in range(1, len(control_points) - 1):
                 dist_to_anchor = anchor_distances[i]
                 time_proportion = dist_to_anchor / total_slider_length
-                anchor_time = hit_object.t + time_proportion * hit_object.slide_duration
-                line_anchors.append(anchor_time)
+                anchor_time = start_time + time_proportion * slide_duration
+                linear_anchors.append(anchor_time)
 
-        elif isinstance(hit_object, Bezier):
-            control_points = hit_object.control_points
+        elif isinstance(hit_object.curve, MultiBezier):
+            control_points = hit_object.curve.points
             if len(control_points) < 2:
                 continue
 
-            path_points = np.array(hit_object.control_points)
+            path_points = np.array(hit_object.curve.points)
             if len(path_points) <= 2:
                 continue
 
@@ -135,7 +148,7 @@ def hit_signals(beatmap: Beatmap, frame_times: npt.NDArray) -> npt.NDArray:  # n
 
             for i in range(1, len(path_points)):
                 dist_proportion = cumulative_lengths[i] / total_length
-                anchor_time = hit_object.t + dist_proportion * hit_object.slide_duration
+                anchor_time = start_time + dist_proportion * slide_duration
 
                 is_red_anchor = (i + 1 < len(path_points)) and np.array_equal(path_points[i], path_points[i + 1])
 
@@ -146,12 +159,22 @@ def hit_signals(beatmap: Beatmap, frame_times: npt.NDArray) -> npt.NDArray:  # n
 
     signals[BeatmapEncoding.WHITE_BEZIER_ANCHORS] = flips(frame_times, sorted(white_bezier_anchors))
     signals[BeatmapEncoding.RED_BEZIER_ANCHORS] = flips(frame_times, sorted(red_bezier_anchors))
-    signals[BeatmapEncoding.LINE_ANCHORS] = flips(frame_times, sorted(line_anchors))
+    signals[BeatmapEncoding.LINEAR_ANCHORS] = flips(frame_times, sorted(linear_anchors))
     signals[BeatmapEncoding.PERFECT_ANCHORS] = flips(frame_times, sorted(perfect_anchors))
     signals[BeatmapEncoding.COMBO] = flips(
         frame_times,
-        [hit_object.t for hit_object in beatmap.hit_objects if hit_object.new_combo],
+        [ho.time.total_seconds() * 1000 for ho in hit_objects if ho.new_combo],
     )
-    signals[BeatmapEncoding.KIAI] = extents(frame_times, beatmap.kiai)
+    kiai_regions = []
+    for i, tp in enumerate(beatmap.timing_points):
+        if tp.kiai_mode:
+            start_time = tp.offset.total_seconds() * 1000
+            end_time = (
+                beatmap.timing_points[i + 1].offset.total_seconds() * 1000
+                if i + 1 < len(beatmap.timing_points)
+                else frame_times[-1]
+            )
+            kiai_regions.append((start_time, end_time))
+    signals[BeatmapEncoding.KIAI] = extents(frame_times, kiai_regions)
 
     return signals

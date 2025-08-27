@@ -1,13 +1,14 @@
 from dataclasses import asdict, dataclass
+from datetime import timedelta
 from typing import Optional, Tuple
 
 import numpy as np
 import numpy.typing as npt
 from scipy import signal
+from slider.beatmap import TimingPoint
 
 from osu_fusion.data.enum import BeatmapEncoding
 from osu_fusion.data.hit import decode_extents, decode_flips
-from osu_fusion.osu.beatmap import TimingPoint
 
 BEAT_DIVISOR = 8
 SLIDER_MULT = 1.0
@@ -63,7 +64,16 @@ def get_timings(hit_times: npt.NDArray, timing_beat_len: float) -> Tuple[bool, T
     offsets = hit_times % timing_beat_len
     hist, bin_edges = np.histogram(offsets, bins=100, range=(0, timing_beat_len))
     offset = bin_edges[np.argmax(hist)]
-    return True, TimingPoint(offset, timing_beat_len, None, 4, False)
+    return True, TimingPoint(
+        offset=timedelta(milliseconds=offset),
+        ms_per_beat=timing_beat_len,
+        meter=4,
+        sample_type=0,
+        sample_set=0,
+        volume=50,
+        parent=None,
+        kiai_mode=False,
+    )
 
 
 def calculate_timing_point(
@@ -72,7 +82,16 @@ def calculate_timing_point(
     verbose: bool = True,
 ) -> Tuple[bool, TimingPoint]:
     if not allow_beat_snap:
-        return False, TimingPoint(0, 60000 / 200, None, 4, False)
+        return False, TimingPoint(
+            offset=timedelta(milliseconds=0),
+            ms_per_beat=60000 / 200,
+            meter=4,
+            sample_type=0,
+            sample_set=0,
+            volume=50,
+            parent=None,
+            kiai_mode=False,
+        )
 
     time_diffs = np.diff(hit_times)
     autocorr = signal.correlate(time_diffs, time_diffs, mode="full")
@@ -85,7 +104,16 @@ def calculate_timing_point(
     if len(valid_peaks) == 0:
         if verbose:
             print("Warning: no valid BPM found within the range, disabling beat snap")
-        return False, TimingPoint(0, 60000 / 200, None, 4, False)
+        return False, TimingPoint(
+            offset=timedelta(milliseconds=0),
+            ms_per_beat=60000 / 200,
+            meter=4,
+            sample_type=0,
+            sample_set=0,
+            volume=50,
+            parent=None,
+            kiai_mode=False,
+        )
 
     best_peak = valid_peaks[np.argmax(autocorr[valid_peaks])]
     initial_bpm = 60000 / best_peak
@@ -124,7 +152,7 @@ def decode_beatmap(  # noqa: C901
             BeatmapEncoding.SLIDER,
             BeatmapEncoding.WHITE_BEZIER_ANCHORS,
             BeatmapEncoding.RED_BEZIER_ANCHORS,
-            BeatmapEncoding.LINE_ANCHORS,
+            BeatmapEncoding.LINEAR_ANCHORS,
             BeatmapEncoding.PERFECT_ANCHORS,
             BeatmapEncoding.COMBO,
         ]
@@ -158,7 +186,7 @@ def decode_beatmap(  # noqa: C901
 
     white_bezier_anchor_locs = decode_flips(hit_signals[BeatmapEncoding.WHITE_BEZIER_ANCHORS])
     red_bezier_anchor_locs = decode_flips(hit_signals[BeatmapEncoding.RED_BEZIER_ANCHORS])
-    linear_anchor_locs = decode_flips(hit_signals[BeatmapEncoding.LINE_ANCHORS])
+    linear_anchor_locs = decode_flips(hit_signals[BeatmapEncoding.LINEAR_ANCHORS])
     perfect_anchor_locs = decode_flips(hit_signals[BeatmapEncoding.PERFECT_ANCHORS])
 
     hos = []
@@ -170,10 +198,12 @@ def decode_beatmap(  # noqa: C901
     else:
         beat_snap, timing_point = calculate_timing_point(hit_times, allow_beat_snap, verbose)
 
-    beat_length = timing_point.beat_length
+    beat_length = timing_point.ms_per_beat
     base_slider_vel = SLIDER_MULT * 100 / beat_length
-    beat_offset = timing_point.t
-    tps.append(f"{timing_point.t},{timing_point.beat_length},{timing_point.meter},0,0,50,1,0")
+    beat_offset = timing_point.offset.total_seconds() * 1000
+    tps.append(
+        f"{timing_point.offset.total_seconds() * 1000},{timing_point.ms_per_beat},{timing_point.meter},0,0,50,1,0",
+    )
 
     for hit_loc, new_combo, sustain_end, slider_end in zip(
         hit_locs,

@@ -9,7 +9,7 @@ BeatmapEncoding = IntEnum(
         "SLIDER",
         "WHITE_BEZIER_ANCHORS",
         "RED_BEZIER_ANCHORS",
-        "LINE_ANCHORS",
+        "LINEAR_ANCHORS",
         "PERFECT_ANCHORS",
         "COMBO",
         "KIAI",  # Only used to as an auxiliary signal so the model can learn better
