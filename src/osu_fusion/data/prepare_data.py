@@ -70,8 +70,8 @@ def split_hash(hash_str: str) -> Tuple[str, str, str]:
     return first_two, next_two, remaining
 
 
-def get_audio_spec(beatmap: Beatmap, global_spec_dir: Path) -> Optional[Tuple[np.ndarray, str]]:
-    audio_file = beatmap.audio_filename
+def get_audio_spec(beatmap: Beatmap, global_spec_dir: Path, map_file: Path) -> Optional[Tuple[np.ndarray, str]]:
+    audio_file = map_file.parent / beatmap.audio_filename
     audio_hash = compute_hash(audio_file)
     if not audio_hash:
         return None
@@ -98,7 +98,7 @@ def get_audio_spec(beatmap: Beatmap, global_spec_dir: Path) -> Optional[Tuple[np
             # Ensure the hierarchical spec directory exists
             spec_path.parent.mkdir(parents=True, exist_ok=True)
             with h5py.File(spec_path, "w") as f:
-                f.create_dataset("a", data=spec)
+                f.create_dataset("a", data=spec, compression="lzf")
             return spec, audio_hash
         except Exception as e:
             print(f"[Error] Failed to process audio {audio_file}: {e}")
@@ -186,7 +186,7 @@ def prepare_map(data_dir: Path, map_file: Path) -> None:
         print(f"[Warning] Skipping map {map_file.name} with SR {sr} > 9")
         return
 
-    spec_result = get_audio_spec(beatmap, global_spec_dir)
+    spec_result = get_audio_spec(beatmap, global_spec_dir, map_file)
     if spec_result is None:
         return
     spec, audio_hash = spec_result
@@ -208,8 +208,8 @@ def prepare_map(data_dir: Path, map_file: Path) -> None:
         first_two, next_two, remaining_hash = split_hash(audio_hash)
         spec_relative = f"specs/{first_two}/{next_two}/{remaining_hash}.spec.h5"  # Store relative path to global specs
         with h5py.File(map_path, "w") as f:
-            f.create_dataset("x", data=x)
-            f.create_dataset("c", data=c)
+            f.create_dataset("x", data=x, compression="lzf")
+            f.create_dataset("c", data=c, compression="lzf")
             f.create_dataset("spec_path", data=spec_relative.encode("utf-8"))
     except Exception as e:
         print(f"[Error] Failed to save map data {map_path}: {e}")
