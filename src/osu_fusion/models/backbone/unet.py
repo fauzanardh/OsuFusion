@@ -298,7 +298,7 @@ class UNet(nn.Module):
         dim_in_c: int,
         dim_h: int,
         dim_h_mult: Tuple[int] = (1, 2, 3, 4),
-        dim_t: int = 256,
+        dim_t: int = 128,
         num_layer_blocks: Tuple[int] = (2, 2, 2, 2),
         num_middle_transformers: int = 2,
         attn_dim_head: int = 64,
@@ -306,7 +306,6 @@ class UNet(nn.Module):
     ) -> None:
         super().__init__()
         self.dim_h = dim_h
-        self.dim_emb = dim_h * 4
 
         self.init_x = nn.Conv1d(dim_in_x, dim_h, 7, padding=3)
         self.audio_encoder = AudioEncoder(
@@ -321,23 +320,23 @@ class UNet(nn.Module):
             dim_h * 2,
             dim_h,
             dim_audio=dim_h,
-            dim_time=self.dim_emb,
-            dim_cond=self.dim_emb,
+            dim_time=self.dim_h,
+            dim_cond=self.dim_h,
         )
         self.final_conv = zero_init(nn.Conv1d(dim_h, dim_in_x, 1))
 
         self.time_mlp = nn.Sequential(
             SinusoidalPositionEmbedding(dim_t),
-            nn.Linear(dim_t, self.dim_emb),
+            nn.Linear(dim_t, self.dim_h),
             nn.SiLU(),
-            nn.Linear(self.dim_emb, self.dim_emb),
+            nn.Linear(self.dim_h, self.dim_h),
         )
         self.cond_mlp = nn.Sequential(
-            nn.Linear(dim_in_c, self.dim_emb),
+            nn.Linear(dim_in_c, self.dim_h),
             nn.SiLU(),
-            nn.Linear(self.dim_emb, self.dim_emb),
+            nn.Linear(self.dim_h, self.dim_h),
         )
-        self.null_cond = nn.Parameter(torch.randn(self.dim_emb))
+        self.null_cond = nn.Parameter(torch.randn(self.dim_h))
 
         # Downsample
         dims_h = tuple((dim_h * mult) for mult in dim_h_mult)
@@ -357,8 +356,8 @@ class UNet(nn.Module):
                     layer_dim_in,
                     layer_dim_out,
                     layer_dim_out,
-                    self.dim_emb,
-                    self.dim_emb,
+                    self.dim_h,
+                    self.dim_h,
                     i,
                     n_layers,
                     num_blocks,
@@ -375,8 +374,8 @@ class UNet(nn.Module):
             dims_h[-1],
             dims_h[-1],
             dim_audio=dims_h[-1],
-            dim_time=self.dim_emb,
-            dim_cond=self.dim_emb,
+            dim_time=self.dim_h,
+            dim_cond=self.dim_h,
         )
         attn_heads = dims_h[-1] // attn_dim_head
         attn_kv_heads = max(1, attn_heads // 2)
@@ -396,8 +395,8 @@ class UNet(nn.Module):
             dims_h[-1],
             dims_h[-1],
             dim_audio=dims_h[-1],
-            dim_time=self.dim_emb,
-            dim_cond=self.dim_emb,
+            dim_time=self.dim_h,
+            dim_cond=self.dim_h,
         )
 
         # Upsample
@@ -417,8 +416,8 @@ class UNet(nn.Module):
                     layer_dim_in,
                     layer_dim_out,
                     layer_dim_in,
-                    self.dim_emb,
-                    self.dim_emb,
+                    self.dim_h,
+                    self.dim_h,
                     i,
                     n_layers,
                     num_blocks,
