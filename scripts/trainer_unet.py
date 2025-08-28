@@ -106,9 +106,7 @@ def visualize_and_log_sample(
     base_model = accelerator.unwrap_model(model)
     base_model.eval()
     with torch.inference_mode(), accelerator.autocast():
-        a_lat, a_lat_intermediates = base_model.unet.encode_audio(a_tensor)
-        c_prep = base_model.unet.prepare_condition(c_tensor, cond_drop_prob=0.0)
-        generated = base_model.sample(n, a_lat, a_lat_intermediates, c_prep, x=x, cond_scale=1.0)
+        generated = base_model.sample(n, a_tensor, c_tensor, x=x, cond_scale=1.0)
     base_model.train()
 
     generated = generated.cpu().detach().float()

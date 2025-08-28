@@ -16,7 +16,7 @@ class OsuFusionUNet(nn.Module):
         self: "OsuFusionUNet",
         dim_h: int,
         dim_h_mult: Tuple[int] = (1, 2, 3, 4),
-        dim_t: int = 256,
+        dim_t: int = 128,
         num_layer_blocks: Tuple[int] = (2, 2, 2, 2),
         num_middle_transformers: int = 2,
         attn_dim_head: int = 64,
@@ -68,19 +68,21 @@ class OsuFusionUNet(nn.Module):
     def sample(
         self: "OsuFusionUNet",
         n: int,
-        a_lat: torch.Tensor,
-        a_lat_intermediates: Optional[torch.Tensor],
-        c_prep: torch.Tensor,
-        c_uncond_prep: Optional[torch.Tensor] = None,
+        a: torch.Tensor,
+        c: torch.Tensor,
         x: Optional[torch.Tensor] = None,
         cond_scale: float = 2.0,
     ) -> torch.Tensor:
-        assert cond_scale == 1.0 or c_uncond_prep is not None, "If cond_scale is not 1.0, c_uncond can't be None"
-
-        b, device = a_lat.shape[0], a_lat.device
+        b, device = a.shape[0], a.device
         if x is None:
             x = torch.randn((b, BEATMAP_DIM, n), device=device)
         x *= self.sampling_scheduler.init_noise_sigma
+
+        a_lat, a_lat_intermediates = self.unet.encode_audio(a)
+        c_prep = self.unet.prepare_condition(c, cond_drop_prob=0.0)
+        c_uncond_prep = None
+        if cond_scale != 1.0:
+            c_uncond_prep = self.unet.prepare_condition(c, cond_drop_prob=1.0)
 
         self.sampling_scheduler.set_timesteps(self.sampling_timesteps)
         for t in tqdm(self.sampling_scheduler.timesteps, desc="sampling loop time step", dynamic_ncols=True):
