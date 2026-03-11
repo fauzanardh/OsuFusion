@@ -1,9 +1,9 @@
-import random
 import shutil
+import time
 from argparse import ArgumentParser
 from dataclasses import asdict
 from pathlib import Path
-from typing import Dict, Generator, List, Tuple
+from typing import Dict, List, Tuple
 
 import h5py
 import numpy as np
@@ -46,12 +46,6 @@ def filter_dataset(dataset: List[Path], max_length: int) -> List[Path]:
             print(f"Error reading {path}: {e}")
             continue
     return filtered
-
-
-def cycle_dataloader(dataloader: DataLoader) -> Generator[Tuple[torch.Tensor, torch.Tensor, torch.Tensor], None, None]:
-    while True:
-        for batch in dataloader:
-            yield batch
 
 
 def manage_checkpoints(project_dir: Path, max_num_checkpoints: int) -> None:
@@ -216,6 +210,7 @@ MODEL_CONFIGS = {
 
 
 def train(args: ArgumentParser) -> None:  # noqa: C901
+    start_time = time.time()
     print("Initializing...")
     accelerator = Accelerator(
         mixed_precision=args.mixed_precision,
@@ -234,21 +229,10 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     if args.full_bf16:
         model.set_full_bf16()
 
-    parameters = list(model.trainable_params)
-    print(f"Number of trainable parameters: {sum(p.numel() for p in parameters)}")
-    optimizer = AdamW(parameters, lr=args.lr)
-    scheduler = get_cosine_schedule_with_warmup(
-        optimizer,
-        num_training_steps=args.total_steps,
-        num_warmup_steps=args.warmup_steps,
-        num_cycles=0.5,
-    )
-
     print("Loading dataset...")
     all_maps = list(args.dataset_dir.rglob("*.map.h5"))
     if args.max_length > 0:
         all_maps = filter_dataset(all_maps, args.max_length)
-    random.shuffle(all_maps)
 
     dataset = BeatmapDataset(dataset=all_maps)
     dataloader = DataLoader(
@@ -259,6 +243,19 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         persistent_workers=args.num_workers > 0,
         pin_memory=True,
         collate_fn=custom_collate_fn,
+    )
+
+    steps_per_epoch = max(1, len(all_maps) // (args.batch_size * args.gradient_accumulation_steps))
+    total_steps = steps_per_epoch * args.epochs
+
+    parameters = list(model.trainable_params)
+    print(f"Number of trainable parameters: {sum(p.numel() for p in parameters)}")
+    optimizer = AdamW(parameters, lr=args.lr)
+    scheduler = get_cosine_schedule_with_warmup(
+        optimizer,
+        num_training_steps=total_steps,
+        num_warmup_steps=args.warmup_steps,
+        num_cycles=0.5,
     )
 
     model, optimizer, scheduler, dataloader = accelerator.prepare(
@@ -279,6 +276,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         if args.resume
         else 0
     )
+    starting_epoch = current_step // steps_per_epoch
 
     model.train()
     if args.resume is None:
@@ -286,24 +284,22 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         clear_checkpoints(args.project_dir)
 
     print("Starting training...")
-    dataloader_cycle = cycle_dataloader(dataloader)
     loss_history = []
 
     with tqdm(
-        total=args.total_steps - current_step,
+        total=total_steps - current_step,
         dynamic_ncols=True,
         disable=not accelerator.is_local_main_process,
     ) as pbar:
-        while current_step < args.total_steps:
-            metrics = {
-                "diff_loss": 0.0,
-                "length_loss": 0.0,
-                "total_loss": 0.0,
-                "total_norm": 0.0,
-            }
+        for epoch in range(starting_epoch, args.epochs):
+            accum_diff_loss = 0.0
+            accum_length_loss = 0.0
+            accum_total_loss = 0.0
 
-            for _ in range(args.gradient_accumulation_steps):
-                x, a, c, orig_lens = next(dataloader_cycle)
+            for batch in dataloader:
+                metrics_total_norm = 0.0
+                x, a, c, orig_lens = batch
+
                 with accelerator.autocast(), accelerator.accumulate(model):
                     try:
                         diff_loss, length_loss = model(x, a, c, orig_lens)
@@ -313,74 +309,97 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                         continue
 
                     accelerator.backward(loss)
-                    metrics["total_norm"] += get_total_norm(parameters) / args.gradient_accumulation_steps
-                    metrics["diff_loss"] += diff_loss.item() / args.gradient_accumulation_steps
-                    metrics["length_loss"] += length_loss.item() / args.gradient_accumulation_steps
-                    metrics["total_loss"] += loss.item() / args.gradient_accumulation_steps
 
-                    if args.clip_grad_norm > 0.0:
-                        torch.nn.utils.clip_grad_norm_(parameters, args.clip_grad_norm)
+                    accum_diff_loss += diff_loss.item() / args.gradient_accumulation_steps
+                    accum_length_loss += length_loss.item() / args.gradient_accumulation_steps
+                    accum_total_loss += loss.item() / args.gradient_accumulation_steps
+
+                    if accelerator.sync_gradients:
+                        metrics_total_norm = get_total_norm(parameters)
+                        if args.clip_grad_norm > 0.0:
+                            accelerator.clip_grad_norm_(parameters, args.clip_grad_norm)
+
                     optimizer.step()
-                    optimizer.zero_grad(set_to_none=True)
                     scheduler.step()
+                    optimizer.zero_grad(set_to_none=True)
 
-            loss_history.append(metrics["total_loss"])
-            if len(loss_history) > args.save_every:
-                loss_history.pop(0)
-            avg_loss = sum(loss_history) / len(loss_history)
+                if accelerator.sync_gradients:
+                    loss_history.append(accum_total_loss)
+                    if len(loss_history) > args.save_every:
+                        loss_history.pop(0)
+                    avg_loss = sum(loss_history) / len(loss_history)
 
-            pbar.set_description(
-                f"Steps: {current_step + 1}, Loss: {metrics['total_loss']:.5f}, "
-                f"Diff: {metrics['diff_loss']:.5f}, Len: {metrics['length_loss']:.5f}, "
-                f"Avg: {avg_loss:.5f}, Norm: {metrics['total_norm']:.5f}, "
-                f"LR: {scheduler.get_last_lr()[0]:.5f}",
-            )
-            pbar.update(1)
-
-            if accelerator.is_main_process:
-                accelerator.log(
-                    {
-                        "total_loss": metrics["total_loss"],
-                        "diff_loss": metrics["diff_loss"],
-                        "length_loss": metrics["length_loss"],
-                        "total_norm": metrics["total_norm"],
-                        "lr": scheduler.get_last_lr()[0],
-                    },
-                    step=current_step + 1,
-                )
-
-            if (current_step + 1) % args.save_every == 0:
-                accelerator.wait_for_everyone()
-                if accelerator.is_main_process:
-                    accelerator.log({"save_loss": avg_loss}, step=current_step + 1)
-                    save_training_checkpoint(
-                        accelerator.unwrap_model(model),
-                        optimizer,
-                        scheduler,
-                        current_step,
-                        args.project_dir,
+                    pbar.set_description(
+                        f"Ep {epoch + 1}/{args.epochs} | Step {current_step + 1} | "
+                        f"Loss {accum_total_loss:.4f} | Diff {accum_diff_loss:.4f} | "
+                        f"Len {accum_length_loss:.4f} | Avg {avg_loss:.4f}",
                     )
-                    manage_checkpoints(args.project_dir, args.max_num_checkpoints)
+                    pbar.update(1)
 
-            if (
-                (current_step + 1) % args.sample_every == 0
-                and accelerator.is_main_process
-                and args.sample_audio is not None
-                and args.sample_audio.exists()
-            ):
-                print("Sampling...")
-                visualize_and_log_sample(
-                    accelerator,
-                    model,
-                    args.sample_audio,
-                    step=current_step + 1,
-                )
+                    if accelerator.is_main_process:
+                        accelerator.log(
+                            {
+                                "total_loss": accum_total_loss,
+                                "diff_loss": accum_diff_loss,
+                                "length_loss": accum_length_loss,
+                                "total_norm": metrics_total_norm,
+                                "lr": scheduler.get_last_lr()[0],
+                            },
+                            step=current_step + 1,
+                        )
 
-            current_step += 1
+                    if (current_step + 1) % args.save_every == 0:
+                        accelerator.wait_for_everyone()
+                        if accelerator.is_main_process:
+                            accelerator.log({"save_loss": avg_loss}, step=current_step + 1)
+                            save_training_checkpoint(
+                                accelerator.unwrap_model(model),
+                                optimizer,
+                                scheduler,
+                                current_step,
+                                args.project_dir,
+                            )
+                            manage_checkpoints(args.project_dir, args.max_num_checkpoints)
+
+                    if (
+                        (current_step + 1) % args.sample_every == 0
+                        and accelerator.is_main_process
+                        and args.sample_audio is not None
+                        and args.sample_audio.exists()
+                    ):
+                        print("Sampling...")
+                        visualize_and_log_sample(
+                            accelerator,
+                            model,
+                            args.sample_audio,
+                            step=current_step + 1,
+                        )
+
+                    current_step += 1
+
+                    accum_diff_loss = 0.0
+                    accum_length_loss = 0.0
+                    accum_total_loss = 0.0
 
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
         save_model_state(accelerator.unwrap_model(model), args.project_dir)
+
+        total_time = time.time() - start_time
+        peak_vram = torch.cuda.max_memory_allocated() / (1024 * 1024) if torch.cuda.is_available() else 0.0
+
+        print("\n---")
+        print(f"model_size: {args.model_size}")
+        print(f"model_parameters: {sum(p.numel() for p in parameters)}")
+        print(f"batch_size: {args.batch_size}")
+        print(f"gradient_accumulation_steps: {args.gradient_accumulation_steps}")
+        print(f"learning_rate: {args.lr}")
+        print(f"total_epochs: {args.epochs}")
+        print(f"total_steps: {total_steps}")
+        print(f"total_training_time_seconds: {total_time:.2f}")
+        print(f"peak_vram_mb: {peak_vram:.2f}")
+        if len(loss_history) > 0:
+            print(f"final_avg_loss: {sum(loss_history) / len(loss_history):.5f}")
 
 
 def main() -> None:
@@ -416,8 +435,8 @@ def main() -> None:
     args.add_argument("--length-loss-weight", type=float, default=0.1, help="Weight for length prediction loss")
     args.add_argument("--batch-size", type=int, default=8, help="Batch size for training")
     args.add_argument("--num-workers", type=int, default=2, help="Number of data loader workers")
-    args.add_argument("--total-steps", type=int, default=1_000_000, help="Total number of training steps")
-    args.add_argument("--warmup-steps", type=int, default=1_000, help="Number of warmup steps for scheduler")
+    args.add_argument("--epochs", type=int, default=100, help="Total number of training epochs")
+    args.add_argument("--warmup-steps", type=int, default=1000, help="Number of warmup steps for scheduler")
     args.add_argument("--save-every", type=int, default=1_000, help="Save checkpoint every N steps")
     args.add_argument("--max-num-checkpoints", type=int, default=5, help="Maximum number of checkpoints to keep")
     args.add_argument("--sample-every", type=int, default=1_000, help="Sample and log every N steps")
