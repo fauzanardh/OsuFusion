@@ -1,16 +1,14 @@
 from dataclasses import asdict, dataclass
 from datetime import timedelta
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import numpy.typing as npt
 from scipy import signal
 from slider.beatmap import TimingPoint
 
-from osu_fusion.data.enum import BeatmapEncoding
-from osu_fusion.data.hit import decode_extents, decode_flips
+from osu_fusion.data.encode import SequenceEncoding, LOG_SCALE_LENGTH, LOG_SCALE_REPEATS
 
-BEAT_DIVISOR = 8
 MIN_BPM = 1
 MAX_BPM = 300
 
@@ -131,171 +129,182 @@ def calculate_timing_point(
     return get_timings(hit_times, 60000 / best_bpm)
 
 
-def snap_to_beat(t: float, u: float, beat_offset: float, beat_length: float) -> Tuple[float, float]:
-    beat_f_len = beat_length / BEAT_DIVISOR
-    t = round((t - beat_offset) / beat_f_len) * beat_f_len + beat_offset
-    u = round((u - beat_offset) / beat_f_len) * beat_f_len + beat_offset
-    return t, u
-
-
-def decode_beatmap(  # noqa: C901
+def decode_sequence(  # noqa: C901
     metadata: Metadata,
-    encoded_beatmap: npt.NDArray,
-    frame_times: npt.NDArray,
-    bpm: Optional[float],
+    encoded_seq: npt.NDArray,
+    bpm: Optional[float] = None,
     allow_beat_snap: bool = True,
     verbose: bool = True,
 ) -> str:
-    hit_signals = encoded_beatmap[
-        [
-            BeatmapEncoding.HIT,
-            BeatmapEncoding.SUSTAIN,
-            BeatmapEncoding.SLIDER,
-            BeatmapEncoding.BEZIER_ANCHOR,
-            BeatmapEncoding.PERFECT_ANCHOR,
-            BeatmapEncoding.CATMULL_ANCHOR,
-            BeatmapEncoding.LINEAR_ANCHOR,
-            BeatmapEncoding.LAST_ANCHOR,
-            BeatmapEncoding.SLIDER_END,
-            BeatmapEncoding.SPINNER,
-            BeatmapEncoding.NEW_COMBO,
-        ]
-    ]
-    hit_signals = np.where(hit_signals > 0.0, 1.0, 0.0)  # Discretize signals
-    cursor_signals = encoded_beatmap[[BeatmapEncoding.CURSOR_X, BeatmapEncoding.CURSOR_Y]]
-    cursor_signals = ((cursor_signals + 1) / 2) * np.array([[512], [384]])
+    if encoded_seq.shape[0] == 0:
+        return map_template.format(**asdict(metadata), timing_points="", hit_objects="")
 
-    hit_locs = decode_flips(hit_signals[BeatmapEncoding.HIT])
-    loc2idx = np.full_like(frame_times, -1, dtype=int)
-    for i, onset_idx in enumerate(hit_locs):
-        loc2idx[onset_idx] = i
+    N_events = encoded_seq.shape[0]
 
-    new_combos = [False] * len(hit_locs)
-    for combo_locs in decode_flips(hit_signals[BeatmapEncoding.NEW_COMBO]):
-        new_combos[loc2idx[combo_locs]] = True
+    delta_times = (encoded_seq[:, SequenceEncoding.TIME] + 1.0) * (1000.0 / 2)
+    delta_times = np.maximum(0, delta_times)
+    xs = (encoded_seq[:, SequenceEncoding.X] + 1.0) * 256.0
+    ys = (encoded_seq[:, SequenceEncoding.Y] + 1.0) * 192.0
 
-    sustain_ends = [-1] * len(hit_locs)
-    for sustain_start, sustain_end in zip(*decode_extents(hit_signals[BeatmapEncoding.SUSTAIN]), strict=False):
-        onset_idx = loc2idx[sustain_start]
-        if onset_idx == -1:
-            continue
-        sustain_ends[onset_idx] = sustain_end
+    new_combos = encoded_seq[:, SequenceEncoding.NEW_COMBO] > 0.0
 
-    slider_ends = [-1] * len(hit_locs)
-    for slider_start, slider_end in zip(*decode_extents(hit_signals[BeatmapEncoding.SLIDER]), strict=False):
-        onset_idx = loc2idx[slider_start]
-        if onset_idx == -1:
-            continue
-        slider_ends[onset_idx] = slider_end
+    norm_lengths = (encoded_seq[:, SequenceEncoding.SLIDER_LENGTH] + 1.0) / 2.0
+    lengths = np.maximum(0, np.expm1(norm_lengths * LOG_SCALE_LENGTH))
 
-    bezier_anchor_locs = decode_flips(hit_signals[BeatmapEncoding.BEZIER_ANCHOR])
-    perfect_anchor_locs = decode_flips(hit_signals[BeatmapEncoding.PERFECT_ANCHOR])
-    catmull_anchor_locs = decode_flips(hit_signals[BeatmapEncoding.CATMULL_ANCHOR])
-    linear_anchor_locs = decode_flips(hit_signals[BeatmapEncoding.LINEAR_ANCHOR])
+    norm_repeats = (encoded_seq[:, SequenceEncoding.SLIDER_REPEATS] + 1.0) / 2.0
+    repeats = np.maximum(1, np.round(np.expm1(norm_repeats * LOG_SCALE_REPEATS)))
 
-    hos = []
-    tps = []
+    type_logits = encoded_seq[:, 6:18]
+    event_types = np.argmax(type_logits, axis=1) + 6
 
-    hit_times = frame_times[hit_locs]
-    if bpm is not None:
-        beat_snap, timing_point = get_timings(hit_times, 60000 / bpm)
-    else:
-        beat_snap, timing_point = calculate_timing_point(hit_times, allow_beat_snap, verbose)
+    tps: List[str] = []
+    obj_times = []
 
-    beat_length = timing_point.ms_per_beat
-    base_slider_vel = metadata.slider_multiplier * 100 / beat_length
-    beat_offset = timing_point.offset.total_seconds() * 1000
-    tps.append(
-        f"{timing_point.offset.total_seconds() * 1000},{timing_point.ms_per_beat},{timing_point.meter},0,0,50,1,0",
-    )
+    current_time = 0.0
+    absolute_times = np.zeros(N_events)
+    for i in range(N_events):
+        current_time += delta_times[i]
+        absolute_times[i] = current_time
 
-    for hit_loc, new_combo, sustain_end, slider_end in zip(
-        hit_locs,
-        new_combos,
-        sustain_ends,
-        slider_ends,
-        strict=False,
-    ):
-        with np.errstate(invalid="raise"):
-            x, y = cursor_signals[:, hit_loc].round().astype(int)
-        t = frame_times[hit_loc]
-        u = frame_times[sustain_end]
-        combo_bit = 2**2 if new_combo else 0
+        if event_types[i] in (
+            SequenceEncoding.TYPE_CIRCLE,
+            SequenceEncoding.TYPE_SLIDER_HEAD,
+            SequenceEncoding.TYPE_SPINNER,
+        ):
+            obj_times.append(current_time)
 
-        if beat_snap:
-            t, u = snap_to_beat(t, u, beat_offset, beat_length)
-
-        if sustain_end == -1:
-            # No sustain
-            hos.append(f"{x},{y},{t},{2**0 + combo_bit},0,0:0:0:0:")
-            continue
-
-        if sustain_end - hit_loc < 4:
-            # Sustain too short
-            hos.append(f"{x},{y},{t},{2**0 + combo_bit},0,0:0:0:0:")
-            continue
-
-        if slider_end == -1:
-            # Spinner
-            hos.append(f"256,192,{t},{2**3 + combo_bit},0,{u}")
-            continue
-
-        if slider_end - hit_loc < 4:
-            # Slider too short
-            hos.append(f"{x},{y},{t},{2**0 + combo_bit},0,0:0:0:0:")
-            continue
-
-        # Slider
-        anchor_frames = []
-        for frame in range(hit_loc + 1, slider_end):
-            if frame in bezier_anchor_locs:
-                anchor_frames.append((frame, "B"))
-            elif frame in perfect_anchor_locs:
-                anchor_frames.append((frame, "P"))
-            elif frame in catmull_anchor_locs:
-                anchor_frames.append((frame, "C"))
-            elif frame in linear_anchor_locs:
-                anchor_frames.append((frame, "L"))
-
-        control_points = [(x, y)]
-        with np.errstate(invalid="raise"):
-            for frame_idx, anchor_type in anchor_frames:
-                ax, ay = cursor_signals[:, frame_idx].round().astype(int)
-                control_points.append((ax, ay))
-                # For bezier sliders, red anchors are encoded as linear anchors
-                if anchor_type == "L" and any(frame in bezier_anchor_locs for frame in range(hit_loc + 1, slider_end)):
-                    control_points.append((ax, ay))
-            end_x, end_y = cursor_signals[:, slider_end].round().astype(int)
-            control_points.append((end_x, end_y))
-
-        if any(frame in bezier_anchor_locs for frame in range(hit_loc + 1, slider_end)):
-            slider_char = "B"
-        elif any(frame in perfect_anchor_locs for frame in range(hit_loc + 1, slider_end)):
-            slider_char = "P"
-        elif any(frame in catmull_anchor_locs for frame in range(hit_loc + 1, slider_end)):
-            slider_char = "C"
+    if len(obj_times) > 0:
+        if bpm is not None:
+            _, timing_point = get_timings(np.array(obj_times), 60000 / bpm)
         else:
-            slider_char = "L"
+            _, timing_point = calculate_timing_point(np.array(obj_times), allow_beat_snap, verbose)
 
-        length = 0.0
-        for k in range(len(control_points) - 1):
-            p1, p2 = np.array(control_points[k]), np.array(control_points[k + 1])
-            length += np.linalg.norm(p2 - p1)
+        tps.append(
+            f"{timing_point.offset.total_seconds() * 1000},{timing_point.ms_per_beat},{timing_point.meter},0,0,50,1,0",
+        )
+        beat_length = timing_point.ms_per_beat
+    else:
+        beat_length = 60000 / 200
 
-        if length < 1e-6:
-            hos.append(f"{x},{y},{t},{2**0 + combo_bit},0,0:0:0:0:")
+    base_slider_vel = metadata.slider_multiplier * 100 / beat_length
+
+    hos: List[str] = []
+
+    in_slider = False
+    in_spinner = False
+
+    slider_x, slider_y, slider_time, slider_nc = 0, 0, 0, False
+    slider_points = []
+    slider_curve_type = "B"
+    slider_length = 0.0
+    slider_repeat = 1
+
+    spinner_time, spinner_nc = 0, False
+
+    def emit_slider(end_time: float) -> None:
+        nonlocal in_slider
+        if not in_slider:
+            return
+
+        c_type = slider_curve_type
+        if len(slider_points) == 0:
+            combo_bit = 2**2 if slider_nc else 0
+            hos.append(f"{slider_x},{slider_y},{slider_time},{2**0 + combo_bit},0,0:0:0:0:")
+        else:
+            if c_type == "B" and len(slider_points) == 1:
+                c_type = "L"
+
+            points_str = "|".join([f"{round(px)}:{round(py)}" for px, py in slider_points])
+            combo_bit = 2**2 if slider_nc else 0
+
+            sl_length = slider_length
+            if sl_length < 1.0:
+                sl_length = 10.0
+
+            hos.append(
+                f"{slider_x},{slider_y},{int(slider_time)},{2**1 + combo_bit},0,"
+                f"{c_type}|{points_str},{int(slider_repeat)},{sl_length:.2f}",
+            )
+
+            duration_ms = end_time - slider_time
+            if duration_ms > 0 and base_slider_vel > 0:
+                vel = sl_length * slider_repeat / duration_ms
+                slider_vel = vel / base_slider_vel
+                slider_vel = max(0.1, min(10.0, slider_vel)) if slider_vel != 0 else 1.0
+                tps.append(f"{int(slider_time)},{-100 / slider_vel},4,0,0,50,0,0")
+
+        in_slider = False
+
+    def emit_spinner(end_time: float) -> None:
+        nonlocal in_spinner
+        if not in_spinner:
+            return
+        combo_bit = 2**2 if spinner_nc else 0
+        end_time = max(spinner_time + 1, end_time)
+        hos.append(f"256,192,{int(spinner_time)},{2**3 + combo_bit},0,{int(end_time)}")
+        in_spinner = False
+
+    obj_times = []
+
+    for i in range(N_events):
+        t = absolute_times[i]
+        x = round(xs[i])
+        y = round(ys[i])
+        nc = new_combos[i]
+        evt = event_types[i]
+
+        if evt in (SequenceEncoding.TYPE_CIRCLE, SequenceEncoding.TYPE_SLIDER_HEAD, SequenceEncoding.TYPE_SPINNER):
+            if in_slider:
+                emit_slider(t)
+            if in_spinner:
+                emit_spinner(t)
+
+        if evt == SequenceEncoding.TYPE_WAIT or evt == SequenceEncoding.TYPE_PAD:
             continue
 
-        num_slides = max(1, round((sustain_end - hit_loc) / (slider_end - hit_loc)))
-        curve_points_str = "|".join(f"{px}:{py}" for px, py in control_points[1:])
-        hos.append(f"{x},{y},{t},{2**1 + combo_bit},0,{slider_char}|{curve_points_str},{num_slides},{length:.2f}")
+        elif evt == SequenceEncoding.TYPE_CIRCLE:
+            combo_bit = 2**2 if nc else 0
+            hos.append(f"{x},{y},{int(t)},{2**0 + combo_bit},0,0:0:0:0:")
 
-        vel = length * num_slides / (u - t)
-        slider_vel = vel / base_slider_vel
-        slider_vel = 1 if slider_vel == 0 else slider_vel
-        if (slider_vel > 10 or slider_vel < 0.1) and verbose:
-            print(f"Warning: slider velocity {slider_vel} is out of bounds, slider will not be good")
-        tps.append(f"{t},{-100 / slider_vel},4,0,0,50,0,0")
+        elif evt == SequenceEncoding.TYPE_SPINNER:
+            in_spinner = True
+            spinner_time = t
+            spinner_nc = nc
+
+        elif evt == SequenceEncoding.TYPE_SPINNER_END:
+            emit_spinner(t)
+
+        elif evt == SequenceEncoding.TYPE_SLIDER_HEAD:
+            in_slider = True
+            slider_x, slider_y = x, y
+            slider_time = t
+            slider_nc = nc
+            slider_points = []
+            slider_curve_type = "B"
+            slider_length = lengths[i]
+            slider_repeat = repeats[i]
+
+        elif evt in (
+            SequenceEncoding.TYPE_BEZIER_ANCHOR,
+            SequenceEncoding.TYPE_PERFECT_ANCHOR,
+            SequenceEncoding.TYPE_CATMULL_ANCHOR,
+            SequenceEncoding.TYPE_RED_ANCHOR,
+            SequenceEncoding.TYPE_LAST_ANCHOR,
+        ):
+            if in_slider:
+                slider_points.append((x, y))
+                if evt == SequenceEncoding.TYPE_PERFECT_ANCHOR:
+                    slider_curve_type = "P"
+                elif evt == SequenceEncoding.TYPE_CATMULL_ANCHOR:
+                    slider_curve_type = "C"
+
+        elif evt == SequenceEncoding.TYPE_SLIDER_END and in_slider:
+            emit_slider(t)
+
+    if in_slider:
+        emit_slider(absolute_times[-1] + 100)
+    if in_spinner:
+        emit_spinner(absolute_times[-1] + 100)
 
     return map_template.format(
         **asdict(metadata),

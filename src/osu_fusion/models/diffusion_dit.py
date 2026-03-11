@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import Optional, Tuple
 
 import torch
@@ -8,7 +9,28 @@ from torch.nn import functional as F
 from tqdm.auto import tqdm
 
 from osu_fusion.data.const import AUDIO_DIM, BEATMAP_DIM, CONTEXT_DIM
-from osu_fusion.models.backbone.dit import DiT
+from osu_fusion.models.backbone.dit import DiT, LengthPredictor
+
+
+@dataclass
+class DiTConfig:
+    dim_h: int = 384
+    dim_h_mult: int = 4
+    dim_t: int = 256
+    audio_patch_size: int = 8
+    depth: int = 12
+    attn_dim_head: int = 64
+    attn_heads: int = 6
+    attn_kv_heads: int = 3
+    attn_context_len: int = 4096
+    cond_drop_prob: float = 0.5
+    train_timesteps: int = 1000
+    sampling_timesteps: int = 35
+
+
+DiTConfig_S = DiTConfig()
+DiTConfig_M = DiTConfig(dim_h=512, depth=16, attn_heads=8, attn_kv_heads=4)
+DiTConfig_L = DiTConfig(dim_h=768, depth=24, attn_heads=12, attn_kv_heads=6)
 
 
 class OsuFusionDiT(nn.Module):
@@ -17,9 +39,8 @@ class OsuFusionDiT(nn.Module):
         dim_h: int,
         dim_h_mult: int = 4,
         dim_t: int = 256,
-        patch_size: int = 8,
+        audio_patch_size: int = 8,
         depth: int = 24,
-        audio_cond_depth: int = 4,
         attn_dim_head: int = 64,
         attn_heads: int = 16,
         attn_kv_heads: int = 8,
@@ -37,13 +58,16 @@ class OsuFusionDiT(nn.Module):
             dim_t=dim_t,
             dim_h=dim_h,
             dim_h_mult=dim_h_mult,
-            patch_size=patch_size,
+            audio_patch_size=audio_patch_size,
             depth=depth,
-            audio_cond_depth=audio_cond_depth,
             attn_dim_head=attn_dim_head,
             attn_heads=attn_heads,
             attn_kv_heads=attn_kv_heads,
-            attn_context_len=attn_context_len // patch_size,
+            attn_context_len=attn_context_len,
+        )
+        self.length_predictor = LengthPredictor(
+            dim_a=AUDIO_DIM,
+            dim_c=CONTEXT_DIM,
         )
 
         self.train_scheduler = DDPMScheduler(
@@ -69,19 +93,28 @@ class OsuFusionDiT(nn.Module):
 
     def set_full_bf16(self: "OsuFusionDiT") -> None:
         self.dit = self.dit.bfloat16()
+        self.length_predictor = self.length_predictor.bfloat16()
+
+    def predict_length(self: "OsuFusionDiT", a: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+        return self.length_predictor(a, c)
 
     @torch.inference_mode()
     def sample(
         self: "OsuFusionDiT",
-        n: int,
         a: torch.Tensor,
         c: torch.Tensor,
+        n: Optional[int] = None,
         x: Optional[torch.Tensor] = None,
         cond_scale: float = 2.0,
     ) -> torch.Tensor:
         b, device = a.shape[0], a.device
+
+        if n is None:
+            pred_log_len = self.predict_length(a, c)
+            n = int(pred_log_len.exp().clamp(min=1).round().item())
+
         if x is None:
-            x = torch.randn((b, BEATMAP_DIM, n), device=device)
+            x = torch.randn((b, n, BEATMAP_DIM), device=device)
         x *= self.sampling_scheduler.init_noise_sigma
 
         self.sampling_scheduler.set_timesteps(self.sampling_timesteps)
@@ -105,29 +138,40 @@ class OsuFusionDiT(nn.Module):
         a: torch.Tensor,
         c: torch.Tensor,
         orig_lens: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Length prediction loss (in log space to match diffusion loss scale)
+        pred_log_len = self.length_predictor(a, c)
+        if orig_lens is not None:
+            target_len = orig_lens.float()
+        else:
+            target_len = torch.full((x.shape[0],), x.shape[1], device=x.device, dtype=x.dtype)
+        target_log_len = torch.log(target_len.clamp(min=1))
+        length_loss = F.mse_loss(pred_log_len, target_log_len)
+
+        # Diffusion loss
         noise = torch.randn_like(x, device=x.device)
         timesteps = torch.randint(
             0,
-            self.sampling_scheduler.config.num_train_timesteps,
+            self.train_scheduler.config.num_train_timesteps,
             (x.shape[0],),
             dtype=torch.int64,
             device=x.device,
         )
-        x_noisy = self.sampling_scheduler.add_noise(x, noise, timesteps)
+        x_noisy = self.train_scheduler.add_noise(x, noise, timesteps)
 
         pred = self.dit(x_noisy, a, timesteps, c, self.cond_drop_prob)
 
-        # Calculate loss
         v_target = self.train_scheduler.get_velocity(x, noise, timesteps)
-        loss = F.mse_loss(pred, v_target, reduction="none")
+        diff_loss = F.mse_loss(pred, v_target, reduction="none")
 
-        # Create mask for losses to ignore padding
         if orig_lens is not None:
-            b, _, n = x.shape
+            b, n, _ = x.shape
             mask = torch.ones((b, n), device=x.device)
             for i, orig in enumerate(orig_lens):
                 mask[i, orig:] = 0.0
-            mask = repeat(mask, "b n -> b d n", d=BEATMAP_DIM)
-            return (loss * mask).sum() / mask.sum()
-        return loss.mean()
+            mask = repeat(mask, "b n -> b n d", d=BEATMAP_DIM)
+            diff_loss = (diff_loss * mask).sum() / mask.sum()
+        else:
+            diff_loss = diff_loss.mean()
+
+        return diff_loss, length_loss

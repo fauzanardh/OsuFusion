@@ -20,7 +20,7 @@ def worker_task(args: Tuple[Path, Path]) -> None:
         prepare_map(data_dir, osu_file)
     except Exception as e:
         traceback.print_exc()
-        print(f"[Error] Failed to prepare map for {osu_file}: {e}")
+        print(f"\n[Error] Failed to prepare map for {osu_file}: {e}")
 
 
 def main() -> None:
@@ -28,6 +28,7 @@ def main() -> None:
     parser.add_argument("--dataset-dir", type=Path, required=True, help="Directory to store the dataset")
     parser.add_argument("--osu-song-dir", type=Path, required=True, help="Directory containing .osu files")
     parser.add_argument("--num-workers", type=int, default=cpu_count(), help="Number of worker processes")
+    parser.add_argument("--max-beatmaps", type=int, default=None, help="Maximum number of beatmaps to process")
     args = parser.parse_args()
 
     args.dataset_dir.mkdir(parents=True, exist_ok=True)
@@ -38,6 +39,10 @@ def main() -> None:
         print("No .osu files found. Exiting.")
         return
     random.shuffle(osu_files)
+
+    if args.max_beatmaps is not None:
+        osu_files = osu_files[: args.max_beatmaps]
+    print(f"Processing {len(osu_files)} beatmaps")
 
     task_args = [(args.dataset_dir, osu_file) for osu_file in osu_files]
     with (

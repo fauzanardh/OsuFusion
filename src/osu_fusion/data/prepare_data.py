@@ -11,8 +11,8 @@ from rosu_pp_py import Beatmap as RosuBeatmap
 from rosu_pp_py import Difficulty as RosuDifficulty
 from slider.beatmap import Beatmap
 
-from osu_fusion.data.const import AUDIO_DIM, BEATMAP_DIM, CONTEXT_DIM, FMIN, HOP_LENGTH, OCTAVE_BINS, SR
-from osu_fusion.data.encode import encode_beatmap
+from osu_fusion.data.const import AUDIO_DIM, CONTEXT_DIM, FMIN, HOP_LENGTH, OCTAVE_BINS, SR
+from osu_fusion.data.encode import encode_sequence, SEQ_DIM
 
 _global_lock: Dict[str, Lock] = {}  # type: ignore
 
@@ -32,7 +32,7 @@ def compute_hash(audio_file: Path) -> str:
             for chunk in iter(lambda: f.read(8192), b""):
                 hash_func.update(chunk)
     except Exception as e:
-        print(f"[Error] Failed to compute hash for {audio_file}: {e}")
+        print(f"\n[Error] Failed to compute hash for {audio_file}: {e}")
         return ""
     return hash_func.hexdigest()
 
@@ -54,7 +54,7 @@ def load_audio(audio_file: Path) -> np.ndarray:
     vqt_mean = vqt.mean(axis=1, keepdims=True)
     vqt_std = vqt.std(axis=1, keepdims=True)
     vqt = (vqt - vqt_mean) / (vqt_std + 1e-6)
-    return vqt
+    return vqt.T  # (T, AUDIO_DIM)
 
 
 def get_lock(path_str: str) -> Lock:  # type: ignore
@@ -91,7 +91,7 @@ def get_audio_spec(beatmap: Beatmap, global_spec_dir: Path, map_file: Path) -> O
             except (ValueError, EOFError, OSError):
                 # Spec file is corrupted; attempt to regenerate
                 spec_path.unlink(missing_ok=True)
-                print(f"[Warning] Corrupted spec file {spec_path} removed.")
+                print(f"\n[Warning] Corrupted spec file {spec_path} removed.")
         # If spec does not exist or was corrupted, generate it
         try:
             spec = load_audio(audio_file)
@@ -101,7 +101,7 @@ def get_audio_spec(beatmap: Beatmap, global_spec_dir: Path, map_file: Path) -> O
                 f.create_dataset("a", data=spec, compression="lzf")
             return spec, audio_hash
         except Exception as e:
-            print(f"[Error] Failed to process audio {audio_file}: {e}")
+            print(f"\n[Error] Failed to process audio {audio_file}: {e}")
             return None
 
 
@@ -109,30 +109,30 @@ def validate_map_data(map_file: Path, data_dir: Path) -> bool:
     try:
         with h5py.File(map_file, "r") as f:
             if "x" not in f or "c" not in f:
-                print(f"[Error] Missing data in map file {map_file}")
+                print(f"\n[Error] Missing data in map file {map_file}")
                 return False
 
             x = f["x"][:]
             c = f["c"][:]
-            if x.shape[0] != BEATMAP_DIM or c.shape[0] != CONTEXT_DIM:
-                print(f"[Error] Invalid data shape in map file {map_file}")
+            if x.shape[1] != SEQ_DIM or c.shape[0] != CONTEXT_DIM:
+                print(f"\n[Error] Invalid data shape in map file {map_file}: x shape {x.shape}, c shape {c.shape}")
                 return False
 
             if x.size == 0:
-                print(f"[Error] Empty data in map file {map_file}")
+                print(f"\n[Error] Empty data in map file {map_file}")
                 return False
 
             if "spec_path" not in f:
-                print(f"[Error] Missing `spec_path` key in map file {map_file}")
+                print(f"\n[Error] Missing `spec_path` key in map file {map_file}")
                 return False
 
             spec_relative = f["spec_path"][()].decode("utf-8")
             spec_file = data_dir / spec_relative
             if not spec_file.exists():
-                print(f"[Error] Missing spec file {spec_file}")
+                print(f"\n[Error] Missing spec file {spec_file}")
                 return False
     except Exception as e:
-        print(f"[Error] Failed to load map data {map_file}: {e}")
+        print(f"\n[Error] Failed to load map data {map_file}: {e}")
         return False
 
     return True
@@ -142,7 +142,7 @@ def prepare_map(data_dir: Path, map_file: Path) -> None:
     try:
         beatmap = Beatmap.from_path(map_file)
     except Exception as e:
-        print(f"[Error] Failed to load beatmap {map_file}: {e}")
+        print(f"\n[Error] Failed to load beatmap {map_file}: {e}")
         return
 
     if beatmap.mode != 0:
@@ -178,29 +178,20 @@ def prepare_map(data_dir: Path, map_file: Path) -> None:
             dtype=np.float32,
         )
     except Exception as e:
-        print(f"[Error] Rosu failed to process beatmap {map_file}: {e}")
+        print(f"\n[Error] Rosu failed to process beatmap {map_file}: {e}")
         return
 
     # HARDCODE: Max SR is 9 to test the model
     if sr > 9:
-        print(f"[Warning] Skipping map {map_file.name} with SR {sr} > 9")
+        print(f"\n[Warning] Skipping map {map_file.name} with SR {sr} > 9")
         return
 
     spec_result = get_audio_spec(beatmap, global_spec_dir, map_file)
     if spec_result is None:
         return
-    spec, audio_hash = spec_result
+    _, audio_hash = spec_result
 
-    frame_times = (
-        librosa.frames_to_time(
-            np.arange(spec.shape[-1]),
-            sr=SR,
-            hop_length=HOP_LENGTH,
-        )
-        * 1000
-    )  # Convert to milliseconds
-
-    x = encode_beatmap(beatmap, frame_times)
+    x = encode_sequence(beatmap)
 
     # Save the processed map data
     try:
@@ -212,4 +203,4 @@ def prepare_map(data_dir: Path, map_file: Path) -> None:
             f.create_dataset("c", data=c, compression="lzf")
             f.create_dataset("spec_path", data=spec_relative.encode("utf-8"))
     except Exception as e:
-        print(f"[Error] Failed to save map data {map_path}: {e}")
+        print(f"\n[Error] Failed to save map data {map_path}: {e}")

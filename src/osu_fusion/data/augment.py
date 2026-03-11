@@ -1,15 +1,13 @@
 import torch
 
-from osu_fusion.data.enum import BeatmapEncoding
+from osu_fusion.data.encode import SequenceEncoding
 
 
-# Flip cursor horizontally
 def flip_cursor_horizontal(x: torch.Tensor) -> torch.Tensor:
-    x[BeatmapEncoding.CURSOR_X] = -x[BeatmapEncoding.CURSOR_X]
+    x[:, SequenceEncoding.X] = -x[:, SequenceEncoding.X]
     return x
 
 
-# Flip cursor vertically
 def flip_cursor_vertical(x: torch.Tensor) -> torch.Tensor:
-    x[BeatmapEncoding.CURSOR_Y] = -x[BeatmapEncoding.CURSOR_Y]
+    x[:, SequenceEncoding.Y] = -x[:, SequenceEncoding.Y]
     return x

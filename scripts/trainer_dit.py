@@ -1,9 +1,11 @@
 import random
 import shutil
 from argparse import ArgumentParser
+from dataclasses import asdict
 from pathlib import Path
-from typing import Dict, Generator, List, Tuple, Union
+from typing import Dict, Generator, List, Tuple
 
+import h5py
 import numpy as np
 import torch
 from accelerate import Accelerator
@@ -20,12 +22,10 @@ from tqdm.auto import tqdm
 
 import wandb
 from osu_fusion.data.const import BEATMAP_DIM
-from osu_fusion.data.dataset import FullSequenceDataset, SubsequenceDataset
+from osu_fusion.data.encode import SequenceEncoding, SEQ_DIM
+from osu_fusion.data.dataset import BeatmapDataset
 from osu_fusion.data.prepare_data import load_audio
-from osu_fusion.models.diffusion_dit import OsuFusionDiT
-from osu_fusion.models.diffusion_mmdit import OsuFusionMMDiT
-
-Model = Union[OsuFusionDiT, OsuFusionMMDiT]
+from osu_fusion.models.diffusion_dit import DiTConfig_S, DiTConfig_M, DiTConfig_L, OsuFusionDiT
 
 
 def get_total_norm(parameters: List[torch.Tensor], norm_type: float = 2.0) -> float:
@@ -36,11 +36,15 @@ def get_total_norm(parameters: List[torch.Tensor], norm_type: float = 2.0) -> fl
 
 
 def filter_dataset(dataset: List[Path], max_length: int) -> List[Path]:
-    filtered = [
-        path
-        for path in tqdm(dataset, desc="Filtering dataset...", dynamic_ncols=True)
-        if np.load(path)["x"].shape[1] <= max_length
-    ]
+    filtered = []
+    for path in tqdm(dataset, desc="Filtering dataset...", dynamic_ncols=True):
+        try:
+            with h5py.File(path, "r") as f:
+                if f["x"].shape[0] <= max_length:
+                    filtered.append(path)
+        except Exception as e:
+            print(f"Error reading {path}: {e}")
+            continue
     return filtered
 
 
@@ -70,17 +74,34 @@ def clear_checkpoints(project_dir: Path) -> None:
 def custom_collate_fn(
     batch: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    orig_lens = torch.tensor([x.shape[1] for x, _, _ in batch], dtype=torch.int32)
-    max_length = max(x.shape[1] for x, _, _ in batch)
-    out_x = torch.stack([F.pad(x, (0, max_length - x.shape[1]), value=-1.0) for x, _, _ in batch])
-    out_a = torch.stack([F.pad(a, (0, max_length - a.shape[1]), value=0.0) for _, a, _ in batch])
+    # x: (N, D), a: (T, D_a), c: (D_c,)
+    orig_lens = torch.tensor([x.shape[0] for x, _, _ in batch], dtype=torch.int32)
+    max_x_len = max(x.shape[0] for x, _, _ in batch)
+    max_a_len = max(a.shape[0] for _, a, _ in batch)
+
+    # PAD token: continuous channels = 0.0 (neutral), type flags = -1.0 (inactive), TYPE_PAD = 1.0
+    pad_token = torch.zeros(SEQ_DIM)
+    pad_token[SequenceEncoding.NEW_COMBO] = -1.0
+    pad_token[6:18] = -1.0  # All type flags inactive
+    pad_token[SequenceEncoding.TYPE_PAD] = 1.0
+
+    padded_x = []
+    for x, _, _ in batch:
+        n_pad = max_x_len - x.shape[0]
+        if n_pad > 0:
+            pad_block = pad_token.unsqueeze(0).expand(n_pad, -1).to(x.device)
+            x = torch.cat([x, pad_block], dim=0)
+        padded_x.append(x)
+
+    out_x = torch.stack(padded_x)
+    out_a = torch.stack([F.pad(a, (0, 0, 0, max_a_len - a.shape[0]), value=0.0) for _, a, _ in batch])
     out_c = torch.stack([c for _, _, c in batch])
     return out_x, out_a, out_c, orig_lens
 
 
 def visualize_and_log_sample(
     accelerator: Accelerator,
-    model: Model,
+    model: OsuFusionDiT,
     audio_path: Path,
     step: int,
 ) -> None:
@@ -96,23 +117,18 @@ def visualize_and_log_sample(
     a_tensor = torch.from_numpy(a).unsqueeze(0).to(accelerator.device, dtype)
     c_tensor = torch.from_numpy(c).unsqueeze(0).to(accelerator.device, dtype)
 
-    b, _, n = a_tensor.shape
-
-    current_rng_state = torch.get_rng_state()
-    torch.manual_seed(0)
-    x = torch.randn((b, BEATMAP_DIM, n), device=accelerator.device, dtype=dtype)
-    torch.set_rng_state(current_rng_state)
-
     model.eval()
     with torch.inference_mode(), accelerator.autocast():
-        generated = model.sample(n, a_tensor, c_tensor, x=x, cond_scale=1.0)
+        generated = model.sample(a_tensor, c_tensor, cond_scale=1.0)
     model.train()
 
+    # generated: (B, N, D)
     generated = generated.cpu().detach().float()
-    width, height = generated.shape[-1] // 150, BEATMAP_DIM
-    fig, axs = plt.subplots(height, 1, figsize=(width, height * 8), sharex=True)
+    n_events = generated.shape[1]
+    width = max(1, n_events // 50)
+    fig, axs = plt.subplots(BEATMAP_DIM, 1, figsize=(width, BEATMAP_DIM * 8), sharex=True)
     for i in range(BEATMAP_DIM):
-        axs[i].plot(generated[0, i].cpu(), color="red", linewidth=0.5)
+        axs[i].plot(generated[0, :, i].cpu(), color="red", linewidth=0.5)
 
     fig.canvas.draw()
     pil_img = Image.frombytes("RGBA", fig.canvas.get_width_height(), fig.canvas.buffer_rgba().tobytes())
@@ -120,12 +136,13 @@ def visualize_and_log_sample(
     plt.close(fig)
 
 
-def save_model_state(model: Model, project_dir: Path) -> None:
+def save_model_state(model: OsuFusionDiT, project_dir: Path) -> None:
     save_file(model.dit.state_dict(), project_dir / "dit.safetensors")
+    save_file(model.length_predictor.state_dict(), project_dir / "length_predictor.safetensors")
 
 
 def save_training_checkpoint(
-    model: Model,
+    model: OsuFusionDiT,
     optimizer: AdamW,
     scheduler: LambdaLR,
     current_step: int,
@@ -138,6 +155,7 @@ def save_training_checkpoint(
 
     checkpoint = {
         "dit_state_dict": model.dit.state_dict(),
+        "length_predictor_state_dict": model.length_predictor.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "scheduler_state_dict": scheduler.state_dict(),
         "rng_state": torch.get_rng_state(),
@@ -150,9 +168,8 @@ def save_training_checkpoint(
 def filter_state_dict(
     model: torch.nn.Module,
     state_dict: Dict[str, torch.Tensor],
-) -> Tuple[Dict[str, torch.Tensor], int, int]:
+) -> Dict[str, torch.Tensor]:
     filtered_state_dict = {}
-
     model_state_dict = model.state_dict()
     for key, param in model_state_dict.items():
         if key in state_dict and param.size() == state_dict[key].size():
@@ -161,7 +178,7 @@ def filter_state_dict(
 
 
 def load_training_checkpoint(
-    model: Model,
+    model: OsuFusionDiT,
     optimizer: AdamW,
     scheduler: LambdaLR,
     checkpoint_path: Path,
@@ -173,8 +190,10 @@ def load_training_checkpoint(
 
     try:
         model.dit.load_state_dict(checkpoint["dit_state_dict"])
+        if "length_predictor_state_dict" in checkpoint:
+            model.length_predictor.load_state_dict(checkpoint["length_predictor_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-    except RuntimeError:  # Model changed
+    except RuntimeError:
         filtered_state_dict = filter_state_dict(model.dit, checkpoint["dit_state_dict"])
         incompatible_keys = model.dit.load_state_dict(filtered_state_dict, strict=False)
         if len(incompatible_keys.missing_keys) > 0:
@@ -187,6 +206,13 @@ def load_training_checkpoint(
 
     torch.set_rng_state(checkpoint["rng_state"].cpu())
     return 0 if reset_steps else int(checkpoint_path.stem.split("-")[1])
+
+
+MODEL_CONFIGS = {
+    "s": DiTConfig_S,
+    "m": DiTConfig_M,
+    "l": DiTConfig_L,
+}
 
 
 def train(args: ArgumentParser) -> None:  # noqa: C901
@@ -202,14 +228,12 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     )
     accelerator.init_trackers(project_name="OsuFusion")
 
-    # Initialize model
-    model_cls = OsuFusionDiT if args.model_type == "dit" else OsuFusionMMDiT
-    model = model_cls(dim_h=args.model_dim, attn_context_len=args.train_context_length)
+    config = MODEL_CONFIGS[args.model_size]
+    model = OsuFusionDiT(**asdict(config))
     model.dit.set_gradient_checkpointing(args.gradient_checkpointing)
     if args.full_bf16:
         model.set_full_bf16()
 
-    # Initialize optimizer and scheduler
     parameters = list(model.trainable_params)
     print(f"Number of trainable parameters: {sum(p.numel() for p in parameters)}")
     optimizer = AdamW(parameters, lr=args.lr)
@@ -217,7 +241,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         optimizer,
         num_training_steps=args.total_steps,
         num_warmup_steps=args.warmup_steps,
-        num_cycles=0.5,  # half cosine (reach 0 at the end)
+        num_cycles=0.5,
     )
 
     print("Loading dataset...")
@@ -226,8 +250,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         all_maps = filter_dataset(all_maps, args.max_length)
     random.shuffle(all_maps)
 
-    dataset_cls = FullSequenceDataset if args.full_sequence else SubsequenceDataset
-    dataset = dataset_cls(dataset=all_maps, sequence_length=args.train_context_length)
+    dataset = BeatmapDataset(dataset=all_maps)
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -238,7 +261,6 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         collate_fn=custom_collate_fn,
     )
 
-    # Prepare everything with accelerator
     model, optimizer, scheduler, dataloader = accelerator.prepare(
         model,
         optimizer,
@@ -246,7 +268,6 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         dataloader,
     )
 
-    # Load checkpoint if resuming
     current_step = (
         load_training_checkpoint(
             model,
@@ -275,7 +296,9 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     ) as pbar:
         while current_step < args.total_steps:
             metrics = {
-                "loss": 0.0,
+                "diff_loss": 0.0,
+                "length_loss": 0.0,
+                "total_loss": 0.0,
                 "total_norm": 0.0,
             }
 
@@ -283,14 +306,17 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                 x, a, c, orig_lens = next(dataloader_cycle)
                 with accelerator.autocast(), accelerator.accumulate(model):
                     try:
-                        loss = model(x, a, c, orig_lens)
+                        diff_loss, length_loss = model(x, a, c, orig_lens)
+                        loss = diff_loss + args.length_loss_weight * length_loss
                     except AssertionError:
                         print(f"AssertionError encountered at step {current_step + 1}, skipping batch.")
                         continue
 
                     accelerator.backward(loss)
                     metrics["total_norm"] += get_total_norm(parameters) / args.gradient_accumulation_steps
-                    metrics["loss"] += loss.item() / args.gradient_accumulation_steps
+                    metrics["diff_loss"] += diff_loss.item() / args.gradient_accumulation_steps
+                    metrics["length_loss"] += length_loss.item() / args.gradient_accumulation_steps
+                    metrics["total_loss"] += loss.item() / args.gradient_accumulation_steps
 
                     if args.clip_grad_norm > 0.0:
                         torch.nn.utils.clip_grad_norm_(parameters, args.clip_grad_norm)
@@ -298,31 +324,31 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                     optimizer.zero_grad(set_to_none=True)
                     scheduler.step()
 
-            # Update loss history and progress bar
-            loss_history.append(metrics["loss"])
+            loss_history.append(metrics["total_loss"])
             if len(loss_history) > args.save_every:
                 loss_history.pop(0)
             avg_loss = sum(loss_history) / len(loss_history)
 
             pbar.set_description(
-                f"Steps: {current_step + 1}, Loss: {metrics['loss']:.5f}, "
-                f"Avg Loss: {avg_loss:.5f}, Total Norm: {metrics['total_norm']:.5f}, "
+                f"Steps: {current_step + 1}, Loss: {metrics['total_loss']:.5f}, "
+                f"Diff: {metrics['diff_loss']:.5f}, Len: {metrics['length_loss']:.5f}, "
+                f"Avg: {avg_loss:.5f}, Norm: {metrics['total_norm']:.5f}, "
                 f"LR: {scheduler.get_last_lr()[0]:.5f}",
             )
             pbar.update(1)
 
-            # Logging
             if accelerator.is_main_process:
                 accelerator.log(
                     {
-                        "loss": metrics["loss"],
+                        "total_loss": metrics["total_loss"],
+                        "diff_loss": metrics["diff_loss"],
+                        "length_loss": metrics["length_loss"],
                         "total_norm": metrics["total_norm"],
                         "lr": scheduler.get_last_lr()[0],
                     },
                     step=current_step + 1,
                 )
 
-            # Save checkpoint
             if (current_step + 1) % args.save_every == 0:
                 accelerator.wait_for_everyone()
                 if accelerator.is_main_process:
@@ -336,7 +362,6 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                     )
                     manage_checkpoints(args.project_dir, args.max_num_checkpoints)
 
-            # Sample and visualize
             if (
                 (current_step + 1) % args.sample_every == 0
                 and accelerator.is_main_process
@@ -359,20 +384,18 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
 
 
 def main() -> None:
-    args = ArgumentParser(description="Train OsuFusion DiT/MMDiT Backbone")
+    args = ArgumentParser(description="Train OsuFusion DiT")
     args.add_argument("--project-dir", type=Path, required=True, help="Directory for project outputs")
     args.add_argument("--dataset-dir", type=Path, required=True, help="Directory containing the dataset")
     args.add_argument(
-        "--model-type",
+        "--model-size",
         type=str,
-        default="dit",
-        choices=["dit", "mmdit"],
-        help="Type of model to train",
+        default="s",
+        choices=["s", "m", "l"],
+        help="Model size: s (~46M), m (~130M), l (~400M)",
     )
     args.add_argument("--resume", type=Path, default=None, help="Path to resume from a checkpoint")
     args.add_argument("--reset-steps", action="store_true", help="Reset training steps when resuming")
-    args.add_argument("--train-context-length", type=int, default=4096, help="Context length for training")
-    args.add_argument("--full-sequence", action="store_true", help="Use full sequence dataset")
     args.add_argument("--max-length", type=int, default=0, help="Maximum length of beatmaps to include")
     args.add_argument(
         "--mixed-precision",
@@ -389,8 +412,8 @@ def main() -> None:
         help="Number of gradient accumulation steps",
     )
     args.add_argument("--clip-grad-norm", type=float, default=0.0, help="Gradient clipping norm")
-    args.add_argument("--model-dim", type=int, default=384, help="Dimension of the model")
     args.add_argument("--lr", type=float, default=1e-5, help="Learning rate for the optimizer")
+    args.add_argument("--length-loss-weight", type=float, default=0.1, help="Weight for length prediction loss")
     args.add_argument("--batch-size", type=int, default=8, help="Batch size for training")
     args.add_argument("--num-workers", type=int, default=2, help="Number of data loader workers")
     args.add_argument("--total-steps", type=int, default=1_000_000, help="Total number of training steps")
