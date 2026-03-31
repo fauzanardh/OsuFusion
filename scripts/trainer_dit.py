@@ -5,7 +5,6 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-import h5py
 import numpy as np
 import torch
 from accelerate import Accelerator
@@ -21,8 +20,7 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 import wandb
-from osu_fusion.data.const import BEATMAP_DIM
-from osu_fusion.data.encode import SequenceEncoding, SEQ_DIM
+from osu_fusion.data.encode import SEQ_DIM
 from osu_fusion.data.dataset import BeatmapDataset
 from osu_fusion.data.prepare_data import load_audio
 from osu_fusion.models.diffusion_dit import DiTConfig_S, DiTConfig_M, DiTConfig_L, OsuFusionDiT
@@ -33,19 +31,6 @@ def get_total_norm(parameters: List[torch.Tensor], norm_type: float = 2.0) -> fl
     if not grads:
         return 0.0
     return torch.norm(torch.stack([torch.norm(g.detach(), norm_type) for g in grads]), norm_type).item()
-
-
-def filter_dataset(dataset: List[Path], max_length: int) -> List[Path]:
-    filtered = []
-    for path in tqdm(dataset, desc="Filtering dataset...", dynamic_ncols=True):
-        try:
-            with h5py.File(path, "r") as f:
-                if f["x"].shape[0] <= max_length:
-                    filtered.append(path)
-        except Exception as e:
-            print(f"Error reading {path}: {e}")
-            continue
-    return filtered
 
 
 def manage_checkpoints(project_dir: Path, max_num_checkpoints: int) -> None:
@@ -68,27 +53,23 @@ def clear_checkpoints(project_dir: Path) -> None:
 def custom_collate_fn(
     batch: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    # x: (N, D), a: (T, D_a), c: (D_c,)
     orig_lens = torch.tensor([x.shape[0] for x, _, _ in batch], dtype=torch.int32)
-    max_x_len = max(x.shape[0] for x, _, _ in batch)
-    max_a_len = max(a.shape[0] for _, a, _ in batch)
-
-    # PAD token: continuous channels = 0.0 (neutral), type flags = -1.0 (inactive), TYPE_PAD = 1.0
+    max_len = max(x.shape[0] for x, _, _ in batch)
     pad_token = torch.zeros(SEQ_DIM)
-    pad_token[SequenceEncoding.NEW_COMBO] = -1.0
-    pad_token[6:18] = -1.0  # All type flags inactive
-    pad_token[SequenceEncoding.TYPE_PAD] = 1.0
 
     padded_x = []
-    for x, _, _ in batch:
-        n_pad = max_x_len - x.shape[0]
+    padded_a = []
+    for x, a, _ in batch:
+        n_pad = max_len - x.shape[0]
         if n_pad > 0:
             pad_block = pad_token.unsqueeze(0).expand(n_pad, -1).to(x.device)
             x = torch.cat([x, pad_block], dim=0)
+            a = F.pad(a, (0, 0, 0, n_pad), value=0.0)
         padded_x.append(x)
+        padded_a.append(a)
 
     out_x = torch.stack(padded_x)
-    out_a = torch.stack([F.pad(a, (0, 0, 0, max_a_len - a.shape[0]), value=0.0) for _, a, _ in batch])
+    out_a = torch.stack(padded_a)
     out_c = torch.stack([c for _, _, c in batch])
     return out_x, out_a, out_c, orig_lens
 
@@ -102,11 +83,10 @@ def visualize_and_log_sample(
     a = load_audio(audio_path)
     c = np.array([4.0, 9.5, 9.5, 4.0, 6.0, 1.4, 1.0], dtype=np.float32)
 
-    dtype = {
-        "no": torch.float32,
-        "fp16": torch.float16,
-        "bf16": torch.bfloat16,
-    }.get(accelerator.mixed_precision, torch.float32)
+    dtype = {"no": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}.get(
+        accelerator.mixed_precision,
+        torch.float32,
+    )
 
     a_tensor = torch.from_numpy(a).unsqueeze(0).to(accelerator.device, dtype)
     c_tensor = torch.from_numpy(c).unsqueeze(0).to(accelerator.device, dtype)
@@ -116,12 +96,13 @@ def visualize_and_log_sample(
         generated = model.sample(a_tensor, c_tensor, cond_scale=1.0)
     model.train()
 
-    # generated: (B, N, D)
     generated = generated.cpu().detach().float()
-    n_events = generated.shape[1]
-    width = max(1, n_events // 50)
-    fig, axs = plt.subplots(BEATMAP_DIM, 1, figsize=(width, BEATMAP_DIM * 8), sharex=True)
-    for i in range(BEATMAP_DIM):
+    n_frames = generated.shape[1]
+
+    width = max(8, min(n_frames // 100, 40))
+    fig, axs = plt.subplots(SEQ_DIM, 1, figsize=(width, SEQ_DIM * 1.5), sharex=True)
+
+    for i in range(SEQ_DIM):
         axs[i].plot(generated[0, :, i].cpu(), color="red", linewidth=0.5)
 
     fig.canvas.draw()
@@ -132,7 +113,6 @@ def visualize_and_log_sample(
 
 def save_model_state(model: OsuFusionDiT, project_dir: Path) -> None:
     save_file(model.dit.state_dict(), project_dir / "dit.safetensors")
-    save_file(model.length_predictor.state_dict(), project_dir / "length_predictor.safetensors")
 
 
 def save_training_checkpoint(
@@ -149,7 +129,6 @@ def save_training_checkpoint(
 
     checkpoint = {
         "dit_state_dict": model.dit.state_dict(),
-        "length_predictor_state_dict": model.length_predictor.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "scheduler_state_dict": scheduler.state_dict(),
         "rng_state": torch.get_rng_state(),
@@ -159,10 +138,7 @@ def save_training_checkpoint(
     torch.cuda.empty_cache()
 
 
-def filter_state_dict(
-    model: torch.nn.Module,
-    state_dict: Dict[str, torch.Tensor],
-) -> Dict[str, torch.Tensor]:
+def filter_state_dict(model: torch.nn.Module, state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
     filtered_state_dict = {}
     model_state_dict = model.state_dict()
     for key, param in model_state_dict.items():
@@ -184,8 +160,6 @@ def load_training_checkpoint(
 
     try:
         model.dit.load_state_dict(checkpoint["dit_state_dict"])
-        if "length_predictor_state_dict" in checkpoint:
-            model.length_predictor.load_state_dict(checkpoint["length_predictor_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
     except RuntimeError:
         filtered_state_dict = filter_state_dict(model.dit, checkpoint["dit_state_dict"])
@@ -202,11 +176,7 @@ def load_training_checkpoint(
     return 0 if reset_steps else int(checkpoint_path.stem.split("-")[1])
 
 
-MODEL_CONFIGS = {
-    "s": DiTConfig_S,
-    "m": DiTConfig_M,
-    "l": DiTConfig_L,
-}
+MODEL_CONFIGS = {"s": DiTConfig_S, "m": DiTConfig_M, "l": DiTConfig_L}
 
 
 def train(args: ArgumentParser) -> None:  # noqa: C901
@@ -215,10 +185,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     accelerator = Accelerator(
         mixed_precision=args.mixed_precision,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
-        project_config=ProjectConfiguration(
-            project_dir=args.project_dir,
-            automatic_checkpoint_naming=True,
-        ),
+        project_config=ProjectConfiguration(project_dir=args.project_dir, automatic_checkpoint_naming=True),
         log_with="wandb",
     )
     accelerator.init_trackers(project_name="OsuFusion")
@@ -231,13 +198,11 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
 
     print("Loading dataset...")
     all_maps = list(args.dataset_dir.rglob("*.map.h5"))
-    if args.max_length > 0:
-        all_maps = filter_dataset(all_maps, args.max_length)
-
     dataset = BeatmapDataset(dataset=all_maps)
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_size,
+        shuffle=True,
         num_workers=args.num_workers,
         prefetch_factor=4 if args.num_workers > 0 else None,
         persistent_workers=args.num_workers > 0,
@@ -245,7 +210,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         collate_fn=custom_collate_fn,
     )
 
-    steps_per_epoch = max(1, len(all_maps) // (args.batch_size * args.gradient_accumulation_steps))
+    steps_per_epoch = max(1, len(dataset) // (args.batch_size * args.gradient_accumulation_steps))
     total_steps = steps_per_epoch * args.epochs
 
     parameters = list(model.trainable_params)
@@ -258,23 +223,10 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         num_cycles=0.5,
     )
 
-    model, optimizer, scheduler, dataloader = accelerator.prepare(
-        model,
-        optimizer,
-        scheduler,
-        dataloader,
-    )
+    model, optimizer, scheduler, dataloader = accelerator.prepare(model, optimizer, scheduler, dataloader)
 
     current_step = (
-        load_training_checkpoint(
-            model,
-            optimizer,
-            scheduler,
-            args.resume,
-            args.reset_steps,
-        )
-        if args.resume
-        else 0
+        load_training_checkpoint(model, optimizer, scheduler, args.resume, args.reset_steps) if args.resume else 0
     )
     starting_epoch = current_step // steps_per_epoch
 
@@ -292,8 +244,8 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         disable=not accelerator.is_local_main_process,
     ) as pbar:
         for epoch in range(starting_epoch, args.epochs):
+            epoch_loss_history = []
             accum_diff_loss = 0.0
-            accum_length_loss = 0.0
             accum_total_loss = 0.0
 
             for batch in dataloader:
@@ -302,16 +254,14 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
 
                 with accelerator.autocast(), accelerator.accumulate(model):
                     try:
-                        diff_loss, length_loss = model(x, a, c, orig_lens)
-                        loss = diff_loss + args.length_loss_weight * length_loss
+                        loss = model(x, a, c, orig_lens)
                     except AssertionError:
                         print(f"AssertionError encountered at step {current_step + 1}, skipping batch.")
                         continue
 
                     accelerator.backward(loss)
 
-                    accum_diff_loss += diff_loss.item() / args.gradient_accumulation_steps
-                    accum_length_loss += length_loss.item() / args.gradient_accumulation_steps
+                    accum_diff_loss += loss.item() / args.gradient_accumulation_steps
                     accum_total_loss += loss.item() / args.gradient_accumulation_steps
 
                     if accelerator.sync_gradients:
@@ -324,15 +274,13 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                     optimizer.zero_grad(set_to_none=True)
 
                 if accelerator.sync_gradients:
-                    loss_history.append(accum_total_loss)
-                    if len(loss_history) > args.save_every:
-                        loss_history.pop(0)
-                    avg_loss = sum(loss_history) / len(loss_history)
+                    epoch_loss_history.append(accum_total_loss)
+                    loss_history.append(accum_total_loss)  # Track globally
+                    avg_loss = sum(epoch_loss_history) / len(epoch_loss_history)
 
                     pbar.set_description(
                         f"Ep {epoch + 1}/{args.epochs} | Step {current_step + 1} | "
-                        f"Loss {accum_total_loss:.4f} | Diff {accum_diff_loss:.4f} | "
-                        f"Len {accum_length_loss:.4f} | Avg {avg_loss:.4f}",
+                        f"Loss {accum_total_loss:.4f} | Avg {avg_loss:.4f}",
                     )
                     pbar.update(1)
 
@@ -340,8 +288,6 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                         accelerator.log(
                             {
                                 "total_loss": accum_total_loss,
-                                "diff_loss": accum_diff_loss,
-                                "length_loss": accum_length_loss,
                                 "total_norm": metrics_total_norm,
                                 "lr": scheduler.get_last_lr()[0],
                             },
@@ -368,20 +314,14 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                         and args.sample_audio.exists()
                     ):
                         print("Sampling...")
-                        visualize_and_log_sample(
-                            accelerator,
-                            model,
-                            args.sample_audio,
-                            step=current_step + 1,
-                        )
+                        visualize_and_log_sample(accelerator, model, args.sample_audio, step=current_step + 1)
 
                     current_step += 1
-
                     accum_diff_loss = 0.0
-                    accum_length_loss = 0.0
                     accum_total_loss = 0.0
 
     accelerator.wait_for_everyone()
+
     if accelerator.is_main_process:
         save_model_state(accelerator.unwrap_model(model), args.project_dir)
 
@@ -406,22 +346,11 @@ def main() -> None:
     args = ArgumentParser(description="Train OsuFusion DiT")
     args.add_argument("--project-dir", type=Path, required=True, help="Directory for project outputs")
     args.add_argument("--dataset-dir", type=Path, required=True, help="Directory containing the dataset")
-    args.add_argument(
-        "--model-size",
-        type=str,
-        default="s",
-        choices=["s", "m", "l"],
-        help="Model size: s (~46M), m (~130M), l (~400M)",
-    )
+    args.add_argument("--model-size", type=str, default="s", choices=["s", "m", "l"], help="Model size: s, m, l")
     args.add_argument("--resume", type=Path, default=None, help="Path to resume from a checkpoint")
     args.add_argument("--reset-steps", action="store_true", help="Reset training steps when resuming")
     args.add_argument("--max-length", type=int, default=0, help="Maximum length of beatmaps to include")
-    args.add_argument(
-        "--mixed-precision",
-        choices=["no", "fp16", "bf16"],
-        default="bf16",
-        help="Mixed precision mode",
-    )
+    args.add_argument("--mixed-precision", choices=["no", "fp16", "bf16"], default="bf16", help="Mixed precision mode")
     args.add_argument("--full-bf16", action="store_true", help="Use full bfloat16 precision")
     args.add_argument("--gradient-checkpointing", action="store_true", help="Enable gradient checkpointing")
     args.add_argument(
@@ -432,7 +361,6 @@ def main() -> None:
     )
     args.add_argument("--clip-grad-norm", type=float, default=0.0, help="Gradient clipping norm")
     args.add_argument("--lr", type=float, default=1e-5, help="Learning rate for the optimizer")
-    args.add_argument("--length-loss-weight", type=float, default=0.1, help="Weight for length prediction loss")
     args.add_argument("--batch-size", type=int, default=8, help="Batch size for training")
     args.add_argument("--num-workers", type=int, default=2, help="Number of data loader workers")
     args.add_argument("--epochs", type=int, default=100, help="Total number of training epochs")
@@ -442,7 +370,6 @@ def main() -> None:
     args.add_argument("--sample-every", type=int, default=1_000, help="Sample and log every N steps")
     args.add_argument("--sample-audio", type=Path, default=None, help="Path to sample audio for visualization")
     args = args.parse_args()
-
     train(args)
 
 

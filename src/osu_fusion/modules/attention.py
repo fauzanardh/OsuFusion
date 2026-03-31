@@ -3,19 +3,19 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
-from einops import rearrange, repeat
+from einops import rearrange, pack, unpack
 from torch.nn import functional as F
 from torch.profiler import record_function
 
 try:
-    from flash_attn.flash_attn_interface import flash_attn_func
+    from xformers.ops import memory_efficient_attention
 
-    print("Using flash attention")
-    FLASH_ATTENTION_AVAILABLE = True
+    print("Using xformers memory-efficient attention")
+    XFORMERS_AVAILABLE = True
 except ImportError:
-    FLASH_ATTENTION_AVAILABLE = False
+    XFORMERS_AVAILABLE = False
 
-from osu_fusion.modules.norms import RMSNorm
+from osu_fusion.modules.norms import MultiHeadRMSNorm
 from osu_fusion.modules.utils import dummy_context_manager
 
 DEBUG = os.environ.get("DEBUG", False)
@@ -72,11 +72,6 @@ class RotaryPositionEmbedding(nn.Module):
         else:
             self.register_buffer("scale", None, persistent=False)
 
-        self._seq_len_cached = None
-        self._cos_cached = None
-        self._sin_cached = None
-        self._scale_cached = None
-
     def _compute_scale(
         self: "RotaryPositionEmbedding",
         seq_len: int,
@@ -94,46 +89,50 @@ class RotaryPositionEmbedding(nn.Module):
         return rearrange(scale, "... d r -> ... (d r)")
 
     @torch.amp.autocast("cuda", dtype=torch.float32)
-    def _update_cache(
+    def _get_cos_sin_scale(
         self: "RotaryPositionEmbedding",
         x: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         seq_len = x.shape[-2]
 
-        if self._seq_len_cached != seq_len or self._cos_cached.device != x.device or self._cos_cached.dtype != x.dtype:
-            self._seq_len_cached = seq_len
+        t = torch.arange(seq_len, device=x.device, dtype=x.dtype)
+        freqs = torch.einsum("i, j -> i j", t, self.inv_freq.to(x.dtype)) / self.interpolation_factor
+        emb = torch.cat([freqs, freqs], dim=-1)
+        cos = rearrange(emb.cos(), "n d -> 1 1 n d")
+        sin = rearrange(emb.sin(), "n d -> 1 1 n d")
 
-            t = torch.arange(seq_len, device=x.device, dtype=x.dtype)
-            freqs = torch.einsum("i, j -> i j", t, self.inv_freq.to(x.dtype)) / self.interpolation_factor
-            emb = torch.cat([freqs, freqs], dim=-1)
-            self._cos_cached = rearrange(emb.cos(), "n d -> 1 1 n d")
-            self._sin_cached = rearrange(emb.sin(), "n d -> 1 1 n d")
+        scale = self._compute_scale(seq_len, x.device, x.dtype)
+        if scale is not None:
+            scale = rearrange(scale, "n d -> 1 1 n d")
 
-            self._scale_cached = self._compute_scale(seq_len, x.device, x.dtype)
-            if self._scale_cached is not None:
-                self._scale_cached = rearrange(self._scale_cached, "n d -> 1 1 n d")
-
-        return self._cos_cached, self._sin_cached, self._scale_cached
+        return cos, sin, scale
 
     def forward(
         self: "RotaryPositionEmbedding",
         q: torch.Tensor,
         k: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        self._cos_cached, self._sin_cached, self._scale_cached = self._update_cache(q)
+        cos, sin, scale = self._get_cos_sin_scale(q)
 
         return (
-            apply_rotary_pos_emb(q, self._cos_cached, self._sin_cached, self._scale_cached),
-            apply_rotary_pos_emb(k, self._cos_cached, self._sin_cached, self._scale_cached),
+            apply_rotary_pos_emb(q, cos, sin, scale),
+            apply_rotary_pos_emb(k, cos, sin, scale),
         )
+
+    def forward_single(
+        self: "RotaryPositionEmbedding",
+        x: torch.Tensor,
+    ) -> torch.Tensor:
+        cos, sin, scale = self._get_cos_sin_scale(x)
+        return apply_rotary_pos_emb(x, cos, sin, scale)
 
 
 class Attend(nn.Module):
     def __init__(self: "Attend") -> None:
         super().__init__()
-        self.use_flash_attention = FLASH_ATTENTION_AVAILABLE
+        self.use_xformers = XFORMERS_AVAILABLE
         if not torch.cuda.is_available():
-            self.use_flash_attention = False
+            self.use_xformers = False
             return
 
         device_properties = torch.cuda.get_device_properties(torch.device("cuda"))
@@ -157,9 +156,10 @@ class Attend(nn.Module):
         k = k.to(qkv_dtype)
         v = v.to(qkv_dtype)
 
-        if self.use_flash_attention and attn_mask is None:
+        if self.use_xformers and attn_mask is None:
+            # xformers expects (B, N, H, D) layout
             q, k, v = (t.transpose(1, 2) for t in (q, k, v))
-            out = flash_attn_func(q, k, v, causal=False)
+            out = memory_efficient_attention(q, k, v)
             out = out.transpose(1, 2)
         else:
             attn_mask = attn_mask.to(qkv_dtype) if attn_mask is not None else None
@@ -180,33 +180,26 @@ class Attention(nn.Module):
         dim_in: int,
         dim_head: int,
         heads: int,
-        kv_heads: int,
         context_len: int = 4096,
     ) -> None:
         super().__init__()
         self.heads = heads
-        self.kv_heads = kv_heads
 
-        self.prenorm = RMSNorm(dim_in)
-        self.to_q = nn.Linear(dim_in, dim_head * heads, bias=False)
-        self.to_kv = nn.Linear(dim_in, dim_head * kv_heads * 2, bias=False)
+        self.to_qkv = nn.Linear(dim_in, dim_head * heads * 3, bias=False)
         self.rotary_emb = RotaryPositionEmbedding(dim_head, scale_base=context_len)
+        self.q_norm = MultiHeadRMSNorm(dim_head, heads)
+        self.k_norm = MultiHeadRMSNorm(dim_head, heads)
 
         self.attn = Attend()
         self.to_out = nn.Linear(dim_head * heads, dim_in)
 
     def forward_body(self: "Attention", x: torch.Tensor) -> torch.Tensor:
-        x = self.prenorm(x)
-
-        q = rearrange(self.to_q(x), "b n (h d) -> b h n d", h=self.heads)
-
-        k, v = self.to_kv(x).chunk(2, dim=-1)
-        k, v = (rearrange(t, "b n (h d) -> b h n d", h=self.kv_heads) for t in (k, v))
+        q, k, v = self.to_qkv(x).chunk(3, dim=-1)
+        q, k, v = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q, k, v))
 
         q, k = self.rotary_emb(q, k)
-
-        # GQA
-        k, v = (repeat(t, "b h n d -> b (r h) n d", r=self.heads // self.kv_heads) for t in (k, v))
+        q = self.q_norm(q)
+        k = self.k_norm(k)
 
         out = self.attn(q, k, v)
         out = rearrange(out, "b h n d -> b n (h d)")
@@ -224,39 +217,88 @@ class CrossAttention(nn.Module):
         dim_in: int,
         dim_head: int,
         heads: int,
-        kv_heads: int,
-        context_len: int = 4096,
     ) -> None:
         super().__init__()
         self.heads = heads
-        self.kv_heads = kv_heads
-
-        self.norm_x = RMSNorm(dim_in)
-        self.norm_a = RMSNorm(dim_in)
 
         self.to_q = nn.Linear(dim_in, dim_head * heads, bias=False)
-        self.to_kv = nn.Linear(dim_in, dim_head * kv_heads * 2, bias=False)
+        self.to_kv = nn.Linear(dim_in, dim_head * heads * 2, bias=False)
+        self.q_norm = MultiHeadRMSNorm(dim_head, heads)
+        self.k_norm = MultiHeadRMSNorm(dim_head, heads)
 
         self.attn = Attend()
         self.to_out = nn.Linear(dim_head * heads, dim_in)
 
-    def forward_body(self: "CrossAttention", x: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
-        x = self.norm_x(x)
-        a = self.norm_a(a)
-
+    def forward_body(
+        self: "CrossAttention",
+        x: torch.Tensor,
+        context: torch.Tensor,
+    ) -> torch.Tensor:
         q = rearrange(self.to_q(x), "b n (h d) -> b h n d", h=self.heads)
 
-        k, v = self.to_kv(a).chunk(2, dim=-1)
-        k, v = (rearrange(t, "b n (h d) -> b h n d", h=self.kv_heads) for t in (k, v))
+        k, v = self.to_kv(context).chunk(2, dim=-1)
+        k, v = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (k, v))
 
-        # GQA
-        k, v = (repeat(t, "b h n d -> b (r h) n d", r=self.heads // self.kv_heads) for t in (k, v))
+        q = self.q_norm(q)
+        k = self.k_norm(k)
 
         out = self.attn(q, k, v)
         out = rearrange(out, "b h n d -> b n (h d)")
         return self.to_out(out)
 
-    def forward(self: "CrossAttention", x: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
+    def forward(self: "CrossAttention", x: torch.Tensor, context: torch.Tensor) -> torch.Tensor:
         context_manager = dummy_context_manager() if DEBUG else record_function("CrossAttention")
+        with context_manager:
+            return self.forward_body(x, context)
+
+
+class JointAttention(nn.Module):
+    def __init__(
+        self: "JointAttention",
+        dim_in: int,
+        dim_head: int,
+        heads: int,
+    ) -> None:
+        super().__init__()
+        self.heads = heads
+
+        self.to_qkv_x = nn.Linear(dim_in, dim_head * heads * 3, bias=False)
+        self.to_qkv_a = nn.Linear(dim_in, dim_head * heads * 3, bias=False)
+
+        self.q_norm_x = MultiHeadRMSNorm(dim_head, heads)
+        self.k_norm_x = MultiHeadRMSNorm(dim_head, heads)
+
+        self.q_norm_a = MultiHeadRMSNorm(dim_head, heads)
+        self.k_norm_a = MultiHeadRMSNorm(dim_head, heads)
+
+        self.attn = Attend()
+        self.to_out_x = nn.Linear(dim_head * heads, dim_in)
+        self.to_out_a = nn.Linear(dim_head * heads, dim_in)
+
+    def forward_body(
+        self: "JointAttention",
+        x: torch.Tensor,
+        a: torch.Tensor,
+    ) -> torch.Tensor:
+        q_x, k_x, v_x = self.to_qkv_x(x).chunk(3, dim=-1)
+        q_x, k_x, v_x = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q_x, k_x, v_x))
+
+        q_a, k_a, v_a = self.to_qkv_a(a).chunk(3, dim=-1)
+        q_a, k_a, v_a = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q_a, k_a, v_a))
+
+        q_x, k_x = self.q_norm_x(q_x), self.k_norm_x(k_x)
+        q_a, k_a = self.q_norm_a(q_a), self.k_norm_a(k_a)
+
+        q, seq_shape = pack([q_a, q_x], "b h * d")
+        k, _ = pack([k_a, k_x], "b h * d")
+        v, _ = pack([v_a, v_x], "b h * d")
+
+        out = self.attn(q, k, v)
+        out_a, out_x = unpack(out, seq_shape, "b h * d")
+        out_x, out_a = (rearrange(t, "b h n d -> b n (h d)") for t in (out_x, out_a))
+        return self.to_out_x(out_x), self.to_out_a(out_a)
+
+    def forward(self: "JointAttention", x: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
+        context_manager = dummy_context_manager() if DEBUG else record_function("JointAttention")
         with context_manager:
             return self.forward_body(x, a)

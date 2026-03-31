@@ -20,7 +20,7 @@ VQT_PARAMS = {
     "sr": SR,
     "hop_length": HOP_LENGTH,
     "fmin": FMIN,
-    "n_bins": AUDIO_DIM,
+    "n_bins": AUDIO_DIM - 2,
     "bins_per_octave": OCTAVE_BINS,
 }
 
@@ -39,9 +39,10 @@ def compute_hash(audio_file: Path) -> str:
 
 def load_audio(audio_file: Path) -> np.ndarray:
     try:
-        wave, sr = sf.read(audio_file, dtype="float32")
+        wave, orig_sr = sf.read(audio_file, dtype="float32")
         wave = librosa.to_mono(wave.T)
-        wave = librosa.resample(wave, orig_sr=sr, target_sr=22050)
+        if orig_sr != SR:
+            wave = librosa.resample(wave, orig_sr=orig_sr, target_sr=SR)
     except Exception as e:
         msg = f"Error loading audio file {audio_file}: {e}"
         raise ValueError(msg) from e
@@ -50,11 +51,31 @@ def load_audio(audio_file: Path) -> np.ndarray:
         msg = f"Empty audio file: {audio_file}"
         raise ValueError(msg)
 
+    # 1. Base VQT (Pitch & Chords)
     vqt = np.log(np.abs(librosa.vqt(y=wave, **VQT_PARAMS)) + 1e-6)
     vqt_mean = vqt.mean(axis=1, keepdims=True)
     vqt_std = vqt.std(axis=1, keepdims=True)
-    vqt = (vqt - vqt_mean) / (vqt_std + 1e-6)
-    return vqt.T  # (T, AUDIO_DIM)
+    vqt = ((vqt - vqt_mean) / (vqt_std + 1e-6)).T  # Shape: (T, 96)
+
+    # 2. Onset Strength Envelope (Percussive Transients)
+    raw_onset_env = librosa.onset.onset_strength(y=wave, sr=SR, hop_length=HOP_LENGTH)
+    onset_env = (raw_onset_env / (raw_onset_env.max() + 1e-6)) * 2.0 - 1.0
+    onset_env = onset_env.reshape(-1, 1)
+
+    # 3. Metronome Phase (Musical Measure Tracking)
+    _, beat_frames = librosa.beat.beat_track(onset_envelope=raw_onset_env, sr=SR, hop_length=HOP_LENGTH)
+    frames = np.arange(vqt.shape[0])
+    if len(beat_frames) > 1:
+        phase = np.interp(frames, beat_frames, np.arange(len(beat_frames))) % 1.0
+    else:
+        phase = np.zeros_like(frames)
+    phase = phase.reshape(-1, 1) * 2.0 - 1.0  # Normalize to [-1, 1]
+
+    # Align lengths (librosa sometimes outputs off-by-one frame differences across functions)
+    min_len = min(vqt.shape[0], onset_env.shape[0], phase.shape[0])
+
+    combined_audio = np.concatenate([vqt[:min_len], onset_env[:min_len], phase[:min_len]], axis=-1)
+    return combined_audio  # Shape: (T, AUDIO_DIM)
 
 
 def get_lock(path_str: str) -> Lock:  # type: ignore
@@ -64,10 +85,7 @@ def get_lock(path_str: str) -> Lock:  # type: ignore
 
 
 def split_hash(hash_str: str) -> Tuple[str, str, str]:
-    first_two = hash_str[:2]
-    next_two = hash_str[2:4]
-    remaining = hash_str[4:]
-    return first_two, next_two, remaining
+    return hash_str[:2], hash_str[2:4], hash_str[4:]
 
 
 def get_audio_spec(beatmap: Beatmap, global_spec_dir: Path, map_file: Path) -> Optional[Tuple[np.ndarray, str]]:
@@ -76,7 +94,6 @@ def get_audio_spec(beatmap: Beatmap, global_spec_dir: Path, map_file: Path) -> O
     if not audio_hash:
         return None
 
-    # Split the hash to create hierarchical directories
     first_two, next_two, remaining_hash = split_hash(audio_hash)
     spec_filename = f"{remaining_hash}.spec.h5"
     spec_path = global_spec_dir / first_two / next_two / spec_filename
@@ -89,13 +106,10 @@ def get_audio_spec(beatmap: Beatmap, global_spec_dir: Path, map_file: Path) -> O
                     spec = f["a"][:]
                 return spec, audio_hash
             except (ValueError, EOFError, OSError):
-                # Spec file is corrupted; attempt to regenerate
                 spec_path.unlink(missing_ok=True)
                 print(f"\n[Warning] Corrupted spec file {spec_path} removed.")
-        # If spec does not exist or was corrupted, generate it
         try:
             spec = load_audio(audio_file)
-            # Ensure the hierarchical spec directory exists
             spec_path.parent.mkdir(parents=True, exist_ok=True)
             with h5py.File(spec_path, "w") as f:
                 f.create_dataset("a", data=spec, compression="lzf")
@@ -109,32 +123,20 @@ def validate_map_data(map_file: Path, data_dir: Path) -> bool:
     try:
         with h5py.File(map_file, "r") as f:
             if "x" not in f or "c" not in f:
-                print(f"\n[Error] Missing data in map file {map_file}")
                 return False
-
             x = f["x"][:]
             c = f["c"][:]
             if x.shape[1] != SEQ_DIM or c.shape[0] != CONTEXT_DIM:
-                print(f"\n[Error] Invalid data shape in map file {map_file}: x shape {x.shape}, c shape {c.shape}")
                 return False
-
             if x.size == 0:
-                print(f"\n[Error] Empty data in map file {map_file}")
                 return False
-
             if "spec_path" not in f:
-                print(f"\n[Error] Missing `spec_path` key in map file {map_file}")
                 return False
-
             spec_relative = f["spec_path"][()].decode("utf-8")
-            spec_file = data_dir / spec_relative
-            if not spec_file.exists():
-                print(f"\n[Error] Missing spec file {spec_file}")
+            if not (data_dir / spec_relative).exists():
                 return False
-    except Exception as e:
-        print(f"\n[Error] Failed to load map data {map_file}: {e}")
+    except Exception:
         return False
-
     return True
 
 
@@ -146,25 +148,20 @@ def prepare_map(data_dir: Path, map_file: Path) -> None:
         return
 
     if beatmap.mode != 0:
-        return  # Only process standard mode beatmaps
+        return
 
-    # Define the global specs directory
     global_spec_dir = data_dir / "specs"
-
-    # Define the map data path (unique per map)
     map_data_dir = data_dir / "maps" / map_file.parent.name
     map_data_dir.mkdir(parents=True, exist_ok=True)
     map_path = map_data_dir / f"{map_file.stem}.map.h5"
 
-    # If the map data already exists, check if the map file is valid, then skip
     if map_path.exists() and validate_map_data(map_path, data_dir):
         return
 
     try:
         with map_file.open("r", encoding="utf-8") as f:
             rosu_beatmap = RosuBeatmap(content=f.read())
-        rosu_difficulty = RosuDifficulty()
-        sr = rosu_difficulty.calculate(rosu_beatmap).stars
+        sr = RosuDifficulty().calculate(rosu_beatmap).stars
         c = np.array(
             [
                 rosu_beatmap.cs,
@@ -181,23 +178,19 @@ def prepare_map(data_dir: Path, map_file: Path) -> None:
         print(f"\n[Error] Rosu failed to process beatmap {map_file}: {e}")
         return
 
-    # HARDCODE: Max SR is 9 to test the model
     if sr > 9:
-        print(f"\n[Warning] Skipping map {map_file.name} with SR {sr} > 9")
         return
 
     spec_result = get_audio_spec(beatmap, global_spec_dir, map_file)
     if spec_result is None:
         return
-    _, audio_hash = spec_result
+    spec, audio_hash = spec_result
 
-    x = encode_sequence(beatmap)
-
-    # Save the processed map data
+    total_frames = spec.shape[0]
+    x = encode_sequence(beatmap, total_frames=total_frames)
     try:
-        # Split the hash to reconstruct the relative path
         first_two, next_two, remaining_hash = split_hash(audio_hash)
-        spec_relative = f"specs/{first_two}/{next_two}/{remaining_hash}.spec.h5"  # Store relative path to global specs
+        spec_relative = f"specs/{first_two}/{next_two}/{remaining_hash}.spec.h5"
         with h5py.File(map_path, "w") as f:
             f.create_dataset("x", data=x, compression="lzf")
             f.create_dataset("c", data=c, compression="lzf")

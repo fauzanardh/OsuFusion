@@ -7,10 +7,9 @@ from einops.layers.torch import Rearrange
 from torch.nn import functional as F
 from torch.profiler import record_function
 
-from osu_fusion.modules.attention import Attention, CrossAttention
+from osu_fusion.modules.attention import Attention, JointAttention
 from osu_fusion.modules.positional_embeddings import SinusoidalPositionEmbedding
 from osu_fusion.modules.utils import dummy_context_manager, prob_mask_like
-
 
 DEBUG = os.environ.get("DEBUG", False)
 
@@ -20,19 +19,19 @@ def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch
     return x * (1 + scale) + shift
 
 
-class FeedForward(nn.Sequential):
+class FeedForward(nn.Module):
     def __init__(self: "FeedForward", dim: int, dim_mult: int = 2) -> None:
-        inner_dim = dim * dim_mult
-        super().__init__(
-            nn.Linear(dim, inner_dim),
-            nn.SiLU(),
-            nn.Linear(inner_dim, dim),
-        )
+        super().__init__()
+        inner_dim = int(dim * dim_mult * 2 / 3)
+        inner_dim = (inner_dim + 7) // 8 * 8
+        self.w1 = nn.Linear(dim, inner_dim, bias=False)
+        self.w2 = nn.Linear(dim, inner_dim, bias=False)
+        self.w3 = nn.Linear(inner_dim, dim, bias=False)
 
     def forward(self: "FeedForward", x: torch.Tensor) -> torch.Tensor:
         context_manager = dummy_context_manager() if DEBUG else record_function("FeedForward")
         with context_manager:
-            return super().forward(x)
+            return self.w3(F.silu(self.w1(x)) * self.w2(x))
 
 
 class AudioPatchEmbedding(nn.Sequential):
@@ -44,12 +43,119 @@ class AudioPatchEmbedding(nn.Sequential):
         )
 
 
-class BeatmapEmbedding(nn.Sequential):
-    def __init__(self: "BeatmapEmbedding", dim: int, dim_h: int) -> None:
+class BeatmapPatchEmbedding(nn.Sequential):
+    def __init__(self: "BeatmapPatchEmbedding", dim: int, dim_h: int, patch_size: int) -> None:
         super().__init__(
-            nn.Linear(dim, dim_h),
+            Rearrange("b (n p) d -> b n (p d)", p=patch_size),
+            nn.Linear(dim * patch_size, dim_h),
             nn.LayerNorm(dim_h),
         )
+
+
+class FinalUnpatchLayer(nn.Module):
+    def __init__(self: "FinalUnpatchLayer", dim_h: int, dim_out: int, patch_size: int) -> None:
+        super().__init__()
+        self.patch_size = patch_size
+        self.norm = nn.LayerNorm(dim_h, elementwise_affine=False)
+        self.modulation = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(dim_h, dim_h * 2, bias=True),
+        )
+        self.out = nn.Linear(dim_h, dim_out * patch_size)
+        self.unpatch = Rearrange("b n (p d) -> b (n p) d", p=patch_size, d=dim_out)
+
+    def forward(self: "FinalUnpatchLayer", x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+        shift, scale = self.modulation(c).chunk(2, dim=-1)
+        x = modulate(self.norm(x), shift, scale)
+        x = self.out(x)
+        return self.unpatch(x)
+
+
+class MMDiTBlock(nn.Module):
+    def __init__(
+        self: "MMDiTBlock",
+        dim_h: int,
+        dim_h_mult: int = 4,
+        attn_dim_head: int = 64,
+        attn_heads: int = 16,
+    ) -> None:
+        super().__init__()
+        # Modulation
+        self.modulation_x = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(dim_h, dim_h * 6, bias=True),
+        )
+        self.modulation_a = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(dim_h, dim_h * 6, bias=True),
+        )
+
+        # OsuData branch
+        self.norm1_x = nn.LayerNorm(dim_h, elementwise_affine=False, eps=1e-6)
+        self.norm2_x = nn.LayerNorm(dim_h, elementwise_affine=False, eps=1e-6)
+        self.mlp_x = FeedForward(dim_h, dim_mult=dim_h_mult)
+
+        # Audio branch
+        self.norm1_a = nn.LayerNorm(dim_h, elementwise_affine=False, eps=1e-6)
+        self.norm2_a = nn.LayerNorm(dim_h, elementwise_affine=False, eps=1e-6)
+        self.mlp_a = FeedForward(dim_h, dim_mult=dim_h_mult)
+
+        self.attn = JointAttention(
+            dim_h,
+            attn_dim_head,
+            attn_heads,
+        )
+
+        self.gradient_checkpointing = False
+
+    def forward_body(
+        self: "MMDiTBlock",
+        x: torch.Tensor,
+        a: torch.Tensor,
+        c: torch.Tensor,
+    ) -> torch.Tensor:
+        # Modulation
+        (
+            shift_attn_x,
+            scale_attn_x,
+            gate_attn_x,
+            shift_mlp_x,
+            scale_mlp_x,
+            gate_mlp_x,
+        ) = self.modulation_x(c).chunk(6, dim=-1)
+        (
+            shift_attn_a,
+            scale_attn_a,
+            gate_attn_a,
+            shift_mlp_a,
+            scale_mlp_a,
+            gate_mlp_a,
+        ) = self.modulation_a(c).chunk(6, dim=-1)
+
+        # Attention
+        h_x = modulate(self.norm1_x(x), shift_attn_x, scale_attn_x)
+        h_a = modulate(self.norm1_a(a), shift_attn_a, scale_attn_a)
+        attn_out_x, attn_out_a = self.attn(h_x, h_a)
+
+        x = x + gate_attn_x * attn_out_x
+        a = a + gate_attn_a * attn_out_a
+
+        # MLP
+        x = x + gate_mlp_x * self.mlp_x(modulate(self.norm2_x(x), shift_mlp_x, scale_mlp_x))
+        a = a + gate_mlp_a * self.mlp_a(modulate(self.norm2_a(a), shift_mlp_a, scale_mlp_a))
+
+        return x, a
+
+    def forward(
+        self: "MMDiTBlock",
+        x: torch.Tensor,
+        a: torch.Tensor,
+        c: torch.Tensor,
+    ) -> torch.Tensor:
+        if self.training and self.gradient_checkpointing:
+            return torch.utils.checkpoint.checkpoint(self.forward_body, x, a, c, use_reentrant=True)
+        else:
+            return self.forward_body(x, a, c)
 
 
 class DiTBlock(nn.Module):
@@ -59,93 +165,52 @@ class DiTBlock(nn.Module):
         dim_h_mult: int = 4,
         attn_dim_head: int = 64,
         attn_heads: int = 16,
-        attn_kv_heads: int = 8,
         attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
         self.modulation = nn.Sequential(
             nn.SiLU(),
-            nn.Linear(dim_h, dim_h * 9, bias=True),
+            nn.Linear(dim_h, dim_h * 6, bias=True),
         )
         self.norm1 = nn.LayerNorm(dim_h, elementwise_affine=False)
         self.attn = Attention(
             dim_h,
             dim_head=attn_dim_head,
             heads=attn_heads,
-            kv_heads=attn_kv_heads,
             context_len=attn_context_len,
         )
         self.norm2 = nn.LayerNorm(dim_h, elementwise_affine=False)
-        self.cross_attn = CrossAttention(
-            dim_h,
-            dim_head=attn_dim_head,
-            heads=attn_heads,
-            kv_heads=attn_kv_heads,
-        )
-        self.norm3 = nn.LayerNorm(dim_h, elementwise_affine=False)
         self.ff = FeedForward(dim_h, dim_h_mult)
 
         self.gradient_checkpointing = False
 
-    def forward_body(self: "DiTBlock", x: torch.Tensor, a: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+    def forward_body(
+        self: "DiTBlock",
+        x: torch.Tensor,
+        c: torch.Tensor,
+    ) -> torch.Tensor:
         (
             shift_msa,
             scale_msa,
             gate_msa,
-            shift_cross,
-            scale_cross,
-            gate_cross,
             shift_ff,
             scale_ff,
             gate_ff,
-        ) = self.modulation(c).chunk(9, dim=-1)
+        ) = self.modulation(c).chunk(6, dim=-1)
 
         x = x + gate_msa * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
-        x = x + gate_cross * self.cross_attn(modulate(self.norm2(x), shift_cross, scale_cross), a)
-        x = x + gate_ff * self.ff(modulate(self.norm3(x), shift_ff, scale_ff))
+        x = x + gate_ff * self.ff(modulate(self.norm2(x), shift_ff, scale_ff))
         return x
 
-    def forward(self: "DiTBlock", x: torch.Tensor, a: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self: "DiTBlock",
+        x: torch.Tensor,
+        c: torch.Tensor,
+    ) -> torch.Tensor:
         if self.training and self.gradient_checkpointing:
-            return torch.utils.checkpoint.checkpoint(self.forward_body, x, a, c, use_reentrant=True)
+            return torch.utils.checkpoint.checkpoint(self.forward_body, x, c, use_reentrant=True)
         else:
-            return self.forward_body(x, a, c)
-
-
-class FinalLayer(nn.Module):
-    def __init__(self: "FinalLayer", dim_h: int, dim_out: int) -> None:
-        super().__init__()
-        self.norm = nn.LayerNorm(dim_h, elementwise_affine=False)
-        self.modulation = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(dim_h, dim_h * 2, bias=True),
-        )
-        self.out = nn.Linear(dim_h, dim_out)
-
-    def forward(self: "FinalLayer", x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
-        shift, scale = self.modulation(c).chunk(2, dim=-1)
-        x = modulate(self.norm(x), shift, scale)
-        return self.out(x)
-
-
-class LengthPredictor(nn.Module):
-    def __init__(self: "LengthPredictor", dim_a: int, dim_c: int, dim_h: int = 256) -> None:
-        super().__init__()
-        self.audio_pool = nn.Sequential(
-            nn.Linear(dim_a, dim_h),
-            nn.SiLU(),
-        )
-        self.mlp = nn.Sequential(
-            nn.Linear(dim_h + dim_c, dim_h),
-            nn.SiLU(),
-            nn.Linear(dim_h, 1),
-        )
-
-    def forward(self: "LengthPredictor", a: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
-        # a: (B, T, dim_a) — raw audio spectrogram
-        # c: (B, dim_c) — context vector
-        a_pooled = self.audio_pool(a.mean(dim=1))  # (B, dim_h)
-        return self.mlp(torch.cat([a_pooled, c], dim=-1)).squeeze(-1)  # (B,)
+            return self.forward_body(x, c)
 
 
 class DiT(nn.Module):
@@ -155,20 +220,26 @@ class DiT(nn.Module):
         dim_in_a: int,
         dim_in_c: int,
         dim_h: int,
-        dim_h_mult: int = 4,
+        dim_h_mult: int = 6,
         dim_t: int = 256,
-        audio_patch_size: int = 8,
-        depth: int = 24,
+        beatmap_patch_size: int = 4,
+        audio_patch_size: int = 4,
+        mmdit_depth: int = 16,
+        dit_depth: int = 8,
         attn_dim_head: int = 64,
         attn_heads: int = 16,
-        attn_kv_heads: int = 8,
         attn_context_len: int = 4096,
     ) -> None:
         super().__init__()
+        self.attn_heads = attn_heads
         self.audio_patch_size = audio_patch_size
+        self.beatmap_patch_size = beatmap_patch_size
 
-        self.x_embed = BeatmapEmbedding(dim_in_x, dim_h)
+        self.x_embed = BeatmapPatchEmbedding(dim_in_x, dim_h, beatmap_patch_size)
+        self.x_pos_emb = SinusoidalPositionEmbedding(dim_h)
+
         self.a_patch = AudioPatchEmbedding(dim_in_a, dim_h, audio_patch_size)
+        self.a_pos_emb = SinusoidalPositionEmbedding(dim_h)
 
         self.time_mlp = nn.Sequential(
             SinusoidalPositionEmbedding(dim_t),
@@ -183,20 +254,32 @@ class DiT(nn.Module):
         )
         self.null_cond = nn.Parameter(torch.randn(dim_h))
 
-        self.blocks = nn.ModuleList(
+        self.mmdit_blocks = nn.ModuleList(
+            [
+                MMDiTBlock(
+                    dim_h,
+                    dim_h_mult=dim_h_mult,
+                    attn_dim_head=attn_dim_head,
+                    attn_heads=attn_heads,
+                )
+                for _ in range(mmdit_depth)
+            ],
+        )
+
+        self.dit_blocks = nn.ModuleList(
             [
                 DiTBlock(
                     dim_h,
                     dim_h_mult=dim_h_mult,
                     attn_dim_head=attn_dim_head,
                     attn_heads=attn_heads,
-                    attn_kv_heads=attn_kv_heads,
                     attn_context_len=attn_context_len,
                 )
-                for _ in range(depth)
+                for _ in range(dit_depth)
             ],
         )
-        self.final = FinalLayer(dim_h, dim_in_x)
+
+        self.final = FinalUnpatchLayer(dim_h, dim_in_x, beatmap_patch_size)
 
         self.initialize_weights()
 
@@ -214,12 +297,21 @@ class DiT(nn.Module):
         nn.init.normal_(self.cond_mlp[0].weight, std=0.02)
         nn.init.normal_(self.cond_mlp[2].weight, std=0.02)
 
-        for block in self.blocks:
+        for block in self.mmdit_blocks:
+            nn.init.zeros_(block.modulation_x[1].weight)
+            nn.init.zeros_(block.modulation_x[1].bias)
+            nn.init.zeros_(block.modulation_a[1].weight)
+            nn.init.zeros_(block.modulation_a[1].bias)
+
+        for block in self.dit_blocks:
             nn.init.zeros_(block.modulation[1].weight)
             nn.init.zeros_(block.modulation[1].bias)
 
         nn.init.zeros_(self.final.modulation[1].weight)
         nn.init.zeros_(self.final.modulation[1].bias)
+
+        nn.init.zeros_(self.final.out.weight)
+        nn.init.zeros_(self.final.out.bias)
 
     def set_gradient_checkpointing(self: "DiT", value: bool) -> None:
         for name, module in self.named_modules():
@@ -236,10 +328,8 @@ class DiT(nn.Module):
         cond_scale: float = 1.0,
     ) -> torch.Tensor:
         logits = self.forward(x, a, t, c, cond_drop_prob=0.0)
-
         if cond_scale == 1.0:
             return logits
-
         null_logits = self.forward(x, a, t, c, cond_drop_prob=1.0)
         return null_logits + (logits - null_logits) * cond_scale
 
@@ -251,30 +341,37 @@ class DiT(nn.Module):
         c: torch.Tensor,
         cond_drop_prob: float = 0.0,
     ) -> torch.Tensor:
-        # Beatmap: embed directly (no patching, each event = 1 token)
-        # x: (B, N, dim_in_x)
+        orig_x_len = x.shape[1]
+
+        # Pad beatmap
+        x_pad = (self.beatmap_patch_size - (orig_x_len % self.beatmap_patch_size)) % self.beatmap_patch_size
+        x = F.pad(x, (0, 0, 0, x_pad))
         x = self.x_embed(x)
+        x_pos = torch.arange(x.shape[1], device=x.device, dtype=x.dtype)
+        x = x + self.x_pos_emb(x_pos)
 
-        # Audio: pad for patch alignment and embed
-        # a: (B, T, dim_in_a)
-        a_t = a.shape[1]
-        a_pad = (self.audio_patch_size - (a_t % self.audio_patch_size)) % self.audio_patch_size
+        # Pad audio
+        orig_a_len = a.shape[1]
+        a_pad = (self.audio_patch_size - (orig_a_len % self.audio_patch_size)) % self.audio_patch_size
         a = F.pad(a, (0, 0, 0, a_pad))
-        a_tokens = self.a_patch(a)
+        a = self.a_patch(a)
+        a_pos = torch.arange(a.shape[1], device=a.device, dtype=a.dtype)
+        a = a + self.a_pos_emb(a_pos)
 
-        # Global conditioning: timestep + context with CFG
+        # Global conditioning
         cond_mask = prob_mask_like((c.shape[0],), 1.0 - cond_drop_prob, device=c.device)
         cond_mask = rearrange(cond_mask, "b -> b 1")
         null_conds = repeat(self.null_cond, "d -> b d", b=c.shape[0])
         c_global = self.cond_mlp(c)
         c_global = torch.where(cond_mask, c_global, null_conds)
         c_global = c_global + self.time_mlp(t)
-        c_global = c_global.unsqueeze(1)  # (B, 1, dim_h) for adaLN broadcast
+        c_global = c_global.unsqueeze(1)
 
-        # Main DiT blocks: self-attention on beatmap + cross-attention into audio
-        for block in self.blocks:
-            x = block(x, a_tokens, c_global)
+        for mmdit_block in self.mmdit_blocks:
+            x, a = mmdit_block(x, a, c_global)
 
-        # Project back to beatmap channels
+        for dit_block in self.dit_blocks:
+            x = dit_block(x, c_global)
+
         x = self.final(x, c_global)
-        return x
+        return x[:, :orig_x_len, :]

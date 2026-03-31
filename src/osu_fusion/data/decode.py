@@ -7,6 +7,7 @@ import numpy.typing as npt
 from scipy import signal
 from slider.beatmap import TimingPoint
 
+from osu_fusion.data.const import MS_PER_FRAME
 from osu_fusion.data.encode import SequenceEncoding, LOG_SCALE_LENGTH, LOG_SCALE_REPEATS
 
 MIN_BPM = 1
@@ -80,7 +81,7 @@ def calculate_timing_point(
     allow_beat_snap: bool,
     verbose: bool = True,
 ) -> Tuple[bool, TimingPoint]:
-    if not allow_beat_snap:
+    if not allow_beat_snap or len(hit_times) < 2:
         return False, TimingPoint(
             offset=timedelta(milliseconds=0),
             ms_per_beat=60000 / 200,
@@ -139,39 +140,45 @@ def decode_sequence(  # noqa: C901
     if encoded_seq.shape[0] == 0:
         return map_template.format(**asdict(metadata), timing_points="", hit_objects="")
 
-    N_events = encoded_seq.shape[0]
+    is_note_signal = encoded_seq[:, SequenceEncoding.IS_NOTE]
 
-    delta_times = (encoded_seq[:, SequenceEncoding.TIME] + 1.0) * (1000.0 / 2)
-    delta_times = np.maximum(0, delta_times)
-    xs = (encoded_seq[:, SequenceEncoding.X] + 1.0) * 256.0
-    ys = (encoded_seq[:, SequenceEncoding.Y] + 1.0) * 192.0
+    # Collect all frames where IS_NOTE is set (handles adjacent/plateau events)
+    peaks = np.where(is_note_signal > 0.0)[0]
 
-    new_combos = encoded_seq[:, SequenceEncoding.NEW_COMBO] > 0.0
+    if len(peaks) == 0:
+        return map_template.format(**asdict(metadata), timing_points="", hit_objects="")
 
-    norm_lengths = (encoded_seq[:, SequenceEncoding.SLIDER_LENGTH] + 1.0) / 2.0
+    N_events = len(peaks)
+
+    offsets_norm = (encoded_seq[peaks, SequenceEncoding.OFFSET] + 1.0) / 2.0
+    offsets = np.clip(offsets_norm, 0.0, 1.0)
+
+    absolute_times = (peaks + offsets) * MS_PER_FRAME
+
+    xs = (encoded_seq[peaks, SequenceEncoding.X] + 1.0) * 256.0
+    ys = (encoded_seq[peaks, SequenceEncoding.Y] + 1.0) * 192.0
+
+    new_combos = encoded_seq[peaks, SequenceEncoding.NEW_COMBO] > 0.0
+
+    norm_lengths = (encoded_seq[peaks, SequenceEncoding.SLIDER_LENGTH] + 1.0) / 2.0
     lengths = np.maximum(0, np.expm1(norm_lengths * LOG_SCALE_LENGTH))
 
-    norm_repeats = (encoded_seq[:, SequenceEncoding.SLIDER_REPEATS] + 1.0) / 2.0
+    norm_repeats = (encoded_seq[peaks, SequenceEncoding.SLIDER_REPEATS] + 1.0) / 2.0
     repeats = np.maximum(1, np.round(np.expm1(norm_repeats * LOG_SCALE_REPEATS)))
 
-    type_logits = encoded_seq[:, 6:18]
-    event_types = np.argmax(type_logits, axis=1) + 6
+    type_logits = encoded_seq[peaks, 9:19]
+    event_types = np.argmax(type_logits, axis=1) + 9
 
     tps: List[str] = []
     obj_times = []
 
-    current_time = 0.0
-    absolute_times = np.zeros(N_events)
     for i in range(N_events):
-        current_time += delta_times[i]
-        absolute_times[i] = current_time
-
         if event_types[i] in (
             SequenceEncoding.TYPE_CIRCLE,
             SequenceEncoding.TYPE_SLIDER_HEAD,
             SequenceEncoding.TYPE_SPINNER,
         ):
-            obj_times.append(current_time)
+            obj_times.append(absolute_times[i])
 
     if len(obj_times) > 0:
         if bpm is not None:
@@ -209,7 +216,7 @@ def decode_sequence(  # noqa: C901
         c_type = slider_curve_type
         if len(slider_points) == 0:
             combo_bit = 2**2 if slider_nc else 0
-            hos.append(f"{slider_x},{slider_y},{slider_time},{2**0 + combo_bit},0,0:0:0:0:")
+            hos.append(f"{slider_x},{slider_y},{int(slider_time)},{2**0 + combo_bit},0,0:0:0:0:")
         else:
             if c_type == "B" and len(slider_points) == 1:
                 c_type = "L"
@@ -244,8 +251,6 @@ def decode_sequence(  # noqa: C901
         hos.append(f"256,192,{int(spinner_time)},{2**3 + combo_bit},0,{int(end_time)}")
         in_spinner = False
 
-    obj_times = []
-
     for i in range(N_events):
         t = absolute_times[i]
         x = round(xs[i])
@@ -259,10 +264,7 @@ def decode_sequence(  # noqa: C901
             if in_spinner:
                 emit_spinner(t)
 
-        if evt == SequenceEncoding.TYPE_WAIT or evt == SequenceEncoding.TYPE_PAD:
-            continue
-
-        elif evt == SequenceEncoding.TYPE_CIRCLE:
+        if evt == SequenceEncoding.TYPE_CIRCLE:
             combo_bit = 2**2 if nc else 0
             hos.append(f"{x},{y},{int(t)},{2**0 + combo_bit},0,0:0:0:0:")
 
@@ -292,6 +294,9 @@ def decode_sequence(  # noqa: C901
             SequenceEncoding.TYPE_LAST_ANCHOR,
         ):
             if in_slider:
+                # All anchor types simply append their position.
+                # RED_ANCHOR's (x,y) is identical to the previous point by definition,
+                # so appending it once naturally creates the duplicate pair needed.
                 slider_points.append((x, y))
                 if evt == SequenceEncoding.TYPE_PERFECT_ANCHOR:
                     slider_curve_type = "P"
