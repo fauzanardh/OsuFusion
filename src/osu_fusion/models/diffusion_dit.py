@@ -18,8 +18,8 @@ class DiTConfig:
     dim_h: int = 384
     dim_h_mult: int = 6
     dim_t: int = 256
-    beatmap_patch_size: int = 4
-    audio_patch_size: int = 4
+    beatmap_patch_size: int = 16
+    audio_patch_size: int = 16
     mmdit_depth: int = 9
     dit_depth: int = 3
     attn_dim_head: int = 64
@@ -41,8 +41,8 @@ class OsuFusionDiT(nn.Module):
         dim_h: int,
         dim_h_mult: int = 6,
         dim_t: int = 256,
-        beatmap_patch_size: int = 4,
-        audio_patch_size: int = 4,
+        beatmap_patch_size: int = 16,
+        audio_patch_size: int = 16,
         mmdit_depth: int = 16,
         dit_depth: int = 8,
         attn_dim_head: int = 64,

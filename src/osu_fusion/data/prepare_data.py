@@ -9,12 +9,13 @@ import numpy as np
 import soundfile as sf
 from rosu_pp_py import Beatmap as RosuBeatmap
 from rosu_pp_py import Difficulty as RosuDifficulty
-from slider.beatmap import Beatmap
+from slider.beatmap import Beatmap, Slider
 
 from osu_fusion.data.const import AUDIO_DIM, CONTEXT_DIM, FMIN, HOP_LENGTH, OCTAVE_BINS, SR
 from osu_fusion.data.encode import encode_sequence, SEQ_DIM
 
 _global_lock: Dict[str, Lock] = {}  # type: ignore
+MAX_SLIDER_CONTROL_POINTS = 50
 
 VQT_PARAMS = {
     "sr": SR,
@@ -88,6 +89,15 @@ def split_hash(hash_str: str) -> Tuple[str, str, str]:
     return hash_str[:2], hash_str[2:4], hash_str[4:]
 
 
+def has_sliderator_sliders(beatmap: Beatmap) -> bool:
+    for ho in beatmap.hit_objects():
+        if isinstance(ho, Slider):
+            num_points = len(ho.curve.points)
+            if num_points > MAX_SLIDER_CONTROL_POINTS:
+                return True
+    return False
+
+
 def get_audio_spec(beatmap: Beatmap, global_spec_dir: Path, map_file: Path) -> Optional[Tuple[np.ndarray, str]]:
     audio_file = map_file.parent / beatmap.audio_filename
     audio_hash = compute_hash(audio_file)
@@ -148,6 +158,10 @@ def prepare_map(data_dir: Path, map_file: Path) -> None:
         return
 
     if beatmap.mode != 0:
+        return
+
+    # Skip maps with sliderator/high-density sliders that can't be encoded faithfully
+    if has_sliderator_sliders(beatmap):
         return
 
     global_spec_dir = data_dir / "specs"

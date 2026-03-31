@@ -2,7 +2,7 @@ import librosa
 
 
 SR = 16000
-MS_PER_FRAME = 32
+MS_PER_FRAME = 8
 HOP_LENGTH = (SR // 1000) * MS_PER_FRAME
 
 FMIN = librosa.note_to_hz("C0")
