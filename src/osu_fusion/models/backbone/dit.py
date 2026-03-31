@@ -236,10 +236,7 @@ class DiT(nn.Module):
         self.beatmap_patch_size = beatmap_patch_size
 
         self.x_embed = BeatmapPatchEmbedding(dim_in_x, dim_h, beatmap_patch_size)
-        self.x_pos_emb = SinusoidalPositionEmbedding(dim_h)
-
         self.a_patch = AudioPatchEmbedding(dim_in_a, dim_h, audio_patch_size)
-        self.a_pos_emb = SinusoidalPositionEmbedding(dim_h)
 
         self.time_mlp = nn.Sequential(
             SinusoidalPositionEmbedding(dim_t),
@@ -347,16 +344,12 @@ class DiT(nn.Module):
         x_pad = (self.beatmap_patch_size - (orig_x_len % self.beatmap_patch_size)) % self.beatmap_patch_size
         x = F.pad(x, (0, 0, 0, x_pad))
         x = self.x_embed(x)
-        x_pos = torch.arange(x.shape[1], device=x.device, dtype=x.dtype)
-        x = x + self.x_pos_emb(x_pos)
 
         # Pad audio
         orig_a_len = a.shape[1]
         a_pad = (self.audio_patch_size - (orig_a_len % self.audio_patch_size)) % self.audio_patch_size
         a = F.pad(a, (0, 0, 0, a_pad))
         a = self.a_patch(a)
-        a_pos = torch.arange(a.shape[1], device=a.device, dtype=a.dtype)
-        a = a + self.a_pos_emb(a_pos)
 
         # Global conditioning
         cond_mask = prob_mask_like((c.shape[0],), 1.0 - cond_drop_prob, device=c.device)
