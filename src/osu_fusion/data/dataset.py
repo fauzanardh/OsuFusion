@@ -1,4 +1,3 @@
-import random
 from pathlib import Path
 from typing import NamedTuple, Optional, Tuple
 
@@ -7,7 +6,6 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from osu_fusion.data.augment import flip_cursor_horizontal, flip_cursor_vertical
 from osu_fusion.data.const import AUDIO_DIM
 
 
@@ -54,8 +52,8 @@ class BeatmapDataset(Dataset):
     def __init__(self: "BeatmapDataset", **kwargs: dict) -> None:
         super().__init__()
         self.dataset = kwargs.pop("dataset")
-        self.flip_horizontal_prob = kwargs.pop("flip_horizontal_prob", 0.5)
-        self.flip_vertical_prob = kwargs.pop("flip_vertical_prob", 0.5)
+        # self.flip_horizontal_prob = kwargs.pop("flip_horizontal_prob", 0.5)
+        # self.flip_vertical_prob = kwargs.pop("flip_vertical_prob", 0.5)
         self.load_audio = kwargs.pop("load_audio", True)
 
         self.tensor_loader = TensorLoader()
@@ -67,9 +65,9 @@ class BeatmapDataset(Dataset):
         map_data = self.tensor_loader.load_tensor(self.dataset[index], self.load_audio)
         x, a, c = map_data.x, map_data.a, map_data.c
 
-        if random.random() < self.flip_horizontal_prob:
-            x = flip_cursor_horizontal(x)
-        if random.random() < self.flip_vertical_prob:
-            x = flip_cursor_vertical(x)
+        # if random.random() < self.flip_horizontal_prob:
+        #     x = flip_cursor_horizontal(x)
+        # if random.random() < self.flip_vertical_prob:
+        #     x = flip_cursor_vertical(x)
 
         return x, a, c

@@ -18,8 +18,8 @@ class DiTConfig:
     dim_h: int = 384
     dim_h_mult: int = 6
     dim_t: int = 256
-    beatmap_patch_size: int = 16
-    audio_patch_size: int = 16
+    beatmap_patch_size: int = 4
+    audio_patch_size: int = 4
     mmdit_depth: int = 9
     dit_depth: int = 3
     attn_dim_head: int = 64
@@ -41,8 +41,8 @@ class OsuFusionDiT(nn.Module):
         dim_h: int,
         dim_h_mult: int = 6,
         dim_t: int = 256,
-        beatmap_patch_size: int = 16,
-        audio_patch_size: int = 16,
+        beatmap_patch_size: int = 4,
+        audio_patch_size: int = 4,
         mmdit_depth: int = 16,
         dit_depth: int = 8,
         attn_dim_head: int = 64,
@@ -70,10 +70,15 @@ class OsuFusionDiT(nn.Module):
             attn_context_len=attn_context_len,
         )
 
-        self.train_scheduler = DDPMScheduler(num_train_timesteps=train_timesteps)
+        self.train_scheduler = DDPMScheduler(
+            num_train_timesteps=train_timesteps,
+            prediction_type="v_prediction",
+        )
         self.sampling_scheduler = DPMSolverMultistepScheduler(
             num_train_timesteps=train_timesteps,
+            prediction_type="v_prediction",
             algorithm_type="sde-dpmsolver++",
+            thresholding=True,
         )
         self.train_timesteps = train_timesteps
         self.sampling_timesteps = sampling_timesteps
@@ -133,8 +138,9 @@ class OsuFusionDiT(nn.Module):
         )
         x_noisy = self.train_scheduler.add_noise(x, noise, timesteps)
 
-        pred_noise = self.dit(x_noisy, a, timesteps, c, self.cond_drop_prob)
-        diff_loss = F.mse_loss(pred_noise, noise, reduction="none")
+        pred_v = self.dit(x_noisy, a, timesteps, c, self.cond_drop_prob)
+        v_target = self.train_scheduler.get_velocity(x, noise, timesteps)
+        diff_loss = F.mse_loss(pred_v, v_target, reduction="none")
 
         if orig_lens is not None:
             b, n, _ = x.shape
