@@ -76,6 +76,9 @@ def load_audio(audio_file: Path) -> np.ndarray:
     min_len = min(vqt.shape[0], onset_env.shape[0], phase.shape[0])
 
     combined_audio = np.concatenate([vqt[:min_len], onset_env[:min_len], phase[:min_len]], axis=-1)
+
+    # convert to float32 and ensure no NaNs/Infs
+    combined_audio = np.nan_to_num(combined_audio.astype(np.float32), nan=0.0, posinf=1.0, neginf=-1.0)
     return combined_audio  # Shape: (T, AUDIO_DIM)
 
 

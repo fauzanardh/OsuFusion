@@ -112,6 +112,7 @@ def visualize_and_log_sample(
 
 
 def save_model_state(model: OsuFusionDiT, project_dir: Path) -> None:
+    project_dir.mkdir(parents=True, exist_ok=True)
     save_file(model.dit.state_dict(), project_dir / "dit.safetensors")
 
 

@@ -72,6 +72,12 @@ class RotaryPositionEmbedding(nn.Module):
         else:
             self.register_buffer("scale", None, persistent=False)
 
+        self._cached_cos: Optional[torch.Tensor] = None
+        self._cached_sin: Optional[torch.Tensor] = None
+        self._cached_scale: Optional[torch.Tensor] = None
+        self._cached_seq_len: int = 0
+        self._cached_device: Optional[torch.device] = None
+
     def _compute_scale(
         self: "RotaryPositionEmbedding",
         seq_len: int,
@@ -92,18 +98,27 @@ class RotaryPositionEmbedding(nn.Module):
     def _get_cos_sin_scale(
         self: "RotaryPositionEmbedding",
         x: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         seq_len = x.shape[-2]
+        device = x.device
 
-        t = torch.arange(seq_len, device=x.device, dtype=x.dtype)
-        freqs = torch.einsum("i, j -> i j", t, self.inv_freq.to(x.dtype)) / self.interpolation_factor
-        emb = torch.cat([freqs, freqs], dim=-1)
-        cos = rearrange(emb.cos(), "n d -> 1 1 n d")
-        sin = rearrange(emb.sin(), "n d -> 1 1 n d")
+        if seq_len > self._cached_seq_len or self._cached_device != device:
+            t = torch.arange(seq_len, device=device, dtype=torch.float32)
+            freqs = torch.einsum("i, j -> i j", t, self.inv_freq.to(torch.float32)) / self.interpolation_factor
+            emb = torch.cat([freqs, freqs], dim=-1)
+            self._cached_cos = rearrange(emb.cos(), "n d -> 1 1 n d")
+            self._cached_sin = rearrange(emb.sin(), "n d -> 1 1 n d")
+            self._cached_seq_len = seq_len
+            self._cached_device = device
 
-        scale = self._compute_scale(seq_len, x.device, x.dtype)
-        if scale is not None:
-            scale = rearrange(scale, "n d -> 1 1 n d")
+            scale = self._compute_scale(seq_len, device, torch.float32)
+            if scale is not None:
+                scale = rearrange(scale, "n d -> 1 1 n d")
+            self._cached_scale = scale
+
+        cos = self._cached_cos[:, :, :seq_len, :]
+        sin = self._cached_sin[:, :, :seq_len, :]
+        scale = self._cached_scale[:, :, :seq_len, :] if self._cached_scale is not None else None
 
         return cos, sin, scale
 
@@ -180,13 +195,16 @@ class Attention(nn.Module):
         dim_in: int,
         dim_head: int,
         heads: int,
+        rotary_emb: Optional[RotaryPositionEmbedding] = None,
         context_len: int = 4096,
     ) -> None:
         super().__init__()
         self.heads = heads
 
         self.to_qkv = nn.Linear(dim_in, dim_head * heads * 3, bias=False)
-        self.rotary_emb = RotaryPositionEmbedding(dim_head, scale_base=context_len)
+        self.rotary_emb = (
+            rotary_emb if rotary_emb is not None else RotaryPositionEmbedding(dim_head, scale_base=context_len)
+        )
         self.q_norm = MultiHeadRMSNorm(dim_head, heads)
         self.k_norm = MultiHeadRMSNorm(dim_head, heads)
 
@@ -258,9 +276,14 @@ class JointAttention(nn.Module):
         dim_in: int,
         dim_head: int,
         heads: int,
+        rotary_emb: Optional[RotaryPositionEmbedding] = None,
+        context_len: int = 4096,
     ) -> None:
         super().__init__()
         self.heads = heads
+        self.rotary_emb = (
+            rotary_emb if rotary_emb is not None else RotaryPositionEmbedding(dim_head, scale_base=context_len)
+        )
 
         self.to_qkv_x = nn.Linear(dim_in, dim_head * heads * 3, bias=False)
         self.to_qkv_a = nn.Linear(dim_in, dim_head * heads * 3, bias=False)
@@ -285,6 +308,11 @@ class JointAttention(nn.Module):
 
         q_a, k_a, v_a = self.to_qkv_a(a).chunk(3, dim=-1)
         q_a, k_a, v_a = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q_a, k_a, v_a))
+
+        # Apply RoPE to each modality separately before packing
+        if self.rotary_emb is not None:
+            q_x, k_x = self.rotary_emb(q_x, k_x)
+            q_a, k_a = self.rotary_emb(q_a, k_a)
 
         q_x, k_x = self.q_norm_x(q_x), self.k_norm_x(k_x)
         q_a, k_a = self.q_norm_a(q_a), self.k_norm_a(k_a)

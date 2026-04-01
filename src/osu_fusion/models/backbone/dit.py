@@ -7,7 +7,7 @@ from einops.layers.torch import Rearrange
 from torch.nn import functional as F
 from torch.profiler import record_function
 
-from osu_fusion.modules.attention import Attention, JointAttention
+from osu_fusion.modules.attention import Attention, JointAttention, RotaryPositionEmbedding
 from osu_fusion.modules.positional_embeddings import SinusoidalPositionEmbedding
 from osu_fusion.modules.utils import dummy_context_manager, prob_mask_like
 
@@ -78,6 +78,8 @@ class MMDiTBlock(nn.Module):
         dim_h_mult: int = 4,
         attn_dim_head: int = 64,
         attn_heads: int = 16,
+        attn_context_len: int = 4096,
+        rotary_emb: RotaryPositionEmbedding = None,
     ) -> None:
         super().__init__()
         # Modulation
@@ -104,6 +106,8 @@ class MMDiTBlock(nn.Module):
             dim_h,
             attn_dim_head,
             attn_heads,
+            rotary_emb=rotary_emb,
+            context_len=attn_context_len,
         )
 
         self.gradient_checkpointing = False
@@ -166,6 +170,7 @@ class DiTBlock(nn.Module):
         attn_dim_head: int = 64,
         attn_heads: int = 16,
         attn_context_len: int = 4096,
+        rotary_emb: RotaryPositionEmbedding = None,
     ) -> None:
         super().__init__()
         self.modulation = nn.Sequential(
@@ -177,6 +182,7 @@ class DiTBlock(nn.Module):
             dim_h,
             dim_head=attn_dim_head,
             heads=attn_heads,
+            rotary_emb=rotary_emb,
             context_len=attn_context_len,
         )
         self.norm2 = nn.LayerNorm(dim_h, elementwise_affine=False)
@@ -251,6 +257,7 @@ class DiT(nn.Module):
         )
         self.null_cond = nn.Parameter(torch.randn(dim_h))
 
+        self.shared_rotary_emb = RotaryPositionEmbedding(attn_dim_head, scale_base=attn_context_len)
         self.mmdit_blocks = nn.ModuleList(
             [
                 MMDiTBlock(
@@ -258,11 +265,12 @@ class DiT(nn.Module):
                     dim_h_mult=dim_h_mult,
                     attn_dim_head=attn_dim_head,
                     attn_heads=attn_heads,
+                    attn_context_len=attn_context_len,
+                    rotary_emb=self.shared_rotary_emb,
                 )
                 for _ in range(mmdit_depth)
             ],
         )
-
         self.dit_blocks = nn.ModuleList(
             [
                 DiTBlock(
@@ -271,6 +279,7 @@ class DiT(nn.Module):
                     attn_dim_head=attn_dim_head,
                     attn_heads=attn_heads,
                     attn_context_len=attn_context_len,
+                    rotary_emb=self.shared_rotary_emb,
                 )
                 for _ in range(dit_depth)
             ],

@@ -94,7 +94,7 @@ class OsuFusionDiT(nn.Module):
         x: Optional[torch.Tensor] = None,
         cond_scale: float = 2.0,
     ) -> torch.Tensor:
-        n, b, device = a.shape[0], a.shape[1], a.device
+        b, n, device = a.shape[0], a.shape[1], a.device
 
         if x is None:
             x = torch.randn((b, n, SEQ_DIM), device=device)
