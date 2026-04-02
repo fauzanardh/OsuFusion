@@ -4,6 +4,7 @@ import librosa
 SR = 16000
 MS_PER_FRAME = 16
 HOP_LENGTH = (SR // 1000) * MS_PER_FRAME
+MAX_LENGTH_FRAMES = 16384
 
 FMIN = librosa.note_to_hz("C0")
 N_OCTAVES = 8

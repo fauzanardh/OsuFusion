@@ -21,7 +21,7 @@ from tqdm.auto import tqdm
 
 import wandb
 from osu_fusion.data.encode import SEQ_DIM
-from osu_fusion.data.dataset import BeatmapDataset
+from osu_fusion.data.dataset import BeatmapDataset, filter_maps
 from osu_fusion.data.prepare_data import load_audio
 from osu_fusion.models.diffusion_dit import DiTConfig_S, DiTConfig_M, DiTConfig_L, OsuFusionDiT
 
@@ -199,7 +199,9 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
 
     print("Loading dataset...")
     all_maps = list(args.dataset_dir.rglob("*.map.h5"))
+    all_maps = filter_maps(all_maps, max_length=args.max_length)
     dataset = BeatmapDataset(dataset=all_maps)
+
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_size,

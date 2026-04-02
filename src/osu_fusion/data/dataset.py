@@ -1,12 +1,13 @@
 from pathlib import Path
-from typing import NamedTuple, Optional, Tuple
+from typing import List, NamedTuple, Optional, Tuple
 
 import h5py
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+from tqdm import tqdm
 
-from osu_fusion.data.const import AUDIO_DIM
+from osu_fusion.data.const import AUDIO_DIM, MAX_LENGTH_FRAMES
 
 
 class MapData(NamedTuple):
@@ -46,6 +47,29 @@ class TensorLoader:
             c=c,
             spec_path=spec_path,
         )
+
+
+def filter_maps(maps: List[Path], max_length: int = 0) -> List[Path]:
+    filtered = []
+    for path in tqdm(maps, desc="Filtering dataset...", dynamic_ncols=True):
+        try:
+            with h5py.File(path, "r") as f:
+                x_len = f["x"].shape[0]
+                if x_len > MAX_LENGTH_FRAMES:
+                    continue
+                if max_length > 0 and x_len > max_length:
+                    continue
+                # Check audio file is accessible
+                spec_path = f["spec_path"][()].decode("utf-8")
+                audio_file = path.parent.parent.parent / spec_path
+                if not audio_file.exists():
+                    continue
+            filtered.append(path)
+        except Exception as e:
+            print(f"Skipping {path}: {e}")
+            continue
+    print(f"Filtered dataset: {len(filtered)}/{len(maps)} maps")
+    return filtered
 
 
 class BeatmapDataset(Dataset):
