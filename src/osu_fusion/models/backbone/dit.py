@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -117,6 +118,8 @@ class MMDiTBlock(nn.Module):
         x: torch.Tensor,
         a: torch.Tensor,
         c: torch.Tensor,
+        mask_x: Optional[torch.Tensor] = None,
+        mask_a: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         # Modulation
         (
@@ -139,7 +142,7 @@ class MMDiTBlock(nn.Module):
         # Attention
         h_x = modulate(self.norm1_x(x), shift_attn_x, scale_attn_x)
         h_a = modulate(self.norm1_a(a), shift_attn_a, scale_attn_a)
-        attn_out_x, attn_out_a = self.attn(h_x, h_a)
+        attn_out_x, attn_out_a = self.attn(h_x, h_a, mask_x=mask_x, mask_a=mask_a)
 
         x = x + gate_attn_x * attn_out_x
         a = a + gate_attn_a * attn_out_a
@@ -155,11 +158,21 @@ class MMDiTBlock(nn.Module):
         x: torch.Tensor,
         a: torch.Tensor,
         c: torch.Tensor,
+        mask_x: Optional[torch.Tensor] = None,
+        mask_a: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if self.training and self.gradient_checkpointing:
-            return torch.utils.checkpoint.checkpoint(self.forward_body, x, a, c, use_reentrant=True)
+            return torch.utils.checkpoint.checkpoint(
+                self.forward_body,
+                x,
+                a,
+                c,
+                mask_x,
+                mask_a,
+                use_reentrant=True,
+            )
         else:
-            return self.forward_body(x, a, c)
+            return self.forward_body(x, a, c, mask_x=mask_x, mask_a=mask_a)
 
 
 class DiTBlock(nn.Module):
@@ -194,6 +207,7 @@ class DiTBlock(nn.Module):
         self: "DiTBlock",
         x: torch.Tensor,
         c: torch.Tensor,
+        attn_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         (
             shift_msa,
@@ -204,7 +218,7 @@ class DiTBlock(nn.Module):
             gate_ff,
         ) = self.modulation(c).chunk(6, dim=-1)
 
-        x = x + gate_msa * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
+        x = x + gate_msa * self.attn(modulate(self.norm1(x), shift_msa, scale_msa), attn_mask=attn_mask)
         x = x + gate_ff * self.ff(modulate(self.norm2(x), shift_ff, scale_ff))
         return x
 
@@ -212,11 +226,18 @@ class DiTBlock(nn.Module):
         self: "DiTBlock",
         x: torch.Tensor,
         c: torch.Tensor,
+        attn_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if self.training and self.gradient_checkpointing:
-            return torch.utils.checkpoint.checkpoint(self.forward_body, x, c, use_reentrant=True)
+            return torch.utils.checkpoint.checkpoint(
+                self.forward_body,
+                x,
+                c,
+                attn_mask,
+                use_reentrant=True,
+            )
         else:
-            return self.forward_body(x, c)
+            return self.forward_body(x, c, attn_mask=attn_mask)
 
 
 class DiT(nn.Module):
@@ -339,6 +360,32 @@ class DiT(nn.Module):
         null_logits = self.forward(x, a, t, c, cond_drop_prob=1.0)
         return null_logits + (logits - null_logits) * cond_scale
 
+    def _build_patch_masks(
+        self: "DiT",
+        orig_lens: torch.Tensor,
+        n_x_patches: int,
+        n_a_patches: int,
+        device: torch.device,
+    ) -> tuple:
+        # (B, n_x_patches)
+        patch_starts_x = torch.arange(n_x_patches, device=device) * self.beatmap_patch_size
+        mask_x = patch_starts_x.unsqueeze(0) < orig_lens.unsqueeze(1).to(device)
+
+        # (B, n_a_patches)
+        patch_starts_a = torch.arange(n_a_patches, device=device) * self.audio_patch_size
+        mask_a = patch_starts_a.unsqueeze(0) < orig_lens.unsqueeze(1).to(device)
+
+        return mask_x, mask_a
+
+    def _mask_to_attn_bias(
+        self: "DiT",
+        mask: torch.Tensor,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        attn_bias = torch.zeros(mask.shape, device=mask.device, dtype=dtype)
+        attn_bias = attn_bias.masked_fill(~mask, float("-inf"))
+        return attn_bias[:, None, None, :]
+
     def forward(
         self: "DiT",
         x: torch.Tensor,
@@ -346,6 +393,7 @@ class DiT(nn.Module):
         t: torch.Tensor,
         c: torch.Tensor,
         cond_drop_prob: float = 0.0,
+        orig_lens: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         orig_x_len = x.shape[1]
 
@@ -360,6 +408,17 @@ class DiT(nn.Module):
         a = F.pad(a, (0, 0, 0, a_pad))
         a = self.a_patch(a)
 
+        # Construct masks
+        mask_x, mask_a, attn_mask_x = None, None, None
+        if orig_lens is not None:
+            mask_x, mask_a = self._build_patch_masks(
+                orig_lens,
+                x.shape[1],
+                a.shape[1],
+                x.device,
+            )
+            attn_mask_x = self._mask_to_attn_bias(mask_x, x.dtype)
+
         # Global conditioning
         cond_mask = prob_mask_like((c.shape[0],), 1.0 - cond_drop_prob, device=c.device)
         cond_mask = rearrange(cond_mask, "b -> b 1")
@@ -370,10 +429,10 @@ class DiT(nn.Module):
         c_global = c_global.unsqueeze(1)
 
         for mmdit_block in self.mmdit_blocks:
-            x, a = mmdit_block(x, a, c_global)
+            x, a = mmdit_block(x, a, c_global, mask_x=mask_x, mask_a=mask_a)
 
         for dit_block in self.dit_blocks:
-            x = dit_block(x, c_global)
+            x = dit_block(x, c_global, attn_mask=attn_mask_x)
 
         x = self.final(x, c_global)
         return x[:, :orig_x_len, :]

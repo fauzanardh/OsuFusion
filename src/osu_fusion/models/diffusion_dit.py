@@ -138,7 +138,7 @@ class OsuFusionDiT(nn.Module):
         )
         x_noisy = self.train_scheduler.add_noise(x, noise, timesteps)
 
-        pred_v = self.dit(x_noisy, a, timesteps, c, self.cond_drop_prob)
+        pred_v = self.dit(x_noisy, a, timesteps, c, self.cond_drop_prob, orig_lens=orig_lens)
         v_target = self.train_scheduler.get_velocity(x, noise, timesteps)
         diff_loss = F.mse_loss(pred_v, v_target, reduction="none")
 

@@ -172,7 +172,7 @@ class Attend(nn.Module):
         v = v.to(qkv_dtype)
 
         if self.use_xformers and attn_mask is None:
-            # xformers expects (B, N, H, D) layout
+            # xformers fast path: no mask (inference)
             q, k, v = (t.transpose(1, 2) for t in (q, k, v))
             out = memory_efficient_attention(q, k, v)
             out = out.transpose(1, 2)
@@ -211,7 +211,11 @@ class Attention(nn.Module):
         self.attn = Attend()
         self.to_out = nn.Linear(dim_head * heads, dim_in)
 
-    def forward_body(self: "Attention", x: torch.Tensor) -> torch.Tensor:
+    def forward_body(
+        self: "Attention",
+        x: torch.Tensor,
+        attn_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         q, k, v = self.to_qkv(x).chunk(3, dim=-1)
         q, k, v = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q, k, v))
 
@@ -219,14 +223,18 @@ class Attention(nn.Module):
         q = self.q_norm(q)
         k = self.k_norm(k)
 
-        out = self.attn(q, k, v)
+        out = self.attn(q, k, v, attn_mask=attn_mask)
         out = rearrange(out, "b h n d -> b n (h d)")
         return self.to_out(out)
 
-    def forward(self: "Attention", x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self: "Attention",
+        x: torch.Tensor,
+        attn_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         context_manager = dummy_context_manager() if DEBUG else record_function("Attention")
         with context_manager:
-            return self.forward_body(x)
+            return self.forward_body(x, attn_mask=attn_mask)
 
 
 class CrossAttention(nn.Module):
@@ -302,6 +310,8 @@ class JointAttention(nn.Module):
         self: "JointAttention",
         x: torch.Tensor,
         a: torch.Tensor,
+        mask_x: Optional[torch.Tensor] = None,
+        mask_a: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         q_x, k_x, v_x = self.to_qkv_x(x).chunk(3, dim=-1)
         q_x, k_x, v_x = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q_x, k_x, v_x))
@@ -309,7 +319,6 @@ class JointAttention(nn.Module):
         q_a, k_a, v_a = self.to_qkv_a(a).chunk(3, dim=-1)
         q_a, k_a, v_a = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q_a, k_a, v_a))
 
-        # Apply RoPE to each modality separately before packing
         if self.rotary_emb is not None:
             q_x, k_x = self.rotary_emb(q_x, k_x)
             q_a, k_a = self.rotary_emb(q_a, k_a)
@@ -321,12 +330,32 @@ class JointAttention(nn.Module):
         k, _ = pack([k_a, k_x], "b h * d")
         v, _ = pack([v_a, v_x], "b h * d")
 
-        out = self.attn(q, k, v)
+        attn_mask = None
+        if mask_x is not None or mask_a is not None:
+            n_a = a.shape[1]
+            n_x = x.shape[1]
+            device = x.device
+            if mask_a is None:
+                mask_a = torch.ones(x.shape[0], n_a, device=device, dtype=torch.bool)
+            if mask_x is None:
+                mask_x = torch.ones(x.shape[0], n_x, device=device, dtype=torch.bool)
+            combined_mask = torch.cat([mask_a, mask_x], dim=1)
+            attn_mask = torch.zeros(combined_mask.shape, device=device, dtype=q.dtype)
+            attn_mask = attn_mask.masked_fill(~combined_mask, float("-inf"))
+            attn_mask = attn_mask[:, None, None, :]
+
+        out = self.attn(q, k, v, attn_mask=attn_mask)
         out_a, out_x = unpack(out, seq_shape, "b h * d")
         out_x, out_a = (rearrange(t, "b h n d -> b n (h d)") for t in (out_x, out_a))
         return self.to_out_x(out_x), self.to_out_a(out_a)
 
-    def forward(self: "JointAttention", x: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self: "JointAttention",
+        x: torch.Tensor,
+        a: torch.Tensor,
+        mask_x: Optional[torch.Tensor] = None,
+        mask_a: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         context_manager = dummy_context_manager() if DEBUG else record_function("JointAttention")
         with context_manager:
-            return self.forward_body(x, a)
+            return self.forward_body(x, a, mask_x=mask_x, mask_a=mask_a)
