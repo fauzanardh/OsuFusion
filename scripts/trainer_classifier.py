@@ -9,9 +9,9 @@ from typing import Dict, List, Tuple
 import h5py
 import numpy as np
 import torch
-from bitsandbytes.optim import AdamW8bit
 from accelerate import Accelerator
 from accelerate.utils import ProjectConfiguration
+from bitsandbytes.optim import AdamW8bit
 from diffusers.optimization import get_cosine_schedule_with_warmup
 from safetensors.torch import save_file
 from torch.nn import functional as F
@@ -22,7 +22,7 @@ from tqdm.auto import tqdm
 from osu_fusion.data.const import MAX_LENGTH_FRAMES
 from osu_fusion.data.descriptors import DESCRIPTOR_ANCESTORS, NUM_DESCRIPTORS
 from osu_fusion.data.encode import SEQ_DIM, SequenceEncoding
-from osu_fusion.models.classifier import ClassifierConfig_S, ClassifierConfig_M, ClassifierConfig_L, OsuFusionClassifier
+from osu_fusion.models.classifier import ClassifierConfig_L, ClassifierConfig_M, ClassifierConfig_S, OsuFusionClassifier
 
 
 def asymmetric_loss(

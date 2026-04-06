@@ -8,7 +8,7 @@ from scipy import signal
 from slider.beatmap import TimingPoint
 
 from osu_fusion.data.const import MS_PER_FRAME
-from osu_fusion.data.encode import SequenceEncoding, LOG_SCALE_LENGTH, LOG_SCALE_REPEATS, TYPE_START, TYPE_END
+from osu_fusion.data.encode import LOG_SCALE_LENGTH, LOG_SCALE_REPEATS, TYPE_END, TYPE_START, SequenceEncoding
 
 MIN_BPM = 1
 MAX_BPM = 300

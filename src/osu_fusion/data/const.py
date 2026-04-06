@@ -2,7 +2,6 @@ from typing import List, Tuple
 
 import librosa
 
-
 SR = 16000
 MS_PER_FRAME = 16
 HOP_LENGTH = (SR // 1000) * MS_PER_FRAME

@@ -16,7 +16,7 @@ from sanitize_filename import sanitize
 
 from osu_fusion.data.const import ERA_LABELS
 from osu_fusion.data.decode import Metadata, decode_sequence
-from osu_fusion.data.descriptors import DESCRIPTOR_ANCESTORS, DESCRIPTOR_TAGS, DESCRIPTOR_NAME_TO_IDX, NUM_DESCRIPTORS
+from osu_fusion.data.descriptors import DESCRIPTOR_ANCESTORS, DESCRIPTOR_NAME_TO_IDX, DESCRIPTOR_TAGS, NUM_DESCRIPTORS
 from osu_fusion.data.prepare_data import load_audio
 from osu_fusion.models.diffusion_dit import (
     DiTConfig_L,

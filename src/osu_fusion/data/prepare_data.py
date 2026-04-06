@@ -13,7 +13,7 @@ from slider.beatmap import Beatmap, Slider
 
 from osu_fusion.data.const import AUDIO_DIM, CONTEXT_DIM, FMIN, HOP_LENGTH, OCTAVE_BINS, SR, year_to_era_index
 from osu_fusion.data.descriptors import DESCRIPTOR_ANCESTORS, flat_name_to_idx
-from osu_fusion.data.encode import encode_sequence, SEQ_DIM
+from osu_fusion.data.encode import SEQ_DIM, encode_sequence
 
 _global_lock: Dict[str, Lock] = {}  # type: ignore
 MAX_SLIDER_CONTROL_POINTS = 50

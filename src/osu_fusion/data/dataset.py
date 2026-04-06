@@ -8,9 +8,9 @@ import torch
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
+from osu_fusion.data.const import AUDIO_DIM, MAX_LENGTH_FRAMES
 from osu_fusion.data.descriptors import NUM_DESCRIPTORS
 from osu_fusion.data.encode import SEQ_DIM
-from osu_fusion.data.const import AUDIO_DIM, MAX_LENGTH_FRAMES
 
 
 class MapData(NamedTuple):

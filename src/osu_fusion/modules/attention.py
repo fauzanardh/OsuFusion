@@ -3,7 +3,7 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
-from einops import rearrange, pack, unpack
+from einops import pack, rearrange, unpack
 from torch.nn import functional as F
 from torch.profiler import record_function
 

@@ -5,12 +5,11 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-import wandb
 import numpy as np
 import torch
-from bitsandbytes.optim import AdamW8bit
 from accelerate import Accelerator
 from accelerate.utils import ProjectConfiguration
+from bitsandbytes.optim import AdamW8bit
 from diffusers.optimization import get_cosine_schedule_with_warmup
 from matplotlib import pyplot as plt
 from PIL import Image
@@ -20,10 +19,11 @@ from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-from osu_fusion.data.encode import SEQ_DIM
+import wandb
 from osu_fusion.data.dataset import BeatmapDataset, count_num_mappers, filter_maps
+from osu_fusion.data.encode import SEQ_DIM
 from osu_fusion.data.prepare_data import load_audio
-from osu_fusion.models.diffusion_dit import DiTConfig_S, DiTConfig_M, DiTConfig_L, OsuFusionDiT
+from osu_fusion.models.diffusion_dit import DiTConfig_L, DiTConfig_M, DiTConfig_S, OsuFusionDiT
 
 
 def get_total_norm(parameters: List[torch.Tensor], norm_type: float = 2.0) -> float:

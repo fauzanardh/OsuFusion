@@ -8,9 +8,9 @@ from einops import repeat
 from torch.nn import functional as F
 from tqdm.auto import tqdm
 
-from osu_fusion.data.encode import SEQ_DIM
 from osu_fusion.data.const import AUDIO_DIM, CONTEXT_DIM
 from osu_fusion.data.descriptors import NUM_DESCRIPTORS
+from osu_fusion.data.encode import SEQ_DIM
 from osu_fusion.models.backbone.dit import DiT
 
 
