@@ -163,10 +163,9 @@ class OsuFusionDiT(nn.Module):
         diff_loss = F.mse_loss(pred_v, v_target, reduction="none")
 
         if orig_lens is not None:
-            b, n, _ = x.shape
-            mask = torch.ones((b, n), device=x.device)
-            for i, orig in enumerate(orig_lens):
-                mask[i, orig:] = 0.0
+            n = x.shape[1]
+            idx = torch.arange(n, device=x.device).unsqueeze(0)  # (1, n)
+            mask = (idx < orig_lens.unsqueeze(1)).float()  # (b, n)
             mask = repeat(mask, "b n -> b n d", d=SEQ_DIM)
             diff_loss = (diff_loss * mask).sum() / mask.sum()
         else:

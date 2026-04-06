@@ -15,7 +15,6 @@ from osu_fusion.modules.utils import dummy_context_manager, prob_mask_like
 DEBUG = os.environ.get("DEBUG", False)
 
 
-@torch.jit.script
 def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     return x * (1 + scale) + shift
 

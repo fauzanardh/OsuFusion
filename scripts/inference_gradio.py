@@ -16,7 +16,7 @@ from sanitize_filename import sanitize
 
 from osu_fusion.data.const import ERA_LABELS
 from osu_fusion.data.decode import Metadata, decode_sequence
-from osu_fusion.data.descriptors import DESCRIPTOR_TAGS, DESCRIPTOR_NAME_TO_IDX, NUM_DESCRIPTORS
+from osu_fusion.data.descriptors import DESCRIPTOR_ANCESTORS, DESCRIPTOR_TAGS, DESCRIPTOR_NAME_TO_IDX, NUM_DESCRIPTORS
 from osu_fusion.data.prepare_data import load_audio
 from osu_fusion.models.diffusion_dit import (
     DiTConfig_L,
@@ -80,6 +80,17 @@ def load_model(model_path: str, model_size: str, mixed_precision: str, mapper_in
     global_model = global_model.to(dtype=model_dtype)
 
     return f"Model loaded! ({global_num_mappers} mappers)"
+
+
+def expand_with_ancestors(selected_tags: list) -> list:
+    expanded = set(selected_tags)
+    for tag in selected_tags:
+        tag = tag.strip()
+        if tag in DESCRIPTOR_NAME_TO_IDX:
+            idx = DESCRIPTOR_NAME_TO_IDX[tag]
+            for ancestor_idx in DESCRIPTOR_ANCESTORS.get(idx, [idx]):
+                expanded.add(DESCRIPTOR_TAGS[ancestor_idx])
+    return [t for t in DESCRIPTOR_TAGS if t in expanded]
 
 
 def build_descriptor_vector(selected_tags: list) -> Optional[torch.Tensor]:
@@ -255,9 +266,14 @@ def gradio_interface() -> Blocks:
             selected_descriptors = gr.CheckboxGroup(
                 choices=DESCRIPTOR_TAGS,
                 label="Style Descriptors",
-                info="Select mapping style tags",
+                info="Select mapping style tags (ancestors are auto-selected)",
             )
 
+        selected_descriptors.change(
+            fn=expand_with_ancestors,
+            inputs=[selected_descriptors],
+            outputs=[selected_descriptors],
+        )
         with gr.Row():
             mapper_ids = gr.Textbox(
                 label="Mapper User IDs (comma-separated)",

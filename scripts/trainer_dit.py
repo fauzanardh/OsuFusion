@@ -195,7 +195,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     print("Loading dataset...")
     all_maps = list(args.dataset_dir.rglob("*.map.h5"))
     all_maps = filter_maps(all_maps, max_length=args.max_length)
-    num_mappers = count_num_mappers(all_maps)
+    num_mappers = count_num_mappers(args.dataset_dir)
 
     config = MODEL_CONFIGS[args.model_size]
     config.num_mappers = num_mappers

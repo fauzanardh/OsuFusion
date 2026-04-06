@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from typing import List, NamedTuple, Optional, Tuple
 
@@ -98,20 +99,10 @@ def filter_maps(maps: List[Path], max_length: int = 0) -> List[Path]:
     return filtered
 
 
-def count_num_mappers(maps: List[Path]) -> int:
-    max_idx = -1
-    for path in tqdm(maps, desc="Counting mappers...", dynamic_ncols=True):
-        try:
-            with h5py.File(path, "r") as f:
-                if "mapper_indices" in f:
-                    indices = f["mapper_indices"][:]
-                    if len(indices) > 0:
-                        max_idx = max(max_idx, int(indices.max()))
-        except Exception:
-            continue
-    num_mappers = max_idx + 1 if max_idx >= 0 else 0
-    print(f"Found {num_mappers} unique mappers")
-    return num_mappers
+def count_num_mappers(dataset_path: Path) -> int:
+    with open(dataset_path / "mapper_index.json", "r") as f:
+        mapper_index = json.load(f)
+    return max(int(v) for v in mapper_index.values()) + 1
 
 
 class BeatmapDataset(Dataset):
