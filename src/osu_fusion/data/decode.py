@@ -1,6 +1,6 @@
 from dataclasses import asdict, dataclass
 from datetime import timedelta
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 import numpy as np
 import numpy.typing as npt
@@ -8,7 +8,7 @@ from scipy import signal
 from slider.beatmap import TimingPoint
 
 from osu_fusion.data.const import MS_PER_FRAME
-from osu_fusion.data.encode import SequenceEncoding, LOG_SCALE_LENGTH, LOG_SCALE_REPEATS
+from osu_fusion.data.encode import SequenceEncoding, LOG_SCALE_LENGTH, LOG_SCALE_REPEATS, TYPE_START, TYPE_END
 
 MIN_BPM = 1
 MAX_BPM = 300
@@ -78,10 +78,9 @@ def get_timings(hit_times: npt.NDArray, timing_beat_len: float) -> Tuple[bool, T
 
 def calculate_timing_point(
     hit_times: npt.NDArray,
-    allow_beat_snap: bool,
     verbose: bool = True,
 ) -> Tuple[bool, TimingPoint]:
-    if not allow_beat_snap or len(hit_times) < 2:
+    if len(hit_times) < 2:
         return False, TimingPoint(
             offset=timedelta(milliseconds=0),
             ms_per_beat=60000 / 200,
@@ -103,7 +102,7 @@ def calculate_timing_point(
     valid_peaks = peaks[(valid_periods.min() * 0.95 <= peaks) & (peaks <= valid_periods.max() * 1.05)]
     if len(valid_peaks) == 0:
         if verbose:
-            print("Warning: no valid BPM found within the range, disabling beat snap")
+            print("Warning: no valid BPM found within the range")
         return False, TimingPoint(
             offset=timedelta(milliseconds=0),
             ms_per_beat=60000 / 200,
@@ -130,19 +129,36 @@ def calculate_timing_point(
     return get_timings(hit_times, 60000 / best_bpm)
 
 
+def decode_kiai_sections(encoded_seq: npt.NDArray) -> List[Tuple[float, float]]:
+    kiai_signal = encoded_seq[:, SequenceEncoding.IS_KIAI] > 0.0
+    sections = []
+    in_kiai = False
+    start_ms = 0.0
+
+    for i in range(len(kiai_signal)):
+        if kiai_signal[i] and not in_kiai:
+            start_ms = i * MS_PER_FRAME
+            in_kiai = True
+        elif not kiai_signal[i] and in_kiai:
+            end_ms = i * MS_PER_FRAME
+            sections.append((start_ms, end_ms))
+            in_kiai = False
+
+    if in_kiai:
+        sections.append((start_ms, len(kiai_signal) * MS_PER_FRAME))
+
+    return sections
+
+
 def decode_sequence(  # noqa: C901
     metadata: Metadata,
     encoded_seq: npt.NDArray,
-    bpm: Optional[float] = None,
-    allow_beat_snap: bool = True,
     verbose: bool = True,
 ) -> str:
     if encoded_seq.shape[0] == 0:
         return map_template.format(**asdict(metadata), timing_points="", hit_objects="")
 
     is_note_signal = encoded_seq[:, SequenceEncoding.IS_NOTE]
-
-    # Collect all frames where IS_NOTE is set (handles adjacent/plateau events)
     peaks = np.where(is_note_signal > 0.0)[0]
 
     if len(peaks) == 0:
@@ -166,8 +182,8 @@ def decode_sequence(  # noqa: C901
     norm_repeats = (encoded_seq[peaks, SequenceEncoding.SLIDER_REPEATS] + 1.0) / 2.0
     repeats = np.maximum(1, np.round(np.expm1(norm_repeats * LOG_SCALE_REPEATS)))
 
-    type_logits = encoded_seq[peaks, 9:19]
-    event_types = np.argmax(type_logits, axis=1) + 9
+    type_logits = encoded_seq[peaks, TYPE_START:TYPE_END]
+    event_types = np.argmax(type_logits, axis=1) + TYPE_START
 
     tps: List[str] = []
     obj_times = []
@@ -181,11 +197,7 @@ def decode_sequence(  # noqa: C901
             obj_times.append(absolute_times[i])
 
     if len(obj_times) > 0:
-        if bpm is not None:
-            _, timing_point = get_timings(np.array(obj_times), 60000 / bpm)
-        else:
-            _, timing_point = calculate_timing_point(np.array(obj_times), allow_beat_snap, verbose)
-
+        _, timing_point = calculate_timing_point(np.array(obj_times), verbose)
         tps.append(
             f"{timing_point.offset.total_seconds() * 1000},{timing_point.ms_per_beat},{timing_point.meter},0,0,50,1,0",
         )
@@ -193,13 +205,13 @@ def decode_sequence(  # noqa: C901
     else:
         beat_length = 60000 / 200
 
-    base_slider_vel = metadata.slider_multiplier * 100 / beat_length
-
+    kiai_sections = decode_kiai_sections(encoded_seq)
     hos: List[str] = []
 
     in_slider = False
     in_spinner = False
 
+    base_slider_vel = metadata.slider_multiplier * 100 / beat_length
     slider_x, slider_y, slider_time, slider_nc = 0, 0, 0, False
     slider_points = []
     slider_curve_type = "B"
@@ -294,9 +306,6 @@ def decode_sequence(  # noqa: C901
             SequenceEncoding.TYPE_LAST_ANCHOR,
         ):
             if in_slider:
-                # All anchor types simply append their position.
-                # RED_ANCHOR's (x,y) is identical to the previous point by definition,
-                # so appending it once naturally creates the duplicate pair needed.
                 slider_points.append((x, y))
                 if evt == SequenceEncoding.TYPE_PERFECT_ANCHOR:
                     slider_curve_type = "P"
@@ -310,6 +319,30 @@ def decode_sequence(  # noqa: C901
         emit_slider(absolute_times[-1] + 100)
     if in_spinner:
         emit_spinner(absolute_times[-1] + 100)
+
+    tps.sort(key=lambda tp_str: float(tp_str.split(",")[0]))
+    if kiai_sections:
+        final_tps = []
+        for tp_str in tps:
+            fields = tp_str.split(",")
+            tp_time = float(fields[0])
+            in_kiai = any(start <= tp_time < end for start, end in kiai_sections)
+            if in_kiai:
+                fields[7] = str(int(fields[7]) | 1)
+            else:
+                fields[7] = str(int(fields[7]) & ~1)
+            final_tps.append(",".join(fields))
+
+        for start_ms, end_ms in kiai_sections:
+            start_exists = any(abs(float(tp.split(",")[0]) - start_ms) < 1 for tp in final_tps)
+            end_exists = any(abs(float(tp.split(",")[0]) - end_ms) < 1 for tp in final_tps)
+            if not start_exists:
+                final_tps.append(f"{int(start_ms)},-100,4,0,0,50,0,1")
+            if not end_exists:
+                final_tps.append(f"{int(end_ms)},-100,4,0,0,50,0,0")
+
+        final_tps.sort(key=lambda tp_str: float(tp_str.split(",")[0]))
+        tps = final_tps
 
     return map_template.format(
         **asdict(metadata),

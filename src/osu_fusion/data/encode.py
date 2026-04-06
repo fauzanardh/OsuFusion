@@ -10,26 +10,39 @@ from osu_fusion.data.const import MS_PER_FRAME
 
 
 class SequenceEncoding(IntEnum):
+    # Timing
     IS_NOTE = 0
     OFFSET = 1
+
+    # Position
     X = 2
     Y = 3
+
+    # Object state
     NEW_COMBO = 4
     IS_SLIDER_BODY = 5
     IS_SPINNER = 6
-    SLIDER_LENGTH = 7
-    SLIDER_REPEATS = 8
+    IS_KIAI = 7
 
-    TYPE_CIRCLE = 9
-    TYPE_SLIDER_HEAD = 10
-    TYPE_BEZIER_ANCHOR = 11
-    TYPE_PERFECT_ANCHOR = 12
-    TYPE_CATMULL_ANCHOR = 13
-    TYPE_RED_ANCHOR = 14
-    TYPE_LAST_ANCHOR = 15
-    TYPE_SLIDER_END = 16
-    TYPE_SPINNER = 17
-    TYPE_SPINNER_END = 18
+    # Slider parameters
+    SLIDER_LENGTH = 8
+    SLIDER_REPEATS = 9
+
+    # Types
+    TYPE_CIRCLE = 10
+    TYPE_SLIDER_HEAD = 11
+    TYPE_BEZIER_ANCHOR = 12
+    TYPE_PERFECT_ANCHOR = 13
+    TYPE_CATMULL_ANCHOR = 14
+    TYPE_RED_ANCHOR = 15
+    TYPE_LAST_ANCHOR = 16
+    TYPE_SLIDER_END = 17
+    TYPE_SPINNER = 18
+    TYPE_SPINNER_END = 19
+
+
+TYPE_START = SequenceEncoding.TYPE_CIRCLE
+TYPE_END = SequenceEncoding.TYPE_SPINNER_END + 1
 
 
 SEQ_DIM = len(SequenceEncoding)
@@ -59,6 +72,29 @@ def get_path_arc_lengths(path_points: list) -> Tuple[npt.NDArray, float]:
     return cumulative_lengths, float(cumulative_lengths[-1])
 
 
+def _encode_kiai(beatmap: Beatmap, grid: npt.NDArray, total_frames: int) -> None:
+    kiai = False
+    kiai_start_frame = 0
+
+    for tp in beatmap.timing_points:
+        if tp.kiai_mode == kiai:
+            continue
+
+        frame_idx = int(tp.offset.total_seconds() * 1000.0 // MS_PER_FRAME)
+        frame_idx = min(frame_idx, total_frames - 1)
+
+        if kiai and not tp.kiai_mode:
+            grid[kiai_start_frame : frame_idx + 1, SequenceEncoding.IS_KIAI] = 1.0
+
+        if tp.kiai_mode:
+            kiai_start_frame = frame_idx
+
+        kiai = tp.kiai_mode
+
+    if kiai:
+        grid[kiai_start_frame:, SequenceEncoding.IS_KIAI] = 1.0
+
+
 def encode_sequence(beatmap: Beatmap, total_frames: int) -> npt.NDArray:  # noqa: C901
     grid = np.full((total_frames, SEQ_DIM), -1.0, dtype=np.float32)
 
@@ -83,7 +119,6 @@ def encode_sequence(beatmap: Beatmap, total_frames: int) -> npt.NDArray:  # noqa
         if frame_idx >= total_frames:
             return
 
-        # Expanding search for a free slot to avoid overwriting existing events
         if grid[frame_idx, SequenceEncoding.IS_NOTE] > 0.0:
             found = False
             for delta in range(1, MAX_COLLISION_SEARCH):
@@ -98,9 +133,8 @@ def encode_sequence(beatmap: Beatmap, total_frames: int) -> npt.NDArray:  # noqa
                     found = True
                     break
             if not found:
-                return  # No free slot found, skip this event rather than corrupt
+                return
 
-        # Compute offset relative to the actual frame used, preserving original time
         offset = (time_ms / MS_PER_FRAME) - frame_idx
         offset = float(np.clip(offset, 0.0, 1.0))
 
@@ -119,7 +153,7 @@ def encode_sequence(beatmap: Beatmap, total_frames: int) -> npt.NDArray:  # noqa
         grid[frame_idx, SequenceEncoding.SLIDER_LENGTH] = (np.log1p(max(0.0, length)) / LOG_SCALE_LENGTH) * 2.0 - 1.0
         grid[frame_idx, SequenceEncoding.SLIDER_REPEATS] = (np.log1p(max(0.0, repeats)) / LOG_SCALE_REPEATS) * 2.0 - 1.0
 
-        grid[frame_idx, 9:19] = -1.0
+        grid[frame_idx, TYPE_START:TYPE_END] = -1.0
         grid[frame_idx, event_type] = 1.0
 
     for ho in hit_objects:
@@ -191,5 +225,7 @@ def encode_sequence(beatmap: Beatmap, total_frames: int) -> npt.NDArray:  # noqa
             end_idx = min(int(end_time_ms // MS_PER_FRAME), total_frames - 1)
             if end_idx >= start_idx:
                 grid[start_idx : end_idx + 1, SequenceEncoding.IS_SLIDER_BODY] = 1.0
+
+    _encode_kiai(beatmap, grid, total_frames)
 
     return grid

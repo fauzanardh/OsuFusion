@@ -11,7 +11,8 @@ from rosu_pp_py import Beatmap as RosuBeatmap
 from rosu_pp_py import Difficulty as RosuDifficulty
 from slider.beatmap import Beatmap, Slider
 
-from osu_fusion.data.const import AUDIO_DIM, CONTEXT_DIM, FMIN, HOP_LENGTH, OCTAVE_BINS, SR
+from osu_fusion.data.const import AUDIO_DIM, CONTEXT_DIM, FMIN, HOP_LENGTH, OCTAVE_BINS, SR, year_to_era_index
+from osu_fusion.data.descriptors import DESCRIPTOR_ANCESTORS, flat_name_to_idx
 from osu_fusion.data.encode import encode_sequence, SEQ_DIM
 
 _global_lock: Dict[str, Lock] = {}  # type: ignore
@@ -148,23 +149,53 @@ def validate_map_data(map_file: Path, data_dir: Path) -> bool:
             spec_relative = f["spec_path"][()].decode("utf-8")
             if not (data_dir / spec_relative).exists():
                 return False
+            if "descriptor_indices" not in f:
+                return False
+            if "mapper_indices" not in f:
+                return False
     except Exception:
         return False
     return True
 
 
-def prepare_map(data_dir: Path, map_file: Path) -> None:
+def prepare_map(  # noqa: C901
+    data_dir: Path,
+    map_file: Path,
+    descriptor_lookup: Optional[Dict] = None,
+    user_lookup: Optional[Dict] = None,
+    era_lookup: Optional[Dict[int, str]] = None,
+) -> None:
+    # Early check for mode != 0
+    # This looks dumb but `Beatmap.from_path` always loads the entire file.
+    with map_file.open("r", encoding="utf-8-sig") as f:
+        for line in f:
+            if line.startswith("Mode:"):
+                try:
+                    mode = int(line.split(":")[1].strip())
+                    if mode != 0:
+                        return
+                except ValueError:
+                    return
+                break
+
     try:
         beatmap = Beatmap.from_path(map_file)
     except Exception as e:
         print(f"\n[Error] Failed to load beatmap {map_file}: {e}")
         return
 
-    if beatmap.mode != 0:
-        return
-
     # Skip maps with sliderator/high-density sliders that can't be encoded faithfully
     if has_sliderator_sliders(beatmap):
+        return
+
+    beatmap_id = beatmap.beatmap_id
+    if beatmap_id is None or beatmap_id <= 0:
+        return
+
+    # Allow missing descriptor since we will use the classifier to predict them later
+    # if descriptor_lookup is not None and beatmap_id not in descriptor_lookup:
+    #     return
+    if user_lookup is not None and beatmap_id not in user_lookup:
         return
 
     global_spec_dir = data_dir / "specs"
@@ -179,6 +210,16 @@ def prepare_map(data_dir: Path, map_file: Path) -> None:
         with map_file.open("r", encoding="utf-8") as f:
             rosu_beatmap = RosuBeatmap(content=f.read())
         sr = RosuDifficulty().calculate(rosu_beatmap).stars
+
+        era_val = -1.0
+        if era_lookup is not None and beatmap_id in era_lookup:
+            submitted_date = era_lookup[beatmap_id]
+            try:
+                year = int(submitted_date[:4])
+                era_val = float(year_to_era_index(year))
+            except (ValueError, TypeError):
+                era_val = -1.0
+
         c = np.array(
             [
                 rosu_beatmap.cs,
@@ -188,6 +229,7 @@ def prepare_map(data_dir: Path, map_file: Path) -> None:
                 sr,
                 rosu_beatmap.slider_multiplier,
                 rosu_beatmap.slider_tick_rate,
+                era_val,
             ],
             dtype=np.float32,
         )
@@ -205,6 +247,21 @@ def prepare_map(data_dir: Path, map_file: Path) -> None:
 
     total_frames = spec.shape[0]
     x = encode_sequence(beatmap, total_frames=total_frames)
+
+    # Collect descriptor indices (with ancestor propagation)
+    descriptor_idx_set: set = set()
+    if descriptor_lookup is not None and beatmap_id in descriptor_lookup:
+        for flat_name in descriptor_lookup[beatmap_id]:
+            idx = flat_name_to_idx(flat_name)
+            if idx >= 0:
+                for ancestor_idx in DESCRIPTOR_ANCESTORS.get(idx, [idx]):
+                    descriptor_idx_set.add(ancestor_idx)
+    descriptor_indices = np.array(sorted(descriptor_idx_set), dtype=np.int32)
+
+    mapper_indices = np.array([], dtype=np.int32)
+    if user_lookup is not None and beatmap_id in user_lookup:
+        mapper_indices = np.array(user_lookup[beatmap_id], dtype=np.int32)
+
     try:
         first_two, next_two, remaining_hash = split_hash(audio_hash)
         spec_relative = f"specs/{first_two}/{next_two}/{remaining_hash}.spec.h5"
@@ -212,5 +269,7 @@ def prepare_map(data_dir: Path, map_file: Path) -> None:
             f.create_dataset("x", data=x, compression="lzf")
             f.create_dataset("c", data=c, compression="lzf")
             f.create_dataset("spec_path", data=spec_relative.encode("utf-8"))
+            f.create_dataset("descriptor_indices", data=descriptor_indices, compression="lzf")
+            f.create_dataset("mapper_indices", data=mapper_indices, compression="lzf")
     except Exception as e:
         print(f"\n[Error] Failed to save map data {map_path}: {e}")

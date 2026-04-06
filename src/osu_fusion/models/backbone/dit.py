@@ -256,11 +256,15 @@ class DiT(nn.Module):
         attn_dim_head: int = 64,
         attn_heads: int = 16,
         attn_context_len: int = 4096,
+        num_descriptors: int = 0,
+        num_mappers: int = 0,
     ) -> None:
         super().__init__()
         self.attn_heads = attn_heads
         self.audio_patch_size = audio_patch_size
         self.beatmap_patch_size = beatmap_patch_size
+        self.num_descriptors = num_descriptors
+        self.num_mappers = num_mappers
 
         self.x_embed = BeatmapPatchEmbedding(dim_in_x, dim_h, beatmap_patch_size)
         self.a_patch = AudioPatchEmbedding(dim_in_a, dim_h, audio_patch_size)
@@ -277,6 +281,28 @@ class DiT(nn.Module):
             nn.Linear(dim_h, dim_h),
         )
         self.null_cond = nn.Parameter(torch.randn(dim_h))
+
+        if num_descriptors > 0:
+            self.descriptor_proj = nn.Sequential(
+                nn.Linear(num_descriptors, dim_h),
+                nn.SiLU(),
+                nn.Linear(dim_h, dim_h),
+            )
+            self.null_descriptor = nn.Parameter(torch.randn(dim_h))
+        else:
+            self.descriptor_proj = None
+            self.null_descriptor = None
+
+        if num_mappers > 0:
+            self.mapper_proj = nn.Sequential(
+                nn.Linear(num_mappers + 1, dim_h),  # +1 for unknown
+                nn.SiLU(),
+                nn.Linear(dim_h, dim_h),
+            )
+            self.null_mapper = nn.Parameter(torch.randn(dim_h))
+        else:
+            self.mapper_proj = None
+            self.null_mapper = None
 
         self.shared_rotary_emb = RotaryPositionEmbedding(attn_dim_head, scale_base=attn_context_len)
         self.mmdit_blocks = nn.ModuleList(
@@ -324,6 +350,13 @@ class DiT(nn.Module):
         nn.init.normal_(self.cond_mlp[0].weight, std=0.02)
         nn.init.normal_(self.cond_mlp[2].weight, std=0.02)
 
+        if self.descriptor_proj is not None:
+            nn.init.normal_(self.descriptor_proj[0].weight, std=0.02)
+            nn.init.normal_(self.descriptor_proj[2].weight, std=0.02)
+        if self.mapper_proj is not None:
+            nn.init.normal_(self.mapper_proj[0].weight, std=0.02)
+            nn.init.normal_(self.mapper_proj[2].weight, std=0.02)
+
         for block in self.mmdit_blocks:
             nn.init.zeros_(block.modulation_x[1].weight)
             nn.init.zeros_(block.modulation_x[1].bias)
@@ -352,12 +385,14 @@ class DiT(nn.Module):
         a: torch.Tensor,
         t: torch.Tensor,
         c: torch.Tensor,
+        descriptors: Optional[torch.Tensor] = None,
+        mappers: Optional[torch.Tensor] = None,
         cond_scale: float = 1.0,
     ) -> torch.Tensor:
-        logits = self.forward(x, a, t, c, cond_drop_prob=0.0)
+        logits = self.forward(x, a, t, c, descriptors=descriptors, mappers=mappers, cond_drop_prob=0.0)
         if cond_scale == 1.0:
             return logits
-        null_logits = self.forward(x, a, t, c, cond_drop_prob=1.0)
+        null_logits = self.forward(x, a, t, c, descriptors=descriptors, mappers=mappers, cond_drop_prob=1.0)
         return null_logits + (logits - null_logits) * cond_scale
 
     def _build_patch_masks(
@@ -392,6 +427,8 @@ class DiT(nn.Module):
         a: torch.Tensor,
         t: torch.Tensor,
         c: torch.Tensor,
+        descriptors: Optional[torch.Tensor] = None,
+        mappers: Optional[torch.Tensor] = None,
         cond_drop_prob: float = 0.0,
         orig_lens: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
@@ -420,11 +457,38 @@ class DiT(nn.Module):
             attn_mask_x = self._mask_to_attn_bias(mask_x, x.dtype)
 
         # Global conditioning
-        cond_mask = prob_mask_like((c.shape[0],), 1.0 - cond_drop_prob, device=c.device)
+        b = c.shape[0]
+        cond_mask = prob_mask_like((b,), 1.0 - cond_drop_prob, device=c.device)
         cond_mask = rearrange(cond_mask, "b -> b 1")
-        null_conds = repeat(self.null_cond, "d -> b d", b=c.shape[0])
+
+        # Base conditioning (CS, AR, OD, HP, SR, SV, STR, era)
+        null_conds = repeat(self.null_cond, "d -> b d", b=b)
         c_global = self.cond_mlp(c)
         c_global = torch.where(cond_mask, c_global, null_conds)
+
+        # Descriptor conditioning
+        if self.descriptor_proj is not None:
+            null_desc = repeat(self.null_descriptor, "d -> b d", b=b)
+            if descriptors is not None:
+                desc_mask = prob_mask_like((b,), 1.0 - cond_drop_prob, device=c.device)
+                desc_mask = rearrange(desc_mask, "b -> b 1")
+                desc_emb = self.descriptor_proj(descriptors)
+                c_global = c_global + torch.where(desc_mask, desc_emb, null_desc)
+            else:
+                c_global = c_global + null_desc
+
+        # Mapper conditioning
+        if self.mapper_proj is not None:
+            null_map = repeat(self.null_mapper, "d -> b d", b=b)
+            if mappers is not None:
+                mapper_mask = prob_mask_like((b,), 1.0 - cond_drop_prob, device=c.device)
+                mapper_mask = rearrange(mapper_mask, "b -> b 1")
+                map_emb = self.mapper_proj(mappers)
+                c_global = c_global + torch.where(mapper_mask, map_emb, null_map)
+            else:
+                c_global = c_global + null_map
+
+        # Add timestep
         c_global = c_global + self.time_mlp(t)
         c_global = c_global.unsqueeze(1)
 

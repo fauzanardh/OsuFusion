@@ -7,6 +7,8 @@ import torch
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
+from osu_fusion.data.descriptors import NUM_DESCRIPTORS
+from osu_fusion.data.encode import SEQ_DIM
 from osu_fusion.data.const import AUDIO_DIM, MAX_LENGTH_FRAMES
 
 
@@ -14,6 +16,8 @@ class MapData(NamedTuple):
     x: torch.Tensor
     a: torch.Tensor
     c: torch.Tensor
+    descriptor_indices: torch.Tensor
+    mapper_indices: torch.Tensor
     spec_path: str
 
 
@@ -30,6 +34,18 @@ class TensorLoader:
             c = self._to_tensor(map_data["c"][:])
             spec_path = map_data["spec_path"][()].decode("utf-8")
 
+            if "descriptor_indices" in map_data:
+                descriptor_indices = torch.from_numpy(map_data["descriptor_indices"][:].astype(np.int64)).to(
+                    self.device,
+                )
+            else:
+                descriptor_indices = torch.tensor([], dtype=torch.int64, device=self.device)
+
+            if "mapper_indices" in map_data:
+                mapper_indices = torch.from_numpy(map_data["mapper_indices"][:].astype(np.int64)).to(self.device)
+            else:
+                mapper_indices = torch.tensor([], dtype=torch.int64, device=self.device)
+
         if load_audio:
             audio_file = map_file.parent.parent.parent / spec_path
             with h5py.File(audio_file, "r") as audio_data:
@@ -38,13 +54,15 @@ class TensorLoader:
             a = torch.zeros((x.shape[0], AUDIO_DIM), dtype=torch.float32)
 
         if any(torch.isnan(t).any() for t in [x, a, c]):
-            msg = "Invalid values in map file"
+            msg = f"Invalid values in map file {map_file}"
             raise ValueError(msg)
 
         return MapData(
             x=x,
             a=a,
             c=c,
+            descriptor_indices=descriptor_indices,
+            mapper_indices=mapper_indices,
             spec_path=spec_path,
         )
 
@@ -59,10 +77,18 @@ def filter_maps(maps: List[Path], max_length: int = 0) -> List[Path]:
                     continue
                 if max_length > 0 and x_len > max_length:
                     continue
-                # Check audio file is accessible
+                if f["x"].shape[1] != SEQ_DIM:
+                    continue
+
                 spec_path = f["spec_path"][()].decode("utf-8")
                 audio_file = path.parent.parent.parent / spec_path
                 if not audio_file.exists():
+                    continue
+
+                if "descriptor_indices" not in f:
+                    continue
+
+                if "mapper_indices" not in f:
                     continue
             filtered.append(path)
         except Exception as e:
@@ -72,26 +98,48 @@ def filter_maps(maps: List[Path], max_length: int = 0) -> List[Path]:
     return filtered
 
 
+def count_num_mappers(maps: List[Path]) -> int:
+    max_idx = -1
+    for path in tqdm(maps, desc="Counting mappers...", dynamic_ncols=True):
+        try:
+            with h5py.File(path, "r") as f:
+                if "mapper_indices" in f:
+                    indices = f["mapper_indices"][:]
+                    if len(indices) > 0:
+                        max_idx = max(max_idx, int(indices.max()))
+        except Exception:
+            continue
+    num_mappers = max_idx + 1 if max_idx >= 0 else 0
+    print(f"Found {num_mappers} unique mappers")
+    return num_mappers
+
+
 class BeatmapDataset(Dataset):
     def __init__(self: "BeatmapDataset", **kwargs: dict) -> None:
         super().__init__()
         self.dataset = kwargs.pop("dataset")
-        # self.flip_horizontal_prob = kwargs.pop("flip_horizontal_prob", 0.5)
-        # self.flip_vertical_prob = kwargs.pop("flip_vertical_prob", 0.5)
         self.load_audio = kwargs.pop("load_audio", True)
+        self.num_mappers: int = kwargs.pop("num_mappers", 0)
 
         self.tensor_loader = TensorLoader()
+
+    @staticmethod
+    def _indices_to_multihot(indices: torch.Tensor, vocab_size: int) -> torch.Tensor:
+        multihot = torch.zeros(vocab_size, dtype=torch.float32)
+        for idx in indices.tolist():
+            idx = int(idx)
+            if 0 <= idx < vocab_size:
+                multihot[idx] = 1.0
+        return multihot
 
     def __len__(self: "BeatmapDataset") -> int:
         return len(self.dataset)
 
-    def __getitem__(self: "BeatmapDataset", index: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def __getitem__(
+        self: "BeatmapDataset",
+        index: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         map_data = self.tensor_loader.load_tensor(self.dataset[index], self.load_audio)
-        x, a, c = map_data.x, map_data.a, map_data.c
-
-        # if random.random() < self.flip_horizontal_prob:
-        #     x = flip_cursor_horizontal(x)
-        # if random.random() < self.flip_vertical_prob:
-        #     x = flip_cursor_vertical(x)
-
-        return x, a, c
+        descriptors = self._indices_to_multihot(map_data.descriptor_indices, NUM_DESCRIPTORS)
+        mappers = self._indices_to_multihot(map_data.mapper_indices, self.num_mappers + 1)
+        return map_data.x, map_data.a, map_data.c, descriptors, mappers
