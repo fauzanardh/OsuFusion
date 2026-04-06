@@ -11,9 +11,9 @@ classifiers = [
 dependencies = [
     "accelerate>=1.13.0",
     "bezier>=2024.6.20",
-    "diffusers>=0.37.0",
+    "diffusers>=0.37.1",
     "einops>=0.8.2",
-    "gradio>=6.9.0",
+    "gradio>=6.11.0",
     "h5py>=3.16.0",
     "librosa==0.11.0",
     "matplotlib>=3.10.8",
@@ -48,7 +48,7 @@ dev = [
     "nbformat>=5.10.4",
     "ninja>=1.13.0",
     "plotly>=6.6.0",
-    "ruff>=0.15.5",
+    "ruff>=0.15.9",
 ]
 
 [[tool.uv.index]]
