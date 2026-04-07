@@ -16,7 +16,6 @@ except ImportError:
     XFORMERS_AVAILABLE = False
 
 from osu_fusion.modules.norms import MultiHeadRMSNorm
-from osu_fusion.modules.utils import dummy_context_manager
 
 DEBUG = os.environ.get("DEBUG", "False").lower() == "true"
 
@@ -26,7 +25,6 @@ def rotate_half(x: torch.Tensor) -> torch.Tensor:
     return torch.cat((-x2, x1), dim=-1)
 
 
-@torch.amp.autocast("cuda", dtype=torch.float32)
 def apply_rotary_pos_emb(
     t: torch.Tensor,
     cos: torch.Tensor,
@@ -34,14 +32,13 @@ def apply_rotary_pos_emb(
     scale: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     rot_dim = cos.shape[-1]
-    orig_dtype = t.dtype
 
     t, t_unrotated = t[..., :rot_dim], t[..., rot_dim:]
 
     scale = 1.0 if scale is None else scale
     t = (t * cos * scale) + (rotate_half(t) * sin * scale)
     t = torch.cat([t, t_unrotated], dim=-1)
-    return t.to(orig_dtype)
+    return t
 
 
 class RotaryPositionEmbedding(nn.Module):
@@ -94,26 +91,26 @@ class RotaryPositionEmbedding(nn.Module):
         scale = torch.stack([scale, scale], dim=-1)
         return rearrange(scale, "... d r -> ... (d r)")
 
-    @torch.amp.autocast("cuda", dtype=torch.float32)
     def _get_cos_sin_scale(
         self: "RotaryPositionEmbedding",
         x: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         seq_len = x.shape[-2]
         device = x.device
+        dtype = x.dtype
 
         if seq_len > self._cached_seq_len or self._cached_device != device:
             t = torch.arange(seq_len, device=device, dtype=torch.float32)
             freqs = torch.einsum("i, j -> i j", t, self.inv_freq.to(torch.float32)) / self.interpolation_factor
             emb = torch.cat([freqs, freqs], dim=-1)
-            self._cached_cos = rearrange(emb.cos(), "n d -> 1 1 n d")
-            self._cached_sin = rearrange(emb.sin(), "n d -> 1 1 n d")
+            self._cached_cos = rearrange(emb.cos().to(dtype), "n d -> 1 1 n d")
+            self._cached_sin = rearrange(emb.sin().to(dtype), "n d -> 1 1 n d")
             self._cached_seq_len = seq_len
             self._cached_device = device
 
             scale = self._compute_scale(seq_len, device, torch.float32)
             if scale is not None:
-                scale = rearrange(scale, "n d -> 1 1 n d")
+                scale = rearrange(scale.to(dtype), "n d -> 1 1 n d")
             self._cached_scale = scale
 
         cos = self._cached_cos[:, :, :seq_len, :]
@@ -167,9 +164,10 @@ class Attend(nn.Module):
         dtype = v.dtype
 
         qkv_dtype = torch.bfloat16 if self.can_use_bf16 else torch.float16
-        q = q.to(qkv_dtype)
-        k = k.to(qkv_dtype)
-        v = v.to(qkv_dtype)
+        if q.dtype != qkv_dtype:
+            q = q.to(qkv_dtype)
+            k = k.to(qkv_dtype)
+            v = v.to(qkv_dtype)
 
         if self.use_xformers and attn_mask is None:
             # xformers fast path: no mask (inference)
@@ -177,7 +175,8 @@ class Attend(nn.Module):
             out = memory_efficient_attention(q, k, v)
             out = out.transpose(1, 2)
         else:
-            attn_mask = attn_mask.to(qkv_dtype) if attn_mask is not None else None
+            if attn_mask is not None:
+                attn_mask = attn_mask.to(qkv_dtype)
             q, k, v = (t.contiguous() for t in (q, k, v))
             out = F.scaled_dot_product_attention(
                 q,
@@ -232,9 +231,10 @@ class Attention(nn.Module):
         x: torch.Tensor,
         attn_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        context_manager = record_function("Attention") if DEBUG else dummy_context_manager()
-        with context_manager:
-            return self.forward_body(x, attn_mask=attn_mask)
+        if DEBUG:
+            with record_function("Attention"):
+                return self.forward_body(x, attn_mask=attn_mask)
+        return self.forward_body(x, attn_mask=attn_mask)
 
 
 class CrossAttention(nn.Module):
@@ -273,9 +273,10 @@ class CrossAttention(nn.Module):
         return self.to_out(out)
 
     def forward(self: "CrossAttention", x: torch.Tensor, context: torch.Tensor) -> torch.Tensor:
-        context_manager = record_function("CrossAttention") if DEBUG else dummy_context_manager()
-        with context_manager:
-            return self.forward_body(x, context)
+        if DEBUG:
+            with record_function("CrossAttention"):
+                return self.forward_body(x, context)
+        return self.forward_body(x, context)
 
 
 class JointAttention(nn.Module):
@@ -356,6 +357,7 @@ class JointAttention(nn.Module):
         mask_x: Optional[torch.Tensor] = None,
         mask_a: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        context_manager = record_function("JointAttention") if DEBUG else dummy_context_manager()
-        with context_manager:
-            return self.forward_body(x, a, mask_x=mask_x, mask_a=mask_a)
+        if DEBUG:
+            with record_function("JointAttention"):
+                return self.forward_body(x, a, mask_x=mask_x, mask_a=mask_a)
+        return self.forward_body(x, a, mask_x=mask_x, mask_a=mask_a)

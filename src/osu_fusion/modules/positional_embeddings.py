@@ -5,8 +5,6 @@ import torch
 import torch.nn as nn
 from torch.profiler import record_function
 
-from osu_fusion.modules.utils import dummy_context_manager
-
 DEBUG = os.environ.get("DEBUG", "False").lower() == "true"
 
 
@@ -26,6 +24,7 @@ class SinusoidalPositionEmbedding(nn.Module):
         return emb
 
     def forward(self: "SinusoidalPositionEmbedding", x: torch.Tensor) -> torch.Tensor:
-        context_manager = record_function("SinusoidalPositionEmbedding") if DEBUG else dummy_context_manager()
-        with context_manager:
-            return self.forward_body(x)
+        if DEBUG:
+            with record_function("SinusoidalPositionEmbedding"):
+                return self.forward_body(x)
+        return self.forward_body(x)

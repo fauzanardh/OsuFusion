@@ -10,13 +10,10 @@ from torch.profiler import record_function
 
 from osu_fusion.modules.attention import Attention, JointAttention, RotaryPositionEmbedding
 from osu_fusion.modules.positional_embeddings import SinusoidalPositionEmbedding
-from osu_fusion.modules.utils import dummy_context_manager, prob_mask_like
+from osu_fusion.modules.triton_kernels import fused_gated_residual, fused_modulate
+from osu_fusion.modules.utils import prob_mask_like
 
 DEBUG = os.environ.get("DEBUG", "False").lower() == "true"
-
-
-def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-    return x * (1 + scale) + shift
 
 
 class FeedForward(nn.Module):
@@ -32,9 +29,10 @@ class FeedForward(nn.Module):
         return self.w3(F.silu(self.w1(x)) * self.w2(x))
 
     def forward(self: "FeedForward", x: torch.Tensor) -> torch.Tensor:
-        context_manager = record_function("FeedForward") if DEBUG else dummy_context_manager()
-        with context_manager:
-            return self.forward_body(x)
+        if DEBUG:
+            with record_function("FeedForward"):
+                return self.forward_body(x)
+        return self.forward_body(x)
 
 
 class AudioPatchEmbedding(nn.Sequential):
@@ -69,14 +67,15 @@ class FinalUnpatchLayer(nn.Module):
 
     def forward_body(self: "FinalUnpatchLayer", x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
         shift, scale = self.modulation(c).chunk(2, dim=-1)
-        x = modulate(self.norm(x), shift, scale)
+        x = fused_modulate(self.norm(x), shift, scale)
         x = self.out(x)
         return self.unpatch(x)
 
     def forward(self: "FinalUnpatchLayer", x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
-        context_manager = record_function("FinalUnpatchLayer") if DEBUG else dummy_context_manager()
-        with context_manager:
-            return self.forward_body(x, c)
+        if DEBUG:
+            with record_function("FinalUnpatchLayer"):
+                return self.forward_body(x, c)
+        return self.forward_body(x, c)
 
 
 class MMDiTBlock(nn.Module):
@@ -147,18 +146,38 @@ class MMDiTBlock(nn.Module):
         ) = self.modulation_a(c).chunk(6, dim=-1)
 
         # Attention
-        h_x = modulate(self.norm1_x(x), shift_attn_x, scale_attn_x)
-        h_a = modulate(self.norm1_a(a), shift_attn_a, scale_attn_a)
+        h_x = fused_modulate(self.norm1_x(x), shift_attn_x, scale_attn_x)
+        h_a = fused_modulate(self.norm1_a(a), shift_attn_a, scale_attn_a)
         attn_out_x, attn_out_a = self.attn(h_x, h_a, mask_x=mask_x, mask_a=mask_a)
 
-        x = x + gate_attn_x * attn_out_x
-        a = a + gate_attn_a * attn_out_a
+        x = fused_gated_residual(x, gate_attn_x, attn_out_x)
+        a = fused_gated_residual(a, gate_attn_a, attn_out_a)
 
         # MLP
-        x = x + gate_mlp_x * self.mlp_x(modulate(self.norm2_x(x), shift_mlp_x, scale_mlp_x))
-        a = a + gate_mlp_a * self.mlp_a(modulate(self.norm2_a(a), shift_mlp_a, scale_mlp_a))
+        x = fused_gated_residual(x, gate_mlp_x, self.mlp_x(fused_modulate(self.norm2_x(x), shift_mlp_x, scale_mlp_x)))
+        a = fused_gated_residual(a, gate_mlp_a, self.mlp_a(fused_modulate(self.norm2_a(a), shift_mlp_a, scale_mlp_a)))
 
         return x, a
+
+    def _run_forward(
+        self: "MMDiTBlock",
+        x: torch.Tensor,
+        a: torch.Tensor,
+        c: torch.Tensor,
+        mask_x: Optional[torch.Tensor] = None,
+        mask_a: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if self.training and self.gradient_checkpointing:
+            return torch.utils.checkpoint.checkpoint(
+                self.forward_body,
+                x,
+                a,
+                c,
+                mask_x,
+                mask_a,
+                use_reentrant=True,
+            )
+        return self.forward_body(x, a, c, mask_x=mask_x, mask_a=mask_a)
 
     def forward(
         self: "MMDiTBlock",
@@ -168,20 +187,10 @@ class MMDiTBlock(nn.Module):
         mask_x: Optional[torch.Tensor] = None,
         mask_a: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        context_manager = record_function("MMDiTBlock") if DEBUG else dummy_context_manager()
-        with context_manager:
-            if self.training and self.gradient_checkpointing:
-                return torch.utils.checkpoint.checkpoint(
-                    self.forward_body,
-                    x,
-                    a,
-                    c,
-                    mask_x,
-                    mask_a,
-                    use_reentrant=True,
-                )
-            else:
-                return self.forward_body(x, a, c, mask_x=mask_x, mask_a=mask_a)
+        if DEBUG:
+            with record_function("MMDiTBlock"):
+                return self._run_forward(x, a, c, mask_x=mask_x, mask_a=mask_a)
+        return self._run_forward(x, a, c, mask_x=mask_x, mask_a=mask_a)
 
 
 class DiTBlock(nn.Module):
@@ -227,9 +236,29 @@ class DiTBlock(nn.Module):
             gate_ff,
         ) = self.modulation(c).chunk(6, dim=-1)
 
-        x = x + gate_msa * self.attn(modulate(self.norm1(x), shift_msa, scale_msa), attn_mask=attn_mask)
-        x = x + gate_ff * self.ff(modulate(self.norm2(x), shift_ff, scale_ff))
+        x = fused_gated_residual(
+            x,
+            gate_msa,
+            self.attn(fused_modulate(self.norm1(x), shift_msa, scale_msa), attn_mask=attn_mask),
+        )
+        x = fused_gated_residual(x, gate_ff, self.ff(fused_modulate(self.norm2(x), shift_ff, scale_ff)))
         return x
+
+    def _run_forward(
+        self: "DiTBlock",
+        x: torch.Tensor,
+        c: torch.Tensor,
+        attn_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if self.training and self.gradient_checkpointing:
+            return torch.utils.checkpoint.checkpoint(
+                self.forward_body,
+                x,
+                c,
+                attn_mask,
+                use_reentrant=True,
+            )
+        return self.forward_body(x, c, attn_mask=attn_mask)
 
     def forward(
         self: "DiTBlock",
@@ -237,18 +266,10 @@ class DiTBlock(nn.Module):
         c: torch.Tensor,
         attn_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        context_manager = record_function("DiTBlock") if DEBUG else dummy_context_manager()
-        with context_manager:
-            if self.training and self.gradient_checkpointing:
-                return torch.utils.checkpoint.checkpoint(
-                    self.forward_body,
-                    x,
-                    c,
-                    attn_mask,
-                    use_reentrant=True,
-                )
-            else:
-                return self.forward_body(x, c, attn_mask=attn_mask)
+        if DEBUG:
+            with record_function("DiTBlock"):
+                return self._run_forward(x, c, attn_mask=attn_mask)
+        return self._run_forward(x, c, attn_mask=attn_mask)
 
 
 class DiT(nn.Module):
