@@ -1,16 +1,21 @@
 import json
+import math
+import random
 from pathlib import Path
-from typing import List, NamedTuple, Optional, Tuple
+from typing import Iterator, List, NamedTuple, Optional, Tuple
 
 import h5py
 import numpy as np
 import torch
-from torch.utils.data import Dataset
+from torch.nn import functional as F
+from torch.utils.data import Dataset, Sampler
 from tqdm import tqdm
 
 from osu_fusion.data.const import AUDIO_DIM, MAX_LENGTH_FRAMES
 from osu_fusion.data.descriptors import NUM_DESCRIPTORS
-from osu_fusion.data.encode import SEQ_DIM
+from osu_fusion.data.encode import SEQ_DIM, SequenceEncoding
+
+DEFAULT_BUCKET_BOUNDARIES = [1024, 2048, 4096, 8192, 16384]
 
 
 class MapData(NamedTuple):
@@ -68,8 +73,9 @@ class TensorLoader:
         )
 
 
-def filter_maps(maps: List[Path], max_length: int = 0) -> List[Path]:
+def filter_maps(maps: List[Path], max_length: int = 0) -> Tuple[List[Path], List[int]]:
     filtered = []
+    lengths = []
     for path in tqdm(maps, desc="Filtering dataset...", dynamic_ncols=True):
         try:
             with h5py.File(path, "r") as f:
@@ -92,11 +98,12 @@ def filter_maps(maps: List[Path], max_length: int = 0) -> List[Path]:
                 if "mapper_indices" not in f:
                     continue
             filtered.append(path)
+            lengths.append(x_len)
         except Exception as e:
             print(f"Skipping {path}: {e}")
             continue
     print(f"Filtered dataset: {len(filtered)}/{len(maps)} maps")
-    return filtered
+    return filtered, lengths
 
 
 def count_num_mappers(dataset_path: Path) -> int:
@@ -105,10 +112,76 @@ def count_num_mappers(dataset_path: Path) -> int:
     return max(int(v) for v in mapper_index.values()) + 1
 
 
+class BucketBatchSampler(Sampler[List[int]]):
+    def __init__(
+        self: "BucketBatchSampler",
+        lengths: List[int],
+        batch_size: int,
+        bucket_boundaries: Optional[List[int]] = None,
+        drop_last: bool = False,
+        seed: int = 0,
+    ) -> None:
+        self.lengths = lengths
+        self.batch_size = batch_size
+        self.bucket_boundaries = sorted(bucket_boundaries or DEFAULT_BUCKET_BOUNDARIES)
+        self.drop_last = drop_last
+        self.seed = seed
+        self.epoch = 0
+
+        self.buckets: List[List[int]] = [[] for _ in range(len(self.bucket_boundaries))]
+        for idx, length in enumerate(lengths):
+            bucket_id = self._get_bucket_id(length)
+            self.buckets[bucket_id].append(idx)
+
+        for i, bucket in enumerate(self.buckets):
+            upper = self.bucket_boundaries[i]
+            lower = self.bucket_boundaries[i - 1] + 1 if i > 0 else 1
+            print(f"  Bucket {i} (len {lower}-{upper}): {len(bucket)} samples")
+
+    def _get_bucket_id(self: "BucketBatchSampler", length: int) -> int:
+        for i, boundary in enumerate(self.bucket_boundaries):
+            if length <= boundary:
+                return i
+        return len(self.bucket_boundaries) - 1
+
+    def set_epoch(self: "BucketBatchSampler", epoch: int) -> None:
+        self.epoch = epoch
+
+    def __iter__(self: "BucketBatchSampler") -> Iterator[List[int]]:
+        rng = random.Random(self.seed + self.epoch)
+
+        all_batches = []
+        for bucket in self.buckets:
+            if len(bucket) == 0:
+                continue
+
+            indices = bucket.copy()
+            rng.shuffle(indices)
+
+            for i in range(0, len(indices), self.batch_size):
+                batch = indices[i : i + self.batch_size]
+                if len(batch) < self.batch_size and self.drop_last:
+                    continue
+                all_batches.append(batch)
+
+        rng.shuffle(all_batches)
+        yield from all_batches
+
+    def __len__(self: "BucketBatchSampler") -> int:
+        count = 0
+        for bucket in self.buckets:
+            if self.drop_last:
+                count += len(bucket) // self.batch_size
+            else:
+                count += math.ceil(len(bucket) / self.batch_size)
+        return count
+
+
 class BeatmapDataset(Dataset):
     def __init__(self: "BeatmapDataset", **kwargs: dict) -> None:
         super().__init__()
         self.dataset = kwargs.pop("dataset")
+        self.lengths: List[int] = kwargs.pop("lengths", [])
         self.load_audio = kwargs.pop("load_audio", True)
         self.num_mappers: int = kwargs.pop("num_mappers", 0)
 
@@ -134,3 +207,87 @@ class BeatmapDataset(Dataset):
         descriptors = self._indices_to_multihot(map_data.descriptor_indices, NUM_DESCRIPTORS)
         mappers = self._indices_to_multihot(map_data.mapper_indices, self.num_mappers + 1)
         return map_data.x, map_data.a, map_data.c, descriptors, mappers
+
+
+class ClassifierDataset(Dataset):
+    def __init__(self: "ClassifierDataset", map_files: List[Path], augment: bool = True) -> None:
+        super().__init__()
+        self.map_files = map_files
+        self.augment = augment
+
+    def __len__(self: "ClassifierDataset") -> int:
+        return len(self.map_files)
+
+    @staticmethod
+    def _augment(x: torch.Tensor, a: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        if random.random() < 0.5:
+            x[:, SequenceEncoding.X] = -x[:, SequenceEncoding.X]
+
+        if random.random() < 0.5:
+            x[:, SequenceEncoding.Y] = -x[:, SequenceEncoding.Y]
+
+        if random.random() < 0.5:
+            T = x.shape[0]
+            crop_ratio = random.uniform(0.75, 1.0)
+            crop_len = max(1, int(T * crop_ratio))
+            start = random.randint(0, T - crop_len)
+            x = x[start : start + crop_len]
+            a = a[start : start + crop_len]
+
+        return x, a
+
+    def __getitem__(
+        self: "ClassifierDataset",
+        index: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        map_file = self.map_files[index]
+        with h5py.File(map_file, "r") as f:
+            x = torch.from_numpy(f["x"][:]).float()
+            c = torch.from_numpy(f["c"][:]).float()
+            spec_path = f["spec_path"][()].decode("utf-8")
+
+            # Load descriptor indices and convert to multi-hot
+            if "descriptor_indices" in f:
+                desc_idx = f["descriptor_indices"][:]
+                descriptors = torch.zeros(NUM_DESCRIPTORS, dtype=torch.float32)
+                for idx in desc_idx:
+                    if 0 <= idx < NUM_DESCRIPTORS:
+                        descriptors[idx] = 1.0
+            else:
+                descriptors = torch.zeros(NUM_DESCRIPTORS, dtype=torch.float32)
+
+        audio_file = map_file.parent.parent.parent / spec_path
+        with h5py.File(audio_file, "r") as audio_data:
+            a = torch.from_numpy(audio_data["a"][:]).float()
+
+        if torch.isnan(x).any() or torch.isnan(c).any() or torch.isnan(a).any():
+            msg = f"NaN in {map_file}"
+            raise ValueError(msg)
+
+        if self.augment:
+            x, a = self._augment(x, a)
+
+        return x, a, c, descriptors
+
+
+def classifier_collate_fn(
+    batch: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]],
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    orig_lens = torch.tensor([x.shape[0] for x, _, _, _ in batch], dtype=torch.int32)
+    max_len = max(x.shape[0] for x, _, _, _ in batch)
+
+    padded_x = []
+    padded_a = []
+    for x, a, _, _ in batch:
+        n_pad = max_len - x.shape[0]
+        if n_pad > 0:
+            x = F.pad(x, (0, 0, 0, n_pad))
+            a = F.pad(a, (0, 0, 0, n_pad))
+        padded_x.append(x)
+        padded_a.append(a)
+
+    out_x = torch.stack(padded_x)
+    out_a = torch.stack(padded_a)
+    out_c = torch.stack([c for _, _, c, _ in batch])
+    out_tags = torch.stack([t for _, _, _, t in batch])
+    return out_x, out_a, out_c, out_tags, orig_lens

@@ -1,4 +1,3 @@
-import shutil
 import time
 from argparse import ArgumentParser
 from dataclasses import asdict
@@ -18,36 +17,13 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
+from trainer_utils import clear_checkpoints, get_total_norm, manage_checkpoints
 
 import wandb
-from osu_fusion.data.dataset import BeatmapDataset, count_num_mappers, filter_maps
+from osu_fusion.data.dataset import BeatmapDataset, BucketBatchSampler, count_num_mappers, filter_maps
 from osu_fusion.data.encode import SEQ_DIM
 from osu_fusion.data.prepare_data import load_audio
 from osu_fusion.models.diffusion_dit import DiTConfig_L, DiTConfig_M, DiTConfig_S, OsuFusionDiT
-
-
-def get_total_norm(parameters: List[torch.Tensor], norm_type: float = 2.0) -> float:
-    grads = [p.grad for p in parameters if p.grad is not None]
-    if not grads:
-        return 0.0
-    return torch.norm(torch.stack([torch.norm(g.detach(), norm_type) for g in grads]), norm_type).item()
-
-
-def manage_checkpoints(project_dir: Path, max_num_checkpoints: int) -> None:
-    checkpoints = sorted(project_dir.rglob("checkpoint-*"), key=lambda p: int(p.stem.split("-")[1]))
-    for checkpoint in checkpoints[:-max_num_checkpoints]:
-        if checkpoint.is_dir():
-            shutil.rmtree(checkpoint)
-        else:
-            checkpoint.unlink()
-
-
-def clear_checkpoints(project_dir: Path) -> None:
-    for checkpoint in project_dir.rglob("checkpoint-*"):
-        if checkpoint.is_dir():
-            shutil.rmtree(checkpoint)
-        else:
-            checkpoint.unlink()
 
 
 def custom_collate_fn(
@@ -194,7 +170,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     # Count mappers and build dataset
     print("Loading dataset...")
     all_maps = list(args.dataset_dir.rglob("*.map.h5"))
-    all_maps = filter_maps(all_maps, max_length=args.max_length)
+    all_maps, all_lengths = filter_maps(all_maps, max_length=args.max_length)
     num_mappers = count_num_mappers(args.dataset_dir)
 
     config = MODEL_CONFIGS[args.model_size]
@@ -204,12 +180,16 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     if args.full_bf16:
         model.set_full_bf16()
 
-    dataset = BeatmapDataset(dataset=all_maps, num_mappers=num_mappers)
-
+    dataset = BeatmapDataset(dataset=all_maps, lengths=all_lengths, num_mappers=num_mappers)
+    bucket_sampler = BucketBatchSampler(
+        lengths=all_lengths,
+        batch_size=args.batch_size,
+        bucket_boundaries=args.bucket_boundaries,
+        drop_last=True,
+    )
     dataloader = DataLoader(
         dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
+        batch_sampler=bucket_sampler,
         num_workers=args.num_workers,
         prefetch_factor=4 if args.num_workers > 0 else None,
         persistent_workers=args.num_workers > 0,
@@ -217,7 +197,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         collate_fn=custom_collate_fn,
     )
 
-    steps_per_epoch = max(1, len(dataset) // (args.batch_size * args.gradient_accumulation_steps))
+    steps_per_epoch = max(1, len(bucket_sampler) // args.gradient_accumulation_steps)
     total_steps = steps_per_epoch * args.epochs
 
     parameters = list(model.trainable_params)
@@ -251,6 +231,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         disable=not accelerator.is_local_main_process,
     ) as pbar:
         for epoch in range(starting_epoch, args.epochs):
+            bucket_sampler.set_epoch(epoch)
             epoch_loss_history = []
             accum_diff_loss = 0.0
             accum_total_loss = 0.0
@@ -367,6 +348,13 @@ def main() -> None:
         help="Number of gradient accumulation steps",
     )
     args.add_argument("--clip-grad-norm", type=float, default=0.0, help="Gradient clipping norm")
+    args.add_argument(
+        "--bucket-boundaries",
+        type=int,
+        nargs="+",
+        default=[1024, 2048, 4096, 8192, 16384],
+        help="Length bucket boundaries for batching (e.g., 1024 2048 4096 8192 16384)",
+    )
     args.add_argument("--lr", type=float, default=1e-5, help="Learning rate for the optimizer")
     args.add_argument("--batch-size", type=int, default=8, help="Batch size for training")
     args.add_argument("--num-workers", type=int, default=2, help="Number of data loader workers")

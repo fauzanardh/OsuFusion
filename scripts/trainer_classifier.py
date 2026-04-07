@@ -1,12 +1,9 @@
-import random
-import shutil
 import time
 from argparse import ArgumentParser
 from dataclasses import asdict
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-import h5py
 import numpy as np
 import torch
 from accelerate import Accelerator
@@ -18,10 +15,10 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
+from trainer_utils import manage_checkpoints
 
-from osu_fusion.data.const import MAX_LENGTH_FRAMES
-from osu_fusion.data.descriptors import DESCRIPTOR_ANCESTORS, NUM_DESCRIPTORS
-from osu_fusion.data.encode import SEQ_DIM, SequenceEncoding
+from osu_fusion.data.dataset import BucketBatchSampler, ClassifierDataset, classifier_collate_fn, filter_maps
+from osu_fusion.data.descriptors import DESCRIPTOR_ANCESTORS
 from osu_fusion.models.classifier import ClassifierConfig_L, ClassifierConfig_M, ClassifierConfig_S, OsuFusionClassifier
 
 
@@ -81,155 +78,6 @@ def hierarchy_consistency_loss(
     parent_probs = probs[:, parent_indices]  # (B, num_pairs)
     violations = F.relu(child_probs - parent_probs)
     return weight * (violations**2).mean()
-
-
-def get_total_norm(parameters: List[torch.Tensor], norm_type: float = 2.0) -> float:
-    grads = [p.grad for p in parameters if p.grad is not None]
-    if not grads:
-        return 0.0
-    return torch.norm(torch.stack([torch.norm(g.detach(), norm_type) for g in grads]), norm_type).item()
-
-
-def manage_checkpoints(project_dir: Path, max_num_checkpoints: int) -> None:
-    checkpoints = sorted(project_dir.rglob("checkpoint-*"), key=lambda p: int(p.stem.split("-")[1]))
-    for checkpoint in checkpoints[:-max_num_checkpoints]:
-        if checkpoint.is_dir():
-            shutil.rmtree(checkpoint)
-        else:
-            checkpoint.unlink()
-
-
-class ClassifierDataset(torch.utils.data.Dataset):
-    def __init__(self: "ClassifierDataset", map_files: List[Path], augment: bool = True) -> None:
-        super().__init__()
-        self.map_files = map_files
-        self.augment = augment
-
-    def __len__(self: "ClassifierDataset") -> int:
-        return len(self.map_files)
-
-    @staticmethod
-    def _augment(x: torch.Tensor, a: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        if random.random() < 0.5:
-            x[:, SequenceEncoding.X] = -x[:, SequenceEncoding.X]
-
-        if random.random() < 0.5:
-            x[:, SequenceEncoding.Y] = -x[:, SequenceEncoding.Y]
-
-        if random.random() < 0.5:
-            T = x.shape[0]
-            crop_ratio = random.uniform(0.75, 1.0)
-            crop_len = max(1, int(T * crop_ratio))
-            start = random.randint(0, T - crop_len)
-            x = x[start : start + crop_len]
-            a = a[start : start + crop_len]
-
-        # if random.random() < 0.3:
-        #     T = x.shape[0]
-        #     scale = random.uniform(0.8, 1.5)
-        #     new_T = max(1, int(T * scale))
-        #     x = F.interpolate(x.unsqueeze(0).permute(0, 2, 1), size=new_T, mode="linear", align_corners=False)
-        #     x = x.permute(0, 2, 1).squeeze(0)
-        #     a = F.interpolate(a.unsqueeze(0).permute(0, 2, 1), size=new_T, mode="linear", align_corners=False)
-        #     a = a.permute(0, 2, 1).squeeze(0)
-
-        # if random.random() < 0.5:
-        #     a = a + torch.randn_like(a) * 0.05
-
-        # if random.random() < 0.3:
-        #     x_offset = random.uniform(-0.05, 0.05)
-        #     y_offset = random.uniform(-0.05, 0.05)
-        #     x[:, SequenceEncoding.X] = (x[:, SequenceEncoding.X] + x_offset).clamp(-1.0, 1.0)
-        #     x[:, SequenceEncoding.Y] = (x[:, SequenceEncoding.Y] + y_offset).clamp(-1.0, 1.0)
-
-        return x, a
-
-    def __getitem__(
-        self: "ClassifierDataset",
-        index: int,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        map_file = self.map_files[index]
-        with h5py.File(map_file, "r") as f:
-            x = torch.from_numpy(f["x"][:]).float()
-            c = torch.from_numpy(f["c"][:]).float()
-            spec_path = f["spec_path"][()].decode("utf-8")
-
-            # Load descriptor indices and convert to multi-hot
-            if "descriptor_indices" in f:
-                desc_idx = f["descriptor_indices"][:]
-                descriptors = torch.zeros(NUM_DESCRIPTORS, dtype=torch.float32)
-                for idx in desc_idx:
-                    if 0 <= idx < NUM_DESCRIPTORS:
-                        descriptors[idx] = 1.0
-            else:
-                descriptors = torch.zeros(NUM_DESCRIPTORS, dtype=torch.float32)
-
-        audio_file = map_file.parent.parent.parent / spec_path
-        with h5py.File(audio_file, "r") as audio_data:
-            a = torch.from_numpy(audio_data["a"][:]).float()
-
-        if torch.isnan(x).any() or torch.isnan(c).any() or torch.isnan(a).any():
-            msg = f"NaN in {map_file}"
-            raise ValueError(msg)
-
-        if self.augment:
-            x, a = self._augment(x, a)
-
-        return x, a, c, descriptors
-
-
-def classifier_collate_fn(
-    batch: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]],
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    orig_lens = torch.tensor([x.shape[0] for x, _, _, _ in batch], dtype=torch.int32)
-    max_len = max(x.shape[0] for x, _, _, _ in batch)
-
-    padded_x = []
-    padded_a = []
-    for x, a, _, _ in batch:
-        n_pad = max_len - x.shape[0]
-        if n_pad > 0:
-            x = F.pad(x, (0, 0, 0, n_pad))
-            a = F.pad(a, (0, 0, 0, n_pad))
-        padded_x.append(x)
-        padded_a.append(a)
-
-    out_x = torch.stack(padded_x)
-    out_a = torch.stack(padded_a)
-    out_c = torch.stack([c for _, _, c, _ in batch])
-    out_tags = torch.stack([t for _, _, _, t in batch])
-    return out_x, out_a, out_c, out_tags, orig_lens
-
-
-def filter_maps(maps: List[Path], max_length: int = 0) -> List[Path]:
-    filtered = []
-    for path in tqdm(maps, desc="Filtering dataset...", dynamic_ncols=True):
-        try:
-            with h5py.File(path, "r") as f:
-                x_len = f["x"].shape[0]
-                if x_len > MAX_LENGTH_FRAMES:
-                    continue
-                if max_length > 0 and x_len > max_length:
-                    continue
-                if f["x"].shape[1] != SEQ_DIM:
-                    continue
-
-                spec_path = f["spec_path"][()].decode("utf-8")
-                audio_file = path.parent.parent.parent / spec_path
-                if not audio_file.exists():
-                    continue
-
-                if "mapper_indices" not in f:
-                    continue
-
-                if "descriptor_indices" not in f:
-                    continue
-            filtered.append(path)
-        except Exception as e:
-            print(f"Skipping {path}: {e}")
-            continue
-    print(f"Filtered dataset: {len(filtered)}/{len(maps)} maps")
-    return filtered
 
 
 def save_model_state(model: OsuFusionClassifier, project_dir: Path) -> None:
@@ -293,7 +141,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
 
     print("Loading dataset...")
     all_maps = list(args.dataset_dir.rglob("*.map.h5"))
-    all_maps = filter_maps(all_maps, max_length=args.max_length)
+    all_maps, all_lengths = filter_maps(all_maps, max_length=args.max_length)
 
     config = MODEL_CONFIGS[args.model_size]
     model = OsuFusionClassifier(**asdict(config))
@@ -302,10 +150,14 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
 
     # Split into train/val (95/5)
     np.random.seed(42)
-    np.random.shuffle(all_maps)
+    indices = np.random.permutation(len(all_maps))
     split_idx = int(len(all_maps) * 0.95)
-    train_maps = all_maps[:split_idx]
-    val_maps = all_maps[split_idx:]
+    train_indices = indices[:split_idx]
+    val_indices = indices[split_idx:]
+
+    train_maps = [all_maps[i] for i in train_indices]
+    val_maps = [all_maps[i] for i in val_indices]
+    train_lengths = [all_lengths[i] for i in train_indices]
     print(f"Train: {len(train_maps)}, Val: {len(val_maps)}")
 
     train_dataset = ClassifierDataset(train_maps, augment=True)
@@ -314,10 +166,15 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     hier_child_idx, hier_parent_idx = build_hierarchy_index_tensors(DESCRIPTOR_ANCESTORS)
     print(f"Hierarchy consistency pairs: {hier_child_idx.numel()}")
 
+    train_bucket_sampler = BucketBatchSampler(
+        lengths=train_lengths,
+        batch_size=args.batch_size,
+        bucket_boundaries=args.bucket_boundaries,
+        drop_last=True,
+    )
     train_dataloader = DataLoader(
         train_dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
+        batch_sampler=train_bucket_sampler,
         num_workers=args.num_workers,
         prefetch_factor=4 if args.num_workers > 0 else None,
         persistent_workers=args.num_workers > 0,
@@ -333,7 +190,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         collate_fn=classifier_collate_fn,
     )
 
-    steps_per_epoch = max(1, len(train_dataset) // (args.batch_size * args.gradient_accumulation_steps))
+    steps_per_epoch = max(1, len(train_bucket_sampler) // args.gradient_accumulation_steps)
     total_steps = steps_per_epoch * args.epochs
 
     parameters = list(model.parameters())
@@ -372,6 +229,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         disable=not accelerator.is_local_main_process,
     ) as pbar:
         for epoch in range(args.epochs):
+            train_bucket_sampler.set_epoch(epoch)
             epoch_loss_history = []
             accum_loss = 0.0
 
@@ -535,6 +393,13 @@ def main() -> None:
     args.add_argument("--gradient-checkpointing", action="store_true")
     args.add_argument("--gradient-accumulation-steps", type=int, default=1)
     args.add_argument("--clip-grad-norm", type=float, default=1.0)
+    args.add_argument(
+        "--bucket-boundaries",
+        type=int,
+        nargs="+",
+        default=[1024, 2048, 4096, 8192, 16384],
+        help="Length bucket boundaries for batching (e.g., 1024 2048 4096 8192 16384)",
+    )
     args.add_argument("--lr", type=float, default=1e-3)
     args.add_argument("--batch-size", type=int, default=32)
     args.add_argument("--num-workers", type=int, default=2)
