@@ -18,7 +18,7 @@ except ImportError:
 from osu_fusion.modules.norms import MultiHeadRMSNorm
 from osu_fusion.modules.utils import dummy_context_manager
 
-DEBUG = os.environ.get("DEBUG", False)
+DEBUG = os.environ.get("DEBUG", "False").lower() == "true"
 
 
 def rotate_half(x: torch.Tensor) -> torch.Tensor:
@@ -232,7 +232,7 @@ class Attention(nn.Module):
         x: torch.Tensor,
         attn_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        context_manager = dummy_context_manager() if DEBUG else record_function("Attention")
+        context_manager = record_function("Attention") if DEBUG else dummy_context_manager()
         with context_manager:
             return self.forward_body(x, attn_mask=attn_mask)
 
@@ -273,7 +273,7 @@ class CrossAttention(nn.Module):
         return self.to_out(out)
 
     def forward(self: "CrossAttention", x: torch.Tensor, context: torch.Tensor) -> torch.Tensor:
-        context_manager = dummy_context_manager() if DEBUG else record_function("CrossAttention")
+        context_manager = record_function("CrossAttention") if DEBUG else dummy_context_manager()
         with context_manager:
             return self.forward_body(x, context)
 
@@ -356,6 +356,6 @@ class JointAttention(nn.Module):
         mask_x: Optional[torch.Tensor] = None,
         mask_a: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        context_manager = dummy_context_manager() if DEBUG else record_function("JointAttention")
+        context_manager = record_function("JointAttention") if DEBUG else dummy_context_manager()
         with context_manager:
             return self.forward_body(x, a, mask_x=mask_x, mask_a=mask_a)

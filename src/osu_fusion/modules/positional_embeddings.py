@@ -1,7 +1,13 @@
 import math
+import os
 
 import torch
 import torch.nn as nn
+from torch.profiler import record_function
+
+from osu_fusion.modules.utils import dummy_context_manager
+
+DEBUG = os.environ.get("DEBUG", "False").lower() == "true"
 
 
 class SinusoidalPositionEmbedding(nn.Module):
@@ -10,7 +16,7 @@ class SinusoidalPositionEmbedding(nn.Module):
         self.dim = dim
         self.theta = theta
 
-    def forward(self: "SinusoidalPositionEmbedding", x: torch.Tensor) -> torch.Tensor:
+    def forward_body(self: "SinusoidalPositionEmbedding", x: torch.Tensor) -> torch.Tensor:
         device = x.device
         half_dim = self.dim // 2
         emb = math.log(self.theta) / (half_dim - 1)
@@ -18,3 +24,8 @@ class SinusoidalPositionEmbedding(nn.Module):
         emb = x[:, None] * emb[None, :]
         emb = torch.cat([emb.sin(), emb.cos()], dim=-1)
         return emb
+
+    def forward(self: "SinusoidalPositionEmbedding", x: torch.Tensor) -> torch.Tensor:
+        context_manager = record_function("SinusoidalPositionEmbedding") if DEBUG else dummy_context_manager()
+        with context_manager:
+            return self.forward_body(x)

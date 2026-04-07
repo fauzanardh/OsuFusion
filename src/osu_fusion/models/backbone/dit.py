@@ -12,7 +12,7 @@ from osu_fusion.modules.attention import Attention, JointAttention, RotaryPositi
 from osu_fusion.modules.positional_embeddings import SinusoidalPositionEmbedding
 from osu_fusion.modules.utils import dummy_context_manager, prob_mask_like
 
-DEBUG = os.environ.get("DEBUG", False)
+DEBUG = os.environ.get("DEBUG", "False").lower() == "true"
 
 
 def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
@@ -28,10 +28,13 @@ class FeedForward(nn.Module):
         self.w2 = nn.Linear(dim, inner_dim, bias=False)
         self.w3 = nn.Linear(inner_dim, dim, bias=False)
 
+    def forward_body(self: "FeedForward", x: torch.Tensor) -> torch.Tensor:
+        return self.w3(F.silu(self.w1(x)) * self.w2(x))
+
     def forward(self: "FeedForward", x: torch.Tensor) -> torch.Tensor:
-        context_manager = dummy_context_manager() if DEBUG else record_function("FeedForward")
+        context_manager = record_function("FeedForward") if DEBUG else dummy_context_manager()
         with context_manager:
-            return self.w3(F.silu(self.w1(x)) * self.w2(x))
+            return self.forward_body(x)
 
 
 class AudioPatchEmbedding(nn.Sequential):
@@ -64,11 +67,16 @@ class FinalUnpatchLayer(nn.Module):
         self.out = nn.Linear(dim_h, dim_out * patch_size)
         self.unpatch = Rearrange("b n (p d) -> b (n p) d", p=patch_size, d=dim_out)
 
-    def forward(self: "FinalUnpatchLayer", x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+    def forward_body(self: "FinalUnpatchLayer", x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
         shift, scale = self.modulation(c).chunk(2, dim=-1)
         x = modulate(self.norm(x), shift, scale)
         x = self.out(x)
         return self.unpatch(x)
+
+    def forward(self: "FinalUnpatchLayer", x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+        context_manager = record_function("FinalUnpatchLayer") if DEBUG else dummy_context_manager()
+        with context_manager:
+            return self.forward_body(x, c)
 
 
 class MMDiTBlock(nn.Module):
@@ -160,18 +168,20 @@ class MMDiTBlock(nn.Module):
         mask_x: Optional[torch.Tensor] = None,
         mask_a: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        if self.training and self.gradient_checkpointing:
-            return torch.utils.checkpoint.checkpoint(
-                self.forward_body,
-                x,
-                a,
-                c,
-                mask_x,
-                mask_a,
-                use_reentrant=True,
-            )
-        else:
-            return self.forward_body(x, a, c, mask_x=mask_x, mask_a=mask_a)
+        context_manager = record_function("MMDiTBlock") if DEBUG else dummy_context_manager()
+        with context_manager:
+            if self.training and self.gradient_checkpointing:
+                return torch.utils.checkpoint.checkpoint(
+                    self.forward_body,
+                    x,
+                    a,
+                    c,
+                    mask_x,
+                    mask_a,
+                    use_reentrant=True,
+                )
+            else:
+                return self.forward_body(x, a, c, mask_x=mask_x, mask_a=mask_a)
 
 
 class DiTBlock(nn.Module):
@@ -227,16 +237,18 @@ class DiTBlock(nn.Module):
         c: torch.Tensor,
         attn_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        if self.training and self.gradient_checkpointing:
-            return torch.utils.checkpoint.checkpoint(
-                self.forward_body,
-                x,
-                c,
-                attn_mask,
-                use_reentrant=True,
-            )
-        else:
-            return self.forward_body(x, c, attn_mask=attn_mask)
+        context_manager = record_function("DiTBlock") if DEBUG else dummy_context_manager()
+        with context_manager:
+            if self.training and self.gradient_checkpointing:
+                return torch.utils.checkpoint.checkpoint(
+                    self.forward_body,
+                    x,
+                    c,
+                    attn_mask,
+                    use_reentrant=True,
+                )
+            else:
+                return self.forward_body(x, c, attn_mask=attn_mask)
 
 
 class DiT(nn.Module):
