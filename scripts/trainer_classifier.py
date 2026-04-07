@@ -8,10 +8,10 @@ import numpy as np
 import torch
 from accelerate import Accelerator
 from accelerate.utils import ProjectConfiguration
+from bitsandbytes.optim import AdamW8bit
 from diffusers.optimization import get_cosine_schedule_with_warmup
 from safetensors.torch import save_file
 from torch.nn import functional as F
-from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
@@ -87,7 +87,7 @@ def save_model_state(model: OsuFusionClassifier, project_dir: Path) -> None:
 
 def save_training_checkpoint(
     model: OsuFusionClassifier,
-    optimizer: AdamW,
+    optimizer: AdamW8bit,
     scheduler: LambdaLR,
     current_step: int,
     project_dir: Path,
@@ -106,7 +106,7 @@ def save_training_checkpoint(
 
 def load_training_checkpoint(
     model: OsuFusionClassifier,
-    optimizer: AdamW,
+    optimizer: AdamW8bit,
     scheduler: LambdaLR,
     checkpoint_path: Path,
     reset_steps: bool = False,
@@ -195,7 +195,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
 
     parameters = list(model.parameters())
     print(f"Number of trainable parameters: {sum(p.numel() for p in parameters):,}")
-    optimizer = AdamW(parameters, lr=args.lr, weight_decay=0.01)
+    optimizer = AdamW8bit(parameters, lr=args.lr, weight_decay=0.01)
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
         num_training_steps=total_steps,
