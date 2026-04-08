@@ -7,14 +7,6 @@ from einops import pack, rearrange, unpack
 from torch.nn import functional as F
 from torch.profiler import record_function
 
-try:
-    from xformers.ops import memory_efficient_attention
-
-    print("Using xformers memory-efficient attention")
-    XFORMERS_AVAILABLE = True
-except ImportError:
-    XFORMERS_AVAILABLE = False
-
 from osu_fusion.modules.norms import MultiHeadRMSNorm
 
 DEBUG = os.environ.get("DEBUG", "False").lower() == "true"
@@ -45,7 +37,7 @@ class RotaryPositionEmbedding(nn.Module):
     def __init__(
         self: "RotaryPositionEmbedding",
         dim: int,
-        scale_base: int = 4096,
+        scale_base: int = 8192,
         theta: int = 10000,
         theta_rescale_factor: float = 4.0,
         interpolation_factor: float = 1.0,
@@ -142,16 +134,11 @@ class RotaryPositionEmbedding(nn.Module):
 class Attend(nn.Module):
     def __init__(self: "Attend") -> None:
         super().__init__()
-        self.use_xformers = XFORMERS_AVAILABLE
-        if not torch.cuda.is_available():
-            self.use_xformers = False
-            return
-
-        device_properties = torch.cuda.get_device_properties(torch.device("cuda"))
-        if device_properties.major >= 8 and device_properties.minor >= 0:
-            self.can_use_bf16 = True
-        else:
-            self.can_use_bf16 = False
+        self.can_use_bf16 = False
+        if torch.cuda.is_available():
+            device_properties = torch.cuda.get_device_properties(torch.device("cuda"))
+            if device_properties.major >= 8:
+                self.can_use_bf16 = True
 
     @torch.amp.autocast("cuda", enabled=False)
     def forward(
@@ -168,26 +155,11 @@ class Attend(nn.Module):
             q = q.to(qkv_dtype)
             k = k.to(qkv_dtype)
             v = v.to(qkv_dtype)
+        if attn_mask is not None:
+            attn_mask = attn_mask.to(qkv_dtype)
 
-        if self.use_xformers:
-            # xformers expects (B, M, H, K) layout
-            q, k, v = (t.transpose(1, 2) for t in (q, k, v))
-            xf_bias = None
-            if attn_mask is not None:
-                # attn_mask: (B, 1, 1, N) additive bias -> (B, H, M, N) for xformers
-                xf_bias = attn_mask.to(qkv_dtype).expand(-1, q.shape[2], q.shape[1], -1)
-            out = memory_efficient_attention(q, k, v, attn_bias=xf_bias)
-            out = out.transpose(1, 2)
-        else:
-            if attn_mask is not None:
-                attn_mask = attn_mask.to(qkv_dtype)
-            q, k, v = (t.contiguous() for t in (q, k, v))
-            out = F.scaled_dot_product_attention(
-                q,
-                k,
-                v,
-                attn_mask=attn_mask,
-            )
+        q, k, v = (t.contiguous() for t in (q, k, v))
+        out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
 
         return out.to(dtype)
 
@@ -199,7 +171,7 @@ class Attention(nn.Module):
         dim_head: int,
         heads: int,
         rotary_emb: Optional[RotaryPositionEmbedding] = None,
-        context_len: int = 4096,
+        context_len: int = 8192,
     ) -> None:
         super().__init__()
         self.heads = heads
@@ -290,7 +262,7 @@ class JointAttention(nn.Module):
         dim_head: int,
         heads: int,
         rotary_emb: Optional[RotaryPositionEmbedding] = None,
-        context_len: int = 4096,
+        context_len: int = 8192,
     ) -> None:
         super().__init__()
         self.heads = heads

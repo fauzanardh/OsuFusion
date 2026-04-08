@@ -17,7 +17,7 @@ DEBUG = os.environ.get("DEBUG", "False").lower() == "true"
 
 
 class FeedForward(nn.Module):
-    def __init__(self: "FeedForward", dim: int, dim_mult: int = 2) -> None:
+    def __init__(self: "FeedForward", dim: int, dim_mult: int = 6) -> None:
         super().__init__()
         inner_dim = int(dim * dim_mult * 2 / 3)
         inner_dim = (inner_dim + 7) // 8 * 8
@@ -82,10 +82,10 @@ class MMDiTBlock(nn.Module):
     def __init__(
         self: "MMDiTBlock",
         dim_h: int,
-        dim_h_mult: int = 4,
+        dim_h_mult: int = 6,
         attn_dim_head: int = 64,
-        attn_heads: int = 16,
-        attn_context_len: int = 4096,
+        attn_heads: int = 6,
+        attn_context_len: int = 8192,
         rotary_emb: RotaryPositionEmbedding = None,
     ) -> None:
         super().__init__()
@@ -184,10 +184,10 @@ class DiTBlock(nn.Module):
     def __init__(
         self: "DiTBlock",
         dim_h: int,
-        dim_h_mult: int = 4,
+        dim_h_mult: int = 6,
         attn_dim_head: int = 64,
-        attn_heads: int = 16,
-        attn_context_len: int = 4096,
+        attn_heads: int = 6,
+        attn_context_len: int = 8192,
         rotary_emb: RotaryPositionEmbedding = None,
     ) -> None:
         super().__init__()
@@ -254,16 +254,16 @@ class DiT(nn.Module):
         dim_in_x: int,
         dim_in_a: int,
         dim_in_c: int,
-        dim_h: int,
+        dim_h: int = 384,
         dim_h_mult: int = 6,
         dim_t: int = 256,
         beatmap_patch_size: int = 4,
         audio_patch_size: int = 4,
-        mmdit_depth: int = 16,
-        dit_depth: int = 8,
+        mmdit_depth: int = 9,
+        dit_depth: int = 3,
         attn_dim_head: int = 64,
-        attn_heads: int = 16,
-        attn_context_len: int = 4096,
+        attn_heads: int = 6,
+        attn_context_len: int = 8192,
         # num_descriptors: int = 0,
         # num_mappers: int = 0,
     ) -> None:
@@ -380,6 +380,14 @@ class DiT(nn.Module):
 
         nn.init.zeros_(self.final.out.weight)
         nn.init.zeros_(self.final.out.bias)
+
+    def compile_blocks(self: "DiT", dynamic: bool = True) -> None:
+        for block in self.mmdit_blocks:
+            block.forward = torch.compile(block.forward, dynamic=dynamic)
+            print(f"Compiled MMDiTBlock with dynamic={dynamic}")
+        for block in self.dit_blocks:
+            block.forward = torch.compile(block.forward, dynamic=dynamic)
+            print(f"Compiled DiTBlock with dynamic={dynamic}")
 
     def set_gradient_checkpointing(self: "DiT", value: bool) -> None:
         for name, module in self.named_modules():

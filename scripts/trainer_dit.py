@@ -181,6 +181,9 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     model.dit.set_gradient_checkpointing(args.gradient_checkpointing)
     if args.full_bf16:
         model.set_full_bf16()
+    print("Compiling model blocks...")
+    model.dit.compile_blocks()
+    print("Model compiled, first forward pass will be slower due to compilation...")
 
     dataset = BeatmapDataset(dataset=all_maps, lengths=all_lengths)
     bucket_sampler = BucketBatchSampler(

@@ -26,7 +26,7 @@ class DiTConfig:
     dit_depth: int = 3
     attn_dim_head: int = 64
     attn_heads: int = 6
-    attn_context_len: int = 16384
+    attn_context_len: int = 8192
     cond_drop_prob: float = 0.2
     train_timesteps: int = 1000
     sampling_timesteps: int = 35
@@ -41,16 +41,16 @@ DiTConfig_L = DiTConfig(dim_h=768, mmdit_depth=24, dit_depth=8, attn_heads=12)
 class OsuFusionDiT(nn.Module):
     def __init__(
         self: "OsuFusionDiT",
-        dim_h: int,
+        dim_h: int = 384,
         dim_h_mult: int = 6,
         dim_t: int = 256,
         beatmap_patch_size: int = 4,
         audio_patch_size: int = 4,
-        mmdit_depth: int = 16,
-        dit_depth: int = 8,
+        mmdit_depth: int = 9,
+        dit_depth: int = 3,
         attn_dim_head: int = 64,
-        attn_heads: int = 16,
-        attn_context_len: int = 16384,
+        attn_heads: int = 6,
+        attn_context_len: int = 8192,
         cond_drop_prob: float = 0.2,
         train_timesteps: int = 1000,
         sampling_timesteps: int = 35,
