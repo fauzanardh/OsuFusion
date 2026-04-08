@@ -169,10 +169,14 @@ class Attend(nn.Module):
             k = k.to(qkv_dtype)
             v = v.to(qkv_dtype)
 
-        if self.use_xformers and attn_mask is None:
-            # xformers fast path: no mask (inference)
+        if self.use_xformers:
+            # xformers expects (B, M, H, K) layout
             q, k, v = (t.transpose(1, 2) for t in (q, k, v))
-            out = memory_efficient_attention(q, k, v)
+            xf_bias = None
+            if attn_mask is not None:
+                # attn_mask: (B, 1, 1, N) additive bias -> (B, H, M, N) for xformers
+                xf_bias = attn_mask.to(qkv_dtype).expand(-1, q.shape[2], q.shape[1], -1)
+            out = memory_efficient_attention(q, k, v, attn_bias=xf_bias)
             out = out.transpose(1, 2)
         else:
             if attn_mask is not None:

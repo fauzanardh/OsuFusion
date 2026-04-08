@@ -159,7 +159,7 @@ class MMDiTBlock(nn.Module):
 
         return x, a
 
-    def _run_forward(
+    def forward(
         self: "MMDiTBlock",
         x: torch.Tensor,
         a: torch.Tensor,
@@ -178,19 +178,6 @@ class MMDiTBlock(nn.Module):
                 use_reentrant=True,
             )
         return self.forward_body(x, a, c, mask_x=mask_x, mask_a=mask_a)
-
-    def forward(
-        self: "MMDiTBlock",
-        x: torch.Tensor,
-        a: torch.Tensor,
-        c: torch.Tensor,
-        mask_x: Optional[torch.Tensor] = None,
-        mask_a: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        if DEBUG:
-            with record_function("MMDiTBlock"):
-                return self._run_forward(x, a, c, mask_x=mask_x, mask_a=mask_a)
-        return self._run_forward(x, a, c, mask_x=mask_x, mask_a=mask_a)
 
 
 class DiTBlock(nn.Module):
@@ -244,7 +231,7 @@ class DiTBlock(nn.Module):
         x = fused_gated_residual(x, gate_ff, self.ff(fused_modulate(self.norm2(x), shift_ff, scale_ff)))
         return x
 
-    def _run_forward(
+    def forward(
         self: "DiTBlock",
         x: torch.Tensor,
         c: torch.Tensor,
@@ -259,17 +246,6 @@ class DiTBlock(nn.Module):
                 use_reentrant=True,
             )
         return self.forward_body(x, c, attn_mask=attn_mask)
-
-    def forward(
-        self: "DiTBlock",
-        x: torch.Tensor,
-        c: torch.Tensor,
-        attn_mask: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        if DEBUG:
-            with record_function("DiTBlock"):
-                return self._run_forward(x, c, attn_mask=attn_mask)
-        return self._run_forward(x, c, attn_mask=attn_mask)
 
 
 class DiT(nn.Module):
