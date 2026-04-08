@@ -226,6 +226,10 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
 
     print("Starting training...")
     loss_history = []
+    ema_loss = None
+    ema_beta = 0.99
+    loss_spike_threshold = 50.0  # skip optimizer step if loss exceeds this multiple of EMA
+    num_spikes = 0
 
     with tqdm(
         total=total_steps - current_step,
@@ -234,7 +238,6 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     ) as pbar:
         for epoch in range(starting_epoch, args.epochs):
             bucket_sampler.set_epoch(epoch)
-            epoch_loss_history = []
             accum_diff_loss = 0.0
             accum_total_loss = 0.0
 
@@ -249,10 +252,33 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                         print(f"AssertionError encountered at step {current_step + 1}, skipping batch.")
                         continue
 
+                    loss_val = loss.item()
+
+                    # Loss spike / NaN guard
+                    is_spike = False
+                    if not torch.isfinite(loss):
+                        print(
+                            f"[SPIKE] Step {current_step + 1}: loss is {loss_val} (NaN/Inf), "
+                            f"skipping optimizer step. orig_lens={orig_lens.tolist()}",
+                        )
+                        is_spike = True
+                    elif ema_loss is not None and loss_val > loss_spike_threshold * ema_loss:
+                        print(
+                            f"[SPIKE] Step {current_step + 1}: loss {loss_val:.4f} exceeds "
+                            f"{loss_spike_threshold}x EMA ({ema_loss:.4f}), "
+                            f"skipping optimizer step. orig_lens={orig_lens.tolist()}",
+                        )
+                        is_spike = True
+
+                    if is_spike:
+                        num_spikes += 1
+                        optimizer.zero_grad(set_to_none=True)
+                        continue
+
                     accelerator.backward(loss)
 
-                    accum_diff_loss += loss.item() / args.gradient_accumulation_steps
-                    accum_total_loss += loss.item() / args.gradient_accumulation_steps
+                    accum_diff_loss += loss_val / args.gradient_accumulation_steps
+                    accum_total_loss += loss_val / args.gradient_accumulation_steps
 
                     if accelerator.sync_gradients:
                         metrics_total_norm = get_total_norm(parameters)
@@ -264,13 +290,16 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                     optimizer.zero_grad(set_to_none=True)
 
                 if accelerator.sync_gradients:
-                    epoch_loss_history.append(accum_total_loss)
-                    loss_history.append(accum_total_loss)  # Track globally
-                    avg_loss = sum(epoch_loss_history) / len(epoch_loss_history)
+                    if ema_loss is None:
+                        ema_loss = accum_total_loss
+                    else:
+                        ema_loss = ema_beta * ema_loss + (1.0 - ema_beta) * accum_total_loss
+
+                    loss_history.append(accum_total_loss)
 
                     pbar.set_description(
                         f"Ep {epoch + 1}/{args.epochs} | Step {current_step + 1} | "
-                        f"Loss {accum_total_loss:.4f} | Avg {avg_loss:.4f}",
+                        f"Loss {accum_total_loss:.4f} | EMA {ema_loss:.4f} | Spikes {num_spikes}",
                     )
                     pbar.update(1)
 
@@ -278,8 +307,10 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                         accelerator.log(
                             {
                                 "total_loss": accum_total_loss,
+                                "ema_loss": ema_loss,
                                 "total_norm": metrics_total_norm,
                                 "lr": scheduler.get_last_lr()[0],
+                                "num_spikes": num_spikes,
                             },
                             step=current_step + 1,
                         )
@@ -287,7 +318,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                     if (current_step + 1) % args.save_every == 0:
                         accelerator.wait_for_everyone()
                         if accelerator.is_main_process:
-                            accelerator.log({"save_loss": avg_loss}, step=current_step + 1)
+                            accelerator.log({"save_ema_loss": ema_loss}, step=current_step + 1)
                             save_training_checkpoint(
                                 accelerator.unwrap_model(model),
                                 optimizer,
@@ -328,8 +359,9 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         print(f"total_steps: {total_steps}")
         print(f"total_training_time_seconds: {total_time:.2f}")
         print(f"peak_vram_mb: {peak_vram:.2f}")
-        if len(loss_history) > 0:
-            print(f"final_avg_loss: {sum(loss_history) / len(loss_history):.5f}")
+        if ema_loss is not None:
+            print(f"final_ema_loss: {ema_loss:.5f}")
+        print(f"total_spikes: {num_spikes}")
 
 
 def main() -> None:
