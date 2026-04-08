@@ -20,21 +20,23 @@ from tqdm.auto import tqdm
 from trainer_utils import clear_checkpoints, get_total_norm, manage_checkpoints
 
 import wandb
-from osu_fusion.data.dataset import BeatmapDataset, BucketBatchSampler, count_num_mappers, filter_maps
+from osu_fusion.data.dataset import BeatmapDataset, BucketBatchSampler, filter_maps
+
+# from osu_fusion.data.dataset import count_num_mappers
 from osu_fusion.data.encode import SEQ_DIM
 from osu_fusion.data.prepare_data import load_audio
 from osu_fusion.models.diffusion_dit import DiTConfig_L, DiTConfig_M, DiTConfig_S, OsuFusionDiT
 
 
 def custom_collate_fn(
-    batch: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]],
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    orig_lens = torch.tensor([x.shape[0] for x, _, _, _, _ in batch], dtype=torch.int32)
-    max_len = max(x.shape[0] for x, _, _, _, _ in batch)
+    batch: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    orig_lens = torch.tensor([x.shape[0] for x, _, _ in batch], dtype=torch.int32)
+    max_len = max(x.shape[0] for x, _, _ in batch)
 
     padded_x = []
     padded_a = []
-    for x, a, _, _, _ in batch:
+    for x, a, _ in batch:
         n_pad = max_len - x.shape[0]
         if n_pad > 0:
             x = F.pad(x, (0, 0, 0, n_pad))
@@ -44,10 +46,10 @@ def custom_collate_fn(
 
     out_x = torch.stack(padded_x)
     out_a = torch.stack(padded_a)
-    out_c = torch.stack([c for _, _, c, _, _ in batch])
-    out_desc = torch.stack([d for _, _, _, d, _ in batch])
-    out_mapper = torch.stack([m for _, _, _, _, m in batch])
-    return out_x, out_a, out_c, out_desc, out_mapper, orig_lens
+    out_c = torch.stack([c for _, _, c in batch])
+    # out_desc = torch.stack([d for _, _, _, d, _ in batch])
+    # out_mapper = torch.stack([m for _, _, _, _, m in batch])
+    return out_x, out_a, out_c, orig_lens
 
 
 def visualize_and_log_sample(
@@ -171,16 +173,16 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     print("Loading dataset...")
     all_maps = list(args.dataset_dir.rglob("*.map.h5"))
     all_maps, all_lengths = filter_maps(all_maps, max_length=args.max_length)
-    num_mappers = count_num_mappers(args.dataset_dir)
+    # num_mappers = count_num_mappers(args.dataset_dir)
 
     config = MODEL_CONFIGS[args.model_size]
-    config.num_mappers = num_mappers
+    # config.num_mappers = num_mappers
     model = OsuFusionDiT(**asdict(config))
     model.dit.set_gradient_checkpointing(args.gradient_checkpointing)
     if args.full_bf16:
         model.set_full_bf16()
 
-    dataset = BeatmapDataset(dataset=all_maps, lengths=all_lengths, num_mappers=num_mappers)
+    dataset = BeatmapDataset(dataset=all_maps, lengths=all_lengths)
     bucket_sampler = BucketBatchSampler(
         lengths=all_lengths,
         batch_size=args.batch_size,
@@ -238,11 +240,11 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
 
             for batch in dataloader:
                 metrics_total_norm = 0.0
-                x, a, c, desc, mapper, orig_lens = batch
+                x, a, c, orig_lens = batch
 
                 with accelerator.autocast(), accelerator.accumulate(model):
                     try:
-                        loss = model(x, a, c, descriptors=desc, mappers=mapper, orig_lens=orig_lens)
+                        loss = model(x, a, c, orig_lens=orig_lens)
                     except AssertionError:
                         print(f"AssertionError encountered at step {current_step + 1}, skipping batch.")
                         continue

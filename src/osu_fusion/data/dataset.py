@@ -1,4 +1,3 @@
-import json
 import math
 import random
 from pathlib import Path
@@ -22,8 +21,8 @@ class MapData(NamedTuple):
     x: torch.Tensor
     a: torch.Tensor
     c: torch.Tensor
-    descriptor_indices: torch.Tensor
-    mapper_indices: torch.Tensor
+    # descriptor_indices: torch.Tensor
+    # mapper_indices: torch.Tensor
     spec_path: str
 
 
@@ -40,17 +39,17 @@ class TensorLoader:
             c = self._to_tensor(map_data["c"][:])
             spec_path = map_data["spec_path"][()].decode("utf-8")
 
-            if "descriptor_indices" in map_data:
-                descriptor_indices = torch.from_numpy(map_data["descriptor_indices"][:].astype(np.int64)).to(
-                    self.device,
-                )
-            else:
-                descriptor_indices = torch.tensor([], dtype=torch.int64, device=self.device)
+            # if "descriptor_indices" in map_data:
+            #     descriptor_indices = torch.from_numpy(map_data["descriptor_indices"][:].astype(np.int64)).to(
+            #         self.device,
+            #     )
+            # else:
+            #     descriptor_indices = torch.tensor([], dtype=torch.int64, device=self.device)
 
-            if "mapper_indices" in map_data:
-                mapper_indices = torch.from_numpy(map_data["mapper_indices"][:].astype(np.int64)).to(self.device)
-            else:
-                mapper_indices = torch.tensor([], dtype=torch.int64, device=self.device)
+            # if "mapper_indices" in map_data:
+            #     mapper_indices = torch.from_numpy(map_data["mapper_indices"][:].astype(np.int64)).to(self.device)
+            # else:
+            #     mapper_indices = torch.tensor([], dtype=torch.int64, device=self.device)
 
         if load_audio:
             audio_file = map_file.parent.parent.parent / spec_path
@@ -67,8 +66,8 @@ class TensorLoader:
             x=x,
             a=a,
             c=c,
-            descriptor_indices=descriptor_indices,
-            mapper_indices=mapper_indices,
+            # descriptor_indices=descriptor_indices,
+            # mapper_indices=mapper_indices,
             spec_path=spec_path,
         )
 
@@ -92,11 +91,11 @@ def filter_maps(maps: List[Path], max_length: int = 0) -> Tuple[List[Path], List
                 if not audio_file.exists():
                     continue
 
-                if "descriptor_indices" not in f:
-                    continue
+                # if "descriptor_indices" not in f:
+                #     continue
 
-                if "mapper_indices" not in f:
-                    continue
+                # if "mapper_indices" not in f:
+                #     continue
             filtered.append(path)
             lengths.append(x_len)
         except Exception as e:
@@ -106,10 +105,10 @@ def filter_maps(maps: List[Path], max_length: int = 0) -> Tuple[List[Path], List
     return filtered, lengths
 
 
-def count_num_mappers(dataset_path: Path) -> int:
-    with open(dataset_path / "mapper_index.json", "r") as f:
-        mapper_index = json.load(f)
-    return max(int(v) for v in mapper_index.values()) + 1
+# def count_num_mappers(dataset_path: Path) -> int:
+#     with open(dataset_path / "mapper_index.json", "r") as f:
+#         mapper_index = json.load(f)
+#     return max(int(v) for v in mapper_index.values()) + 1
 
 
 class BucketBatchSampler(Sampler[List[int]]):
@@ -183,18 +182,18 @@ class BeatmapDataset(Dataset):
         self.dataset = kwargs.pop("dataset")
         self.lengths: List[int] = kwargs.pop("lengths", [])
         self.load_audio = kwargs.pop("load_audio", True)
-        self.num_mappers: int = kwargs.pop("num_mappers", 0)
+        # self.num_mappers: int = kwargs.pop("num_mappers", 0)
 
         self.tensor_loader = TensorLoader()
 
-    @staticmethod
-    def _indices_to_multihot(indices: torch.Tensor, vocab_size: int) -> torch.Tensor:
-        multihot = torch.zeros(vocab_size, dtype=torch.float32)
-        for idx in indices.tolist():
-            idx = int(idx)
-            if 0 <= idx < vocab_size:
-                multihot[idx] = 1.0
-        return multihot
+    # @staticmethod
+    # def _indices_to_multihot(indices: torch.Tensor, vocab_size: int) -> torch.Tensor:
+    #     multihot = torch.zeros(vocab_size, dtype=torch.float32)
+    #     for idx in indices.tolist():
+    #         idx = int(idx)
+    #         if 0 <= idx < vocab_size:
+    #             multihot[idx] = 1.0
+    #     return multihot
 
     def __len__(self: "BeatmapDataset") -> int:
         return len(self.dataset)
@@ -202,11 +201,11 @@ class BeatmapDataset(Dataset):
     def __getitem__(
         self: "BeatmapDataset",
         index: int,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         map_data = self.tensor_loader.load_tensor(self.dataset[index], self.load_audio)
-        descriptors = self._indices_to_multihot(map_data.descriptor_indices, NUM_DESCRIPTORS)
-        mappers = self._indices_to_multihot(map_data.mapper_indices, self.num_mappers + 1)
-        return map_data.x, map_data.a, map_data.c, descriptors, mappers
+        # descriptors = self._indices_to_multihot(map_data.descriptor_indices, NUM_DESCRIPTORS)
+        # mappers = self._indices_to_multihot(map_data.mapper_indices, self.num_mappers + 1)
+        return map_data.x, map_data.a, map_data.c
 
 
 class ClassifierDataset(Dataset):
