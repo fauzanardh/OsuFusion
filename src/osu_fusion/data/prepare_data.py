@@ -237,9 +237,6 @@ def prepare_map(  # noqa: C901
         print(f"\n[Error] Rosu failed to process beatmap {map_file}: {e}")
         return
 
-    if sr > 9:
-        return
-
     spec_result = get_audio_spec(beatmap, global_spec_dir, map_file)
     if spec_result is None:
         return
