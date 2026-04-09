@@ -1,3 +1,4 @@
+import json
 import math
 import random
 from pathlib import Path
@@ -102,6 +103,73 @@ def filter_maps(maps: List[Path], max_length: int = 0) -> Tuple[List[Path], List
             print(f"Skipping {path}: {e}")
             continue
     print(f"Filtered dataset: {len(filtered)}/{len(maps)} maps")
+    return filtered, lengths
+
+
+def build_metadata_cache(dataset_dir: Path, cache_path: Path) -> None:
+    all_maps = list(dataset_dir.rglob("*.map.h5"))
+    entries: list[dict[str, object]] = []
+    skipped = 0
+
+    for path in tqdm(all_maps, desc="Building metadata cache...", dynamic_ncols=True):
+        try:
+            with h5py.File(path, "r") as f:
+                x_shape = list(f["x"].shape)
+                spec_path = f["spec_path"][()].decode("utf-8")
+
+                audio_file = path.parent.parent.parent / spec_path
+                audio_exists = audio_file.exists()
+
+            entries.append(
+                {
+                    "path": str(path.relative_to(dataset_dir)),
+                    "x_len": x_shape[0],
+                    "x_dim": x_shape[1],
+                    "audio_exists": audio_exists,
+                },
+            )
+        except Exception as e:
+            print(f"Skipping {path}: {e}")
+            skipped += 1
+            continue
+
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(cache_path, "w") as fp:
+        json.dump({"dataset_dir": str(dataset_dir), "entries": entries}, fp)
+
+    print(f"Metadata cache written to {cache_path}")
+    print(f"  Total entries: {len(entries)}, skipped: {skipped}")
+
+
+def filter_maps_cached(
+    cache_path: Path,
+    dataset_dir: Path,
+    max_length: int = 0,
+) -> Tuple[List[Path], List[int]]:
+    with open(cache_path) as fp:
+        cache = json.load(fp)
+
+    filtered: List[Path] = []
+    lengths: List[int] = []
+
+    for entry in cache["entries"]:
+        x_len: int = entry["x_len"]
+        x_dim: int = entry["x_dim"]
+        audio_exists: bool = entry["audio_exists"]
+
+        if x_len > MAX_LENGTH_FRAMES:
+            continue
+        if max_length > 0 and x_len > max_length:
+            continue
+        if x_dim != SEQ_DIM:
+            continue
+        if not audio_exists:
+            continue
+
+        filtered.append(dataset_dir / entry["path"])
+        lengths.append(x_len)
+
+    print(f"Filtered dataset (from cache): {len(filtered)}/{len(cache['entries'])} maps")
     return filtered, lengths
 
 

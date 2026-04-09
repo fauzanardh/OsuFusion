@@ -20,7 +20,7 @@ from tqdm.auto import tqdm
 from trainer_utils import clear_checkpoints, get_total_norm, manage_checkpoints
 
 import wandb
-from osu_fusion.data.dataset import BeatmapDataset, BucketBatchSampler, filter_maps
+from osu_fusion.data.dataset import BeatmapDataset, BucketBatchSampler, filter_maps, filter_maps_cached
 
 # from osu_fusion.data.dataset import count_num_mappers
 from osu_fusion.data.encode import SEQ_DIM
@@ -171,8 +171,14 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
 
     # Count mappers and build dataset
     print("Loading dataset...")
-    all_maps = list(args.dataset_dir.rglob("*.map.h5"))
-    all_maps, all_lengths = filter_maps(all_maps, max_length=args.max_length)
+    metadata_cache = args.dataset_dir / "metadata_cache.json"
+    if metadata_cache.exists():
+        print(f"Using metadata cache: {metadata_cache}")
+        all_maps, all_lengths = filter_maps_cached(metadata_cache, args.dataset_dir, max_length=args.max_length)
+    else:
+        print("No metadata cache found, scanning dataset (run build_dataset_metadata.py to speed this up)...")
+        all_maps = list(args.dataset_dir.rglob("*.map.h5"))
+        all_maps, all_lengths = filter_maps(all_maps, max_length=args.max_length)
     # num_mappers = count_num_mappers(args.dataset_dir)
 
     config = MODEL_CONFIGS[args.model_size]
