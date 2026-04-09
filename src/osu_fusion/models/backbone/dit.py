@@ -3,7 +3,6 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
 from torch.nn import functional as F
 from torch.profiler import record_function
@@ -11,7 +10,7 @@ from torch.profiler import record_function
 from osu_fusion.data.const import AUDIO_DIM, NUM_CONTINUOUS_CONDS, NUM_ERAS
 from osu_fusion.data.encode import SEQ_DIM
 from osu_fusion.modules.attention import Attention, JointAttention, RotaryPositionEmbedding
-from osu_fusion.modules.positional_embeddings import SinusoidalPositionEmbedding
+from osu_fusion.modules.positional_embeddings import LearnedSinusoidalPosEmb, SinusoidalPositionEmbedding
 from osu_fusion.modules.triton_kernels import fused_gated_residual, fused_modulate
 from osu_fusion.modules.utils import prob_mask_like
 
@@ -280,19 +279,18 @@ class DiT(nn.Module):
             nn.Linear(dim_h, dim_h),
         )
 
-        self.cond_fourier_embed = SinusoidalPositionEmbedding(dim_cond_fourier)
-        self.cond_mlps = nn.ModuleList(
-            [
-                nn.Sequential(
-                    nn.Linear(dim_cond_fourier, dim_h),
-                    nn.SiLU(),
-                    nn.Linear(dim_h, dim_h),
-                )
-                for _ in range(NUM_CONTINUOUS_CONDS)
-            ],
+        self.cond_fourier_embeds = nn.ModuleList(
+            [LearnedSinusoidalPosEmb(dim_cond_fourier) for _ in range(NUM_CONTINUOUS_CONDS)],
         )
-        self.era_embed = nn.Embedding(NUM_ERAS + 1, dim_h)
-        self.null_cond = nn.Parameter(torch.randn(dim_h))
+        self.era_embed = nn.Embedding(NUM_ERAS + 1, dim_cond_fourier)
+
+        # Joint MLP: concatenated per-condition Fourier features + era embedding → dim_h
+        joint_input_dim = (NUM_CONTINUOUS_CONDS + 1) * dim_cond_fourier  # +1 for era
+        self.cond_joint_mlp = nn.Sequential(
+            nn.Linear(joint_input_dim, dim_h),
+            nn.SiLU(),
+            nn.Linear(dim_h, dim_h),
+        )
 
         self.shared_rotary_emb = RotaryPositionEmbedding(attn_dim_head, scale_base=attn_context_len)
         self.mmdit_blocks = nn.ModuleList(
@@ -338,9 +336,8 @@ class DiT(nn.Module):
         nn.init.normal_(self.time_mlp[1].weight, std=0.02)
         nn.init.normal_(self.time_mlp[3].weight, std=0.02)
 
-        for cond_mlp in self.cond_mlps:
-            nn.init.normal_(cond_mlp[0].weight, std=0.02)
-            nn.init.normal_(cond_mlp[2].weight, std=0.02)
+        nn.init.normal_(self.cond_joint_mlp[0].weight, std=0.02)
+        nn.init.normal_(self.cond_joint_mlp[2].weight, std=0.02)
 
         nn.init.normal_(self.era_embed.weight, std=0.02)
 
@@ -453,23 +450,23 @@ class DiT(nn.Module):
 
         # Global conditioning
         b = c.shape[0]
-        cond_mask = prob_mask_like((b,), 1.0 - cond_drop_prob, device=c.device)
-        cond_mask = rearrange(cond_mask, "b -> b 1")
+        cond_features = []
+        for i, cond_fourier in enumerate(self.cond_fourier_embeds):
+            mask_i = prob_mask_like((b,), 1.0 - cond_drop_prob, device=c.device)
+            feat = cond_fourier(c[:, i])  # (B, dim_cond_fourier)
+            feat = torch.where(mask_i.unsqueeze(-1), feat, torch.zeros_like(feat))
+            cond_features.append(feat)
 
-        # Fourier features for continuous values (CS, AR, OD, HP, SR, SV, STR)
-        c_global = torch.zeros(b, self.null_cond.shape[0], device=c.device, dtype=c.dtype)
-        for i, cond_mlp in enumerate(self.cond_mlps):
-            fourier_feat = self.cond_fourier_embed(c[:, i])  # (B, dim_cond_fourier)
-            c_global = c_global + cond_mlp(fourier_feat)  # (B, dim_h)
-
-        # Embedding for discrete era value
+        era_mask = prob_mask_like((b,), 1.0 - cond_drop_prob, device=c.device)
         era_raw = c[:, NUM_CONTINUOUS_CONDS].long()
         era_idx = torch.where(era_raw >= 0, era_raw, torch.full_like(era_raw, NUM_ERAS))
-        c_global = c_global + self.era_embed(era_idx)
+        era_feat = self.era_embed(era_idx)  # (B, dim_cond_fourier)
+        era_feat = torch.where(era_mask.unsqueeze(-1), era_feat, torch.zeros_like(era_feat))
+        cond_features.append(era_feat)
 
-        # Apply CFG mask
-        null_conds = repeat(self.null_cond, "d -> b d", b=b)
-        c_global = torch.where(cond_mask, c_global, null_conds)
+        # Concatenate all features → joint MLP learns cross-condition interactions
+        all_features = torch.cat(cond_features, dim=-1)  # (B, (NUM_CONTINUOUS_CONDS + 1) * dim_cond_fourier)
+        c_global = self.cond_joint_mlp(all_features)  # (B, dim_h)
 
         # Add timestep
         c_global = c_global + self.time_mlp(t)

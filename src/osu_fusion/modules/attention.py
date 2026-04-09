@@ -299,13 +299,12 @@ class JointAttention(nn.Module):
         q_x, k_x = self.q_norm_x(q_x), self.k_norm_x(k_x)
         q_a, k_a = self.q_norm_a(q_a), self.k_norm_a(k_a)
 
-        if self.rotary_emb is not None:
-            q_x, k_x = self.rotary_emb(q_x, k_x)
-            q_a, k_a = self.rotary_emb(q_a, k_a)
-
         q, seq_shape = pack([q_a, q_x], "b h * d")
         k, _ = pack([k_a, k_x], "b h * d")
         v, _ = pack([v_a, v_x], "b h * d")
+
+        if self.rotary_emb is not None:
+            q, k = self.rotary_emb(q, k)
 
         attn_mask = None
         if mask_x is not None or mask_a is not None:

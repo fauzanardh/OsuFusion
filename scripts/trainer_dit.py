@@ -21,8 +21,6 @@ from trainer_utils import clear_checkpoints, get_total_norm, manage_checkpoints
 
 import wandb
 from osu_fusion.data.dataset import BeatmapDataset, BucketBatchSampler, filter_maps, filter_maps_cached
-
-# from osu_fusion.data.dataset import count_num_mappers
 from osu_fusion.data.encode import SEQ_DIM
 from osu_fusion.data.prepare_data import load_audio
 from osu_fusion.models.diffusion_dit import DiTConfig_L, DiTConfig_M, DiTConfig_S, OsuFusionDiT
@@ -111,6 +109,7 @@ def save_training_checkpoint(
         "optimizer_state_dict": optimizer.state_dict(),
         "scheduler_state_dict": scheduler.state_dict(),
         "rng_state": torch.get_rng_state(),
+        "current_step": current_step + 1,
     }
 
     torch.save(checkpoint, checkpoint_dir / "checkpoint.pt")
@@ -154,7 +153,11 @@ def load_training_checkpoint(
         scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
 
     torch.set_rng_state(checkpoint["rng_state"].cpu())
-    return 0 if reset_steps else int(checkpoint_path.stem.split("-")[1])
+    if reset_steps:
+        return 0
+    if "current_step" in checkpoint:
+        return int(checkpoint["current_step"])
+    return int(checkpoint_path.stem.split("-")[1])
 
 
 MODEL_CONFIGS = {"s": DiTConfig_S, "m": DiTConfig_M, "l": DiTConfig_L}
@@ -165,13 +168,11 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     print("Initializing...")
     accelerator = Accelerator(
         mixed_precision=args.mixed_precision,
-        gradient_accumulation_steps=args.gradient_accumulation_steps,
         project_config=ProjectConfiguration(project_dir=args.project_dir, automatic_checkpoint_naming=True),
         log_with="wandb",
     )
     accelerator.init_trackers(project_name="OsuFusion")
 
-    # Count mappers and build dataset
     print("Loading dataset...")
     metadata_cache = args.dataset_dir / "metadata_cache.json"
     if metadata_cache.exists():
@@ -181,10 +182,8 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         print("No metadata cache found, scanning dataset (run build_dataset_metadata.py to speed this up)...")
         all_maps = list(args.dataset_dir.rglob("*.map.h5"))
         all_maps, all_lengths = filter_maps(all_maps, max_length=args.max_length)
-    # num_mappers = count_num_mappers(args.dataset_dir)
 
     config = MODEL_CONFIGS[args.model_size]
-    # config.num_mappers = num_mappers
     model = OsuFusionDiT(**asdict(config))
     model.dit.set_gradient_checkpointing(args.gradient_checkpointing)
     if args.full_bf16:
@@ -210,7 +209,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         collate_fn=custom_collate_fn,
     )
 
-    steps_per_epoch = max(1, len(bucket_sampler) // args.gradient_accumulation_steps)
+    steps_per_epoch = len(bucket_sampler)
     total_steps = steps_per_epoch * args.epochs
 
     parameters = list(model.trainable_params)
@@ -239,7 +238,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     loss_history = []
     ema_loss = None
     ema_beta = 0.99
-    loss_spike_threshold = 50.0  # skip optimizer step if loss exceeds this multiple of EMA
+    loss_spike_threshold = 50.0
     num_spikes = 0
 
     with tqdm(
@@ -249,18 +248,16 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     ) as pbar:
         for epoch in range(starting_epoch, args.epochs):
             bucket_sampler.set_epoch(epoch)
-            accum_diff_loss = 0.0
-            accum_total_loss = 0.0
 
             for batch in dataloader:
-                metrics_total_norm = 0.0
                 x, a, c, orig_lens = batch
 
-                with accelerator.autocast(), accelerator.accumulate(model):
+                with accelerator.autocast():
                     try:
                         loss = model(x, a, c, orig_lens=orig_lens)
                     except AssertionError:
                         print(f"AssertionError encountered at step {current_step + 1}, skipping batch.")
+                        optimizer.zero_grad(set_to_none=True)
                         continue
 
                     loss_val = loss.item()
@@ -283,73 +280,64 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
 
                     if is_spike:
                         num_spikes += 1
+                        optimizer.zero_grad(set_to_none=True)
                         continue
 
                     accelerator.backward(loss)
 
-                    accum_diff_loss += loss_val / args.gradient_accumulation_steps
-                    accum_total_loss += loss_val / args.gradient_accumulation_steps
+                metrics_total_norm = get_total_norm(parameters)
+                if args.clip_grad_norm > 0.0:
+                    accelerator.clip_grad_norm_(parameters, args.clip_grad_norm)
 
-                    if accelerator.sync_gradients:
-                        metrics_total_norm = get_total_norm(parameters)
-                        if args.clip_grad_norm > 0.0:
-                            accelerator.clip_grad_norm_(parameters, args.clip_grad_norm)
+                optimizer.step()
+                scheduler.step()
+                optimizer.zero_grad(set_to_none=True)
 
-                    optimizer.step()
-                    scheduler.step()
-                    optimizer.zero_grad(set_to_none=True)
+                ema_loss = loss_val if ema_loss is None else ema_beta * ema_loss + (1.0 - ema_beta) * loss_val
 
-                if accelerator.sync_gradients:
-                    if ema_loss is None:
-                        ema_loss = accum_total_loss
-                    else:
-                        ema_loss = ema_beta * ema_loss + (1.0 - ema_beta) * accum_total_loss
+                loss_history.append(loss_val)
 
-                    loss_history.append(accum_total_loss)
+                pbar.set_description(
+                    f"Ep {epoch + 1}/{args.epochs} | Step {current_step + 1} | "
+                    f"Loss {loss_val:.4f} | EMA {ema_loss:.4f} | Spikes {num_spikes}",
+                )
+                pbar.update(1)
 
-                    pbar.set_description(
-                        f"Ep {epoch + 1}/{args.epochs} | Step {current_step + 1} | "
-                        f"Loss {accum_total_loss:.4f} | EMA {ema_loss:.4f} | Spikes {num_spikes}",
+                if accelerator.is_main_process:
+                    accelerator.log(
+                        {
+                            "loss": loss_val,
+                            "ema_loss": ema_loss,
+                            "total_norm": metrics_total_norm,
+                            "lr": scheduler.get_last_lr()[0],
+                            "num_spikes": num_spikes,
+                        },
+                        step=current_step + 1,
                     )
-                    pbar.update(1)
 
+                if (current_step + 1) % args.save_every == 0:
+                    accelerator.wait_for_everyone()
                     if accelerator.is_main_process:
-                        accelerator.log(
-                            {
-                                "total_loss": accum_total_loss,
-                                "ema_loss": ema_loss,
-                                "total_norm": metrics_total_norm,
-                                "lr": scheduler.get_last_lr()[0],
-                                "num_spikes": num_spikes,
-                            },
-                            step=current_step + 1,
+                        accelerator.log({"save_ema_loss": ema_loss}, step=current_step + 1)
+                        save_training_checkpoint(
+                            accelerator.unwrap_model(model),
+                            optimizer,
+                            scheduler,
+                            current_step,
+                            args.project_dir,
                         )
+                        manage_checkpoints(args.project_dir, args.max_num_checkpoints)
 
-                    if (current_step + 1) % args.save_every == 0:
-                        accelerator.wait_for_everyone()
-                        if accelerator.is_main_process:
-                            accelerator.log({"save_ema_loss": ema_loss}, step=current_step + 1)
-                            save_training_checkpoint(
-                                accelerator.unwrap_model(model),
-                                optimizer,
-                                scheduler,
-                                current_step,
-                                args.project_dir,
-                            )
-                            manage_checkpoints(args.project_dir, args.max_num_checkpoints)
+                if (
+                    (current_step + 1) % args.sample_every == 0
+                    and accelerator.is_main_process
+                    and args.sample_audio is not None
+                    and args.sample_audio.exists()
+                ):
+                    print("Sampling...")
+                    visualize_and_log_sample(accelerator, model, args.sample_audio, step=current_step + 1)
 
-                    if (
-                        (current_step + 1) % args.sample_every == 0
-                        and accelerator.is_main_process
-                        and args.sample_audio is not None
-                        and args.sample_audio.exists()
-                    ):
-                        print("Sampling...")
-                        visualize_and_log_sample(accelerator, model, args.sample_audio, step=current_step + 1)
-
-                    current_step += 1
-                    accum_diff_loss = 0.0
-                    accum_total_loss = 0.0
+                current_step += 1
 
     accelerator.wait_for_everyone()
 
@@ -363,7 +351,6 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         print(f"model_size: {args.model_size}")
         print(f"model_parameters: {sum(p.numel() for p in parameters)}")
         print(f"batch_size: {args.batch_size}")
-        print(f"gradient_accumulation_steps: {args.gradient_accumulation_steps}")
         print(f"learning_rate: {args.lr}")
         print(f"total_epochs: {args.epochs}")
         print(f"total_steps: {total_steps}")
@@ -385,12 +372,6 @@ def main() -> None:
     args.add_argument("--mixed-precision", choices=["no", "fp16", "bf16"], default="bf16", help="Mixed precision mode")
     args.add_argument("--full-bf16", action="store_true", help="Use full bfloat16 precision")
     args.add_argument("--gradient-checkpointing", action="store_true", help="Enable gradient checkpointing")
-    args.add_argument(
-        "--gradient-accumulation-steps",
-        type=int,
-        default=1,
-        help="Number of gradient accumulation steps",
-    )
     args.add_argument("--clip-grad-norm", type=float, default=0.0, help="Gradient clipping norm")
     args.add_argument(
         "--bucket-boundaries",

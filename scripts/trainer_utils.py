@@ -1,3 +1,4 @@
+import re
 import shutil
 from pathlib import Path
 from typing import List
@@ -12,8 +13,16 @@ def get_total_norm(parameters: List[torch.Tensor], norm_type: float = 2.0) -> fl
     return torch.norm(torch.stack([torch.norm(g.detach(), norm_type) for g in grads]), norm_type).item()
 
 
+def _checkpoint_step(p: Path) -> int:
+    m = re.match(r"checkpoint-(\d+)", p.name)
+    return int(m.group(1)) if m else -1
+
+
 def manage_checkpoints(project_dir: Path, max_num_checkpoints: int) -> None:
-    checkpoints = sorted(project_dir.glob("checkpoint-*"), key=lambda p: int(p.stem.split("-")[1]))
+    checkpoints = sorted(
+        [p for p in project_dir.glob("checkpoint-*") if _checkpoint_step(p) >= 0],
+        key=_checkpoint_step,
+    )
     for checkpoint in checkpoints[:-max_num_checkpoints]:
         if checkpoint.is_dir():
             shutil.rmtree(checkpoint)
