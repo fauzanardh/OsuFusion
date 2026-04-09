@@ -11,10 +11,13 @@ from osu_fusion.data.const import AUDIO_DIM, NUM_CONTINUOUS_CONDS, NUM_ERAS
 from osu_fusion.data.encode import SEQ_DIM
 from osu_fusion.modules.attention import Attention, JointAttention, RotaryPositionEmbedding
 from osu_fusion.modules.positional_embeddings import LearnedSinusoidalPosEmb, SinusoidalPositionEmbedding
-from osu_fusion.modules.triton_kernels import fused_gated_residual, fused_modulate
 from osu_fusion.modules.utils import prob_mask_like
 
 DEBUG = os.environ.get("DEBUG", "False").lower() == "true"
+
+
+def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
+    return x * (1 + scale) + shift
 
 
 class FeedForward(nn.Module):
@@ -68,7 +71,7 @@ class FinalUnpatchLayer(nn.Module):
 
     def forward_body(self: "FinalUnpatchLayer", x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
         shift, scale = self.modulation(c).chunk(2, dim=-1)
-        x = fused_modulate(self.norm(x), shift, scale)
+        x = modulate(self.norm(x), shift, scale)
         x = self.out(x)
         return self.unpatch(x)
 
@@ -147,16 +150,16 @@ class MMDiTBlock(nn.Module):
         ) = self.modulation_a(c).chunk(6, dim=-1)
 
         # Attention
-        h_x = fused_modulate(self.norm1_x(x), shift_attn_x, scale_attn_x)
-        h_a = fused_modulate(self.norm1_a(a), shift_attn_a, scale_attn_a)
+        h_x = modulate(self.norm1_x(x), shift_attn_x, scale_attn_x)
+        h_a = modulate(self.norm1_a(a), shift_attn_a, scale_attn_a)
         attn_out_x, attn_out_a = self.attn(h_x, h_a, mask_x=mask_x, mask_a=mask_a)
 
-        x = fused_gated_residual(x, gate_attn_x, attn_out_x)
-        a = fused_gated_residual(a, gate_attn_a, attn_out_a)
+        x = x + gate_attn_x * attn_out_x
+        a = a + gate_attn_a * attn_out_a
 
         # MLP
-        x = fused_gated_residual(x, gate_mlp_x, self.mlp_x(fused_modulate(self.norm2_x(x), shift_mlp_x, scale_mlp_x)))
-        a = fused_gated_residual(a, gate_mlp_a, self.mlp_a(fused_modulate(self.norm2_a(a), shift_mlp_a, scale_mlp_a)))
+        x = x + gate_mlp_x * self.mlp_x(modulate(self.norm2_x(x), shift_mlp_x, scale_mlp_x))
+        a = a + gate_mlp_a * self.mlp_a(modulate(self.norm2_a(a), shift_mlp_a, scale_mlp_a))
 
         return x, a
 
@@ -224,12 +227,8 @@ class DiTBlock(nn.Module):
             gate_ff,
         ) = self.modulation(c).chunk(6, dim=-1)
 
-        x = fused_gated_residual(
-            x,
-            gate_msa,
-            self.attn(fused_modulate(self.norm1(x), shift_msa, scale_msa), attn_mask=attn_mask),
-        )
-        x = fused_gated_residual(x, gate_ff, self.ff(fused_modulate(self.norm2(x), shift_ff, scale_ff)))
+        x = x + gate_msa * self.attn(modulate(self.norm1(x), shift_msa, scale_msa), attn_mask=attn_mask)
+        x = x + gate_ff * self.ff(modulate(self.norm2(x), shift_ff, scale_ff))
         return x
 
     def forward(

@@ -2,9 +2,8 @@ import os
 
 import torch
 import torch.nn as nn
+from torch.nn import functional as F
 from torch.profiler import record_function
-
-from osu_fusion.modules.triton_kernels import fused_rms_norm
 
 DEBUG = os.environ.get("DEBUG", "False").lower() == "true"
 
@@ -15,14 +14,13 @@ class RMSNorm(nn.Module):
         dim: int,
     ) -> None:
         super().__init__()
-        self.scale = dim**0.5
-        self.g = nn.Parameter(torch.ones(dim))
+        self.g = nn.Parameter(torch.ones(dim) * dim**0.5)
 
     def forward(self: "RMSNorm", x: torch.Tensor) -> torch.Tensor:
         if DEBUG:
             with record_function("RMSNorm"):
-                return fused_rms_norm(x, self.g, self.scale)
-        return fused_rms_norm(x, self.g, self.scale)
+                return F.normalize(x, dim=-1) * self.g
+        return F.normalize(x, dim=-1) * self.g
 
 
 class MultiHeadRMSNorm(nn.Module):
@@ -32,11 +30,10 @@ class MultiHeadRMSNorm(nn.Module):
         heads: int,
     ) -> None:
         super().__init__()
-        self.scale = dim**0.5
-        self.g = nn.Parameter(torch.ones(heads, 1, dim))
+        self.g = nn.Parameter(torch.ones(heads, 1, dim) * dim**0.5)
 
     def forward(self: "MultiHeadRMSNorm", x: torch.Tensor) -> torch.Tensor:
         if DEBUG:
             with record_function("MultiHeadRMSNorm"):
-                return fused_rms_norm(x, self.g, self.scale)
-        return fused_rms_norm(x, self.g, self.scale)
+                return F.normalize(x, dim=-1) * self.g
+        return F.normalize(x, dim=-1) * self.g
