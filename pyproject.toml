@@ -26,7 +26,6 @@ dependencies = [
     "slider",
     "soundfile>=0.13.1",
     "torch>=2.10.0",
-    "torchdiffeq>=0.2.5",
     "tqdm>=4.67.3",
     "wandb>=0.25.1",
 ]
