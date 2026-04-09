@@ -39,7 +39,7 @@ def custom_collate_fn(
     for x, a, _ in batch:
         n_pad = max_len - x.shape[0]
         if n_pad > 0:
-            x = F.pad(x, (0, 0, 0, n_pad))
+            x = F.pad(x, (0, 0, 0, n_pad), value=-1.0)
             a = F.pad(a, (0, 0, 0, n_pad))
         padded_x.append(x)
         padded_a.append(a)
@@ -141,6 +141,8 @@ def load_training_checkpoint(
         model.dit.load_state_dict(checkpoint["dit_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
     except RuntimeError:
+        print("[WARNING] Full state_dict load failed, falling back to partial load.")
+        print("[WARNING] Optimizer state will NOT be restored — expect a training spike.")
         filtered_state_dict = filter_state_dict(model.dit, checkpoint["dit_state_dict"])
         incompatible_keys = model.dit.load_state_dict(filtered_state_dict, strict=False)
         if len(incompatible_keys.missing_keys) > 0:
@@ -281,7 +283,6 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
 
                     if is_spike:
                         num_spikes += 1
-                        optimizer.zero_grad(set_to_none=True)
                         continue
 
                     accelerator.backward(loss)

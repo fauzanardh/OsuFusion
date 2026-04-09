@@ -13,7 +13,7 @@ def get_total_norm(parameters: List[torch.Tensor], norm_type: float = 2.0) -> fl
 
 
 def manage_checkpoints(project_dir: Path, max_num_checkpoints: int) -> None:
-    checkpoints = sorted(project_dir.rglob("checkpoint-*"), key=lambda p: int(p.stem.split("-")[1]))
+    checkpoints = sorted(project_dir.glob("checkpoint-*"), key=lambda p: int(p.stem.split("-")[1]))
     for checkpoint in checkpoints[:-max_num_checkpoints]:
         if checkpoint.is_dir():
             shutil.rmtree(checkpoint)
@@ -22,7 +22,7 @@ def manage_checkpoints(project_dir: Path, max_num_checkpoints: int) -> None:
 
 
 def clear_checkpoints(project_dir: Path) -> None:
-    for checkpoint in project_dir.rglob("checkpoint-*"):
+    for checkpoint in project_dir.glob("checkpoint-*"):
         if checkpoint.is_dir():
             shutil.rmtree(checkpoint)
         else:

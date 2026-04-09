@@ -194,9 +194,9 @@ class Attention(nn.Module):
         q, k, v = self.to_qkv(x).chunk(3, dim=-1)
         q, k, v = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q, k, v))
 
-        q, k = self.rotary_emb(q, k)
         q = self.q_norm(q)
         k = self.k_norm(k)
+        q, k = self.rotary_emb(q, k)
 
         out = self.attn(q, k, v, attn_mask=attn_mask)
         out = rearrange(out, "b h n d -> b n (h d)")
@@ -296,12 +296,12 @@ class JointAttention(nn.Module):
         q_a, k_a, v_a = self.to_qkv_a(a).chunk(3, dim=-1)
         q_a, k_a, v_a = (rearrange(t, "b n (h d) -> b h n d", h=self.heads) for t in (q_a, k_a, v_a))
 
+        q_x, k_x = self.q_norm_x(q_x), self.k_norm_x(k_x)
+        q_a, k_a = self.q_norm_a(q_a), self.k_norm_a(k_a)
+
         if self.rotary_emb is not None:
             q_x, k_x = self.rotary_emb(q_x, k_x)
             q_a, k_a = self.rotary_emb(q_a, k_a)
-
-        q_x, k_x = self.q_norm_x(q_x), self.k_norm_x(k_x)
-        q_a, k_a = self.q_norm_a(q_a), self.k_norm_a(k_a)
 
         q, seq_shape = pack([q_a, q_x], "b h * d")
         k, _ = pack([k_a, k_x], "b h * d")

@@ -8,6 +8,8 @@ from einops.layers.torch import Rearrange
 from torch.nn import functional as F
 from torch.profiler import record_function
 
+from osu_fusion.data.const import AUDIO_DIM, NUM_CONTINUOUS_CONDS, NUM_ERAS
+from osu_fusion.data.encode import SEQ_DIM
 from osu_fusion.modules.attention import Attention, JointAttention, RotaryPositionEmbedding
 from osu_fusion.modules.positional_embeddings import SinusoidalPositionEmbedding
 from osu_fusion.modules.triton_kernels import fused_gated_residual, fused_modulate
@@ -175,7 +177,7 @@ class MMDiTBlock(nn.Module):
                 c,
                 mask_x,
                 mask_a,
-                use_reentrant=True,
+                use_reentrant=False,
             )
         return self.forward_body(x, a, c, mask_x=mask_x, mask_a=mask_a)
 
@@ -243,7 +245,7 @@ class DiTBlock(nn.Module):
                 x,
                 c,
                 attn_mask,
-                use_reentrant=True,
+                use_reentrant=False,
             )
         return self.forward_body(x, c, attn_mask=attn_mask)
 
@@ -251,12 +253,10 @@ class DiTBlock(nn.Module):
 class DiT(nn.Module):
     def __init__(
         self: "DiT",
-        dim_in_x: int,
-        dim_in_a: int,
-        dim_in_c: int,
         dim_h: int = 384,
         dim_h_mult: int = 6,
         dim_t: int = 256,
+        dim_cond_fourier: int = 32,
         beatmap_patch_size: int = 4,
         audio_patch_size: int = 4,
         mmdit_depth: int = 9,
@@ -264,18 +264,14 @@ class DiT(nn.Module):
         attn_dim_head: int = 64,
         attn_heads: int = 6,
         attn_context_len: int = 8192,
-        # num_descriptors: int = 0,
-        # num_mappers: int = 0,
     ) -> None:
         super().__init__()
         self.attn_heads = attn_heads
         self.audio_patch_size = audio_patch_size
         self.beatmap_patch_size = beatmap_patch_size
-        # self.num_descriptors = num_descriptors
-        # self.num_mappers = num_mappers
 
-        self.x_embed = BeatmapPatchEmbedding(dim_in_x, dim_h, beatmap_patch_size)
-        self.a_patch = AudioPatchEmbedding(dim_in_a, dim_h, audio_patch_size)
+        self.x_embed = BeatmapPatchEmbedding(SEQ_DIM, dim_h, beatmap_patch_size)
+        self.a_patch = AudioPatchEmbedding(AUDIO_DIM, dim_h, audio_patch_size)
 
         self.time_mlp = nn.Sequential(
             SinusoidalPositionEmbedding(dim_t),
@@ -283,34 +279,20 @@ class DiT(nn.Module):
             nn.SiLU(),
             nn.Linear(dim_h, dim_h),
         )
-        self.cond_mlp = nn.Sequential(
-            nn.Linear(dim_in_c, dim_h),
-            nn.SiLU(),
-            nn.Linear(dim_h, dim_h),
+
+        self.cond_fourier_embed = SinusoidalPositionEmbedding(dim_cond_fourier)
+        self.cond_mlps = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Linear(dim_cond_fourier, dim_h),
+                    nn.SiLU(),
+                    nn.Linear(dim_h, dim_h),
+                )
+                for _ in range(NUM_CONTINUOUS_CONDS)
+            ],
         )
+        self.era_embed = nn.Embedding(NUM_ERAS + 1, dim_h)
         self.null_cond = nn.Parameter(torch.randn(dim_h))
-
-        # if num_descriptors > 0:
-        #     self.descriptor_proj = nn.Sequential(
-        #         nn.Linear(num_descriptors, dim_h),
-        #         nn.SiLU(),
-        #         nn.Linear(dim_h, dim_h),
-        #     )
-        #     self.null_descriptor = nn.Parameter(torch.randn(dim_h))
-        # else:
-        #     self.descriptor_proj = None
-        #     self.null_descriptor = None
-
-        # if num_mappers > 0:
-        #     self.mapper_proj = nn.Sequential(
-        #         nn.Linear(num_mappers + 1, dim_h),  # +1 for unknown
-        #         nn.SiLU(),
-        #         nn.Linear(dim_h, dim_h),
-        #     )
-        #     self.null_mapper = nn.Parameter(torch.randn(dim_h))
-        # else:
-        #     self.mapper_proj = None
-        #     self.null_mapper = None
 
         self.shared_rotary_emb = RotaryPositionEmbedding(attn_dim_head, scale_base=attn_context_len)
         self.mmdit_blocks = nn.ModuleList(
@@ -340,7 +322,7 @@ class DiT(nn.Module):
             ],
         )
 
-        self.final = FinalUnpatchLayer(dim_h, dim_in_x, beatmap_patch_size)
+        self.final = FinalUnpatchLayer(dim_h, SEQ_DIM, beatmap_patch_size)
 
         self.initialize_weights()
 
@@ -355,15 +337,12 @@ class DiT(nn.Module):
 
         nn.init.normal_(self.time_mlp[1].weight, std=0.02)
         nn.init.normal_(self.time_mlp[3].weight, std=0.02)
-        nn.init.normal_(self.cond_mlp[0].weight, std=0.02)
-        nn.init.normal_(self.cond_mlp[2].weight, std=0.02)
 
-        # if self.descriptor_proj is not None:
-        #     nn.init.normal_(self.descriptor_proj[0].weight, std=0.02)
-        #     nn.init.normal_(self.descriptor_proj[2].weight, std=0.02)
-        # if self.mapper_proj is not None:
-        #     nn.init.normal_(self.mapper_proj[0].weight, std=0.02)
-        #     nn.init.normal_(self.mapper_proj[2].weight, std=0.02)
+        for cond_mlp in self.cond_mlps:
+            nn.init.normal_(cond_mlp[0].weight, std=0.02)
+            nn.init.normal_(cond_mlp[2].weight, std=0.02)
+
+        nn.init.normal_(self.era_embed.weight, std=0.02)
 
         for block in self.mmdit_blocks:
             nn.init.zeros_(block.modulation_x[1].weight)
@@ -477,30 +456,20 @@ class DiT(nn.Module):
         cond_mask = prob_mask_like((b,), 1.0 - cond_drop_prob, device=c.device)
         cond_mask = rearrange(cond_mask, "b -> b 1")
 
-        # Base conditioning (CS, AR, OD, HP, SR, SV, STR, era)
+        # Fourier features for continuous values (CS, AR, OD, HP, SR, SV, STR)
+        c_global = torch.zeros(b, self.null_cond.shape[0], device=c.device, dtype=c.dtype)
+        for i, cond_mlp in enumerate(self.cond_mlps):
+            fourier_feat = self.cond_fourier_embed(c[:, i])  # (B, dim_cond_fourier)
+            c_global = c_global + cond_mlp(fourier_feat)  # (B, dim_h)
+
+        # Embedding for discrete era value
+        era_raw = c[:, NUM_CONTINUOUS_CONDS].long()
+        era_idx = torch.where(era_raw >= 0, era_raw, torch.full_like(era_raw, NUM_ERAS))
+        c_global = c_global + self.era_embed(era_idx)
+
+        # Apply CFG mask
         null_conds = repeat(self.null_cond, "d -> b d", b=b)
-        c_global = self.cond_mlp(c)
         c_global = torch.where(cond_mask, c_global, null_conds)
-
-        # if self.descriptor_proj is not None:
-        #     null_desc = repeat(self.null_descriptor, "d -> b d", b=b)
-        #     if descriptors is not None:
-        #         desc_mask = prob_mask_like((b,), 1.0 - cond_drop_prob, device=c.device)
-        #         desc_mask = rearrange(desc_mask, "b -> b 1")
-        #         desc_emb = self.descriptor_proj(descriptors)
-        #         c_global = c_global + torch.where(desc_mask, desc_emb, null_desc)
-        #     else:
-        #         c_global = c_global + null_desc
-
-        # if self.mapper_proj is not None:
-        #     null_map = repeat(self.null_mapper, "d -> b d", b=b)
-        #     if mappers is not None:
-        #         mapper_mask = prob_mask_like((b,), 1.0 - cond_drop_prob, device=c.device)
-        #         mapper_mask = rearrange(mapper_mask, "b -> b 1")
-        #         map_emb = self.mapper_proj(mappers)
-        #         c_global = c_global + torch.where(mapper_mask, map_emb, null_map)
-        #     else:
-        #         c_global = c_global + null_map
 
         # Add timestep
         c_global = c_global + self.time_mlp(t)
