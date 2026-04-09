@@ -1,8 +1,7 @@
-import json
 import tempfile
 from dataclasses import asdict
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Tuple
 from zipfile import ZipFile
 
 import gradio as gr
@@ -16,7 +15,8 @@ from sanitize_filename import sanitize
 
 from osu_fusion.data.const import ERA_LABELS
 from osu_fusion.data.decode import Metadata, decode_sequence
-from osu_fusion.data.descriptors import DESCRIPTOR_ANCESTORS, DESCRIPTOR_NAME_TO_IDX, DESCRIPTOR_TAGS, NUM_DESCRIPTORS
+
+# from osu_fusion.data.descriptors import DESCRIPTOR_ANCESTORS, DESCRIPTOR_NAME_TO_IDX, DESCRIPTOR_TAGS, NUM_DESCRIPTORS
 from osu_fusion.data.prepare_data import load_audio
 from osu_fusion.models.diffusion_dit import (
     DiTConfig_L,
@@ -37,14 +37,14 @@ VERSION_TEMPLATE = "{version_name} - batch {batch_number}_{batch_size}"
 
 global_model = None
 global_accelerator = None
-global_num_mappers = 0
-global_mapper_index = {}  # {user_id_str: index}
+# global_num_mappers = 0
+# global_mapper_index = {}  # {user_id_str: index}
 global_temp_dir = tempfile.TemporaryDirectory()
 
 
-def create_model_from_checkpoint(model_path: str, model_size: str, num_mappers: int = 0) -> OsuFusionDiT:
+def create_model_from_checkpoint(model_path: str, model_size: str) -> OsuFusionDiT:
     config = MODEL_CONFIGS[model_size]
-    config.num_mappers = num_mappers
+    # config.num_mappers = num_mappers
     model = OsuFusionDiT(**asdict(config))
 
     if model_path.endswith(".pt"):
@@ -57,20 +57,20 @@ def create_model_from_checkpoint(model_path: str, model_size: str, num_mappers: 
     return model.eval()
 
 
-def load_model(model_path: str, model_size: str, mixed_precision: str, mapper_index_path: str) -> str:
-    global global_model, global_accelerator, global_num_mappers, global_mapper_index
+def load_model(model_path: str, model_size: str, mixed_precision: str) -> str:
+    global global_model, global_accelerator
+    # global global_num_mappers, global_mapper_index
 
-    # Load mapper index if available
-    global_num_mappers = 0
-    global_mapper_index = {}
-    if mapper_index_path and Path(mapper_index_path).exists():
-        with open(mapper_index_path, "r") as f:
-            global_mapper_index = json.load(f)
-        global_num_mappers = max(int(v) for v in global_mapper_index.values()) + 1
-        print(f"Loaded mapper index: {global_num_mappers} mappers")
+    # global_num_mappers = 0
+    # global_mapper_index = {}
+    # if mapper_index_path and Path(mapper_index_path).exists():
+    #     with open(mapper_index_path, "r") as f:
+    #         global_mapper_index = json.load(f)
+    #     global_num_mappers = max(int(v) for v in global_mapper_index.values()) + 1
+    #     print(f"Loaded mapper index: {global_num_mappers} mappers")
 
     global_accelerator = Accelerator(mixed_precision=mixed_precision)
-    global_model = create_model_from_checkpoint(model_path, model_size, global_num_mappers)
+    global_model = create_model_from_checkpoint(model_path, model_size)
     global_model = global_accelerator.prepare(global_model)
 
     model_dtype = {
@@ -79,47 +79,47 @@ def load_model(model_path: str, model_size: str, mixed_precision: str, mapper_in
     }.get(global_accelerator.mixed_precision, torch.float32)
     global_model = global_model.to(dtype=model_dtype)
 
-    return f"Model loaded! ({global_num_mappers} mappers)"
+    return "Model loaded!"
 
 
-def expand_with_ancestors(selected_tags: list) -> list:
-    expanded = set(selected_tags)
-    for tag in selected_tags:
-        tag = tag.strip()
-        if tag in DESCRIPTOR_NAME_TO_IDX:
-            idx = DESCRIPTOR_NAME_TO_IDX[tag]
-            for ancestor_idx in DESCRIPTOR_ANCESTORS.get(idx, [idx]):
-                expanded.add(DESCRIPTOR_TAGS[ancestor_idx])
-    return [t for t in DESCRIPTOR_TAGS if t in expanded]
+# def expand_with_ancestors(selected_tags: list) -> list:
+#     expanded = set(selected_tags)
+#     for tag in selected_tags:
+#         tag = tag.strip()
+#         if tag in DESCRIPTOR_NAME_TO_IDX:
+#             idx = DESCRIPTOR_NAME_TO_IDX[tag]
+#             for ancestor_idx in DESCRIPTOR_ANCESTORS.get(idx, [idx]):
+#                 expanded.add(DESCRIPTOR_TAGS[ancestor_idx])
+#     return [t for t in DESCRIPTOR_TAGS if t in expanded]
 
 
-def build_descriptor_vector(selected_tags: list) -> Optional[torch.Tensor]:
-    if not selected_tags:
-        return None
-    vec = torch.zeros(NUM_DESCRIPTORS, dtype=torch.float32)
-    has_any = False
-    for tag in selected_tags:
-        tag = tag.strip()
-        if tag in DESCRIPTOR_NAME_TO_IDX:
-            vec[DESCRIPTOR_NAME_TO_IDX[tag]] = 1.0
-            has_any = True
-    return vec if has_any else None
+# def build_descriptor_vector(selected_tags: list) -> Optional[torch.Tensor]:
+#     if not selected_tags:
+#         return None
+#     vec = torch.zeros(NUM_DESCRIPTORS, dtype=torch.float32)
+#     has_any = False
+#     for tag in selected_tags:
+#         tag = tag.strip()
+#         if tag in DESCRIPTOR_NAME_TO_IDX:
+#             vec[DESCRIPTOR_NAME_TO_IDX[tag]] = 1.0
+#             has_any = True
+#     return vec if has_any else None
 
 
-def build_mapper_vector(mapper_id_str: str) -> Optional[torch.Tensor]:
-    if not mapper_id_str.strip() or global_num_mappers == 0:
-        return None
-    vec = torch.zeros(global_num_mappers + 1, dtype=torch.float32)
-    has_any = False
-    for uid_str in mapper_id_str.split(","):
-        uid_str = uid_str.strip()
-        if uid_str in global_mapper_index:
-            vec[int(global_mapper_index[uid_str])] = 1.0
-            has_any = True
-        else:
-            vec[global_num_mappers] = 1.0  # unknown
-            has_any = True
-    return vec if has_any else None
+# def build_mapper_vector(mapper_id_str: str) -> Optional[torch.Tensor]:
+#     if not mapper_id_str.strip() or global_num_mappers == 0:
+#         return None
+#     vec = torch.zeros(global_num_mappers + 1, dtype=torch.float32)
+#     has_any = False
+#     for uid_str in mapper_id_str.split(","):
+#         uid_str = uid_str.strip()
+#         if uid_str in global_mapper_index:
+#             vec[int(global_mapper_index[uid_str])] = 1.0
+#             has_any = True
+#         else:
+#             vec[global_num_mappers] = 1.0  # unknown
+#             has_any = True
+#     return vec if has_any else None
 
 
 def generate_beatmap(
@@ -132,8 +132,8 @@ def generate_beatmap(
     slider_multiplier: float,
     slider_tick_rate: float,
     era: str,
-    selected_descriptors: list,
-    mapper_ids: str,
+    # selected_descriptors: list,
+    # mapper_ids: str,
     music_artists: str,
     music_title: str,
     version_name: str,
@@ -162,28 +162,27 @@ def generate_beatmap(
     a_tensor = torch.from_numpy(a).unsqueeze(0).to(device, dtype)
     c_tensor = torch.from_numpy(context).unsqueeze(0).to(device, dtype)
 
-    # Build conditioning vectors (None = unconditional → model uses null embeddings)
-    desc_vec = build_descriptor_vector(selected_descriptors)
-    desc_tensor = desc_vec.unsqueeze(0).to(device, dtype) if desc_vec is not None else None
+    # desc_vec = build_descriptor_vector(selected_descriptors)
+    # desc_tensor = desc_vec.unsqueeze(0).to(device, dtype) if desc_vec is not None else None
 
-    mapper_vec = build_mapper_vector(mapper_ids)
-    mapper_tensor = mapper_vec.unsqueeze(0).to(device, dtype) if mapper_vec is not None else None
+    # mapper_vec = build_mapper_vector(mapper_ids)
+    # mapper_tensor = mapper_vec.unsqueeze(0).to(device, dtype) if mapper_vec is not None else None
 
     # Batch
     a_tensor = repeat(a_tensor, "1 n d -> b n d", b=batch_size)
     c_tensor = repeat(c_tensor, "1 c -> b c", b=batch_size)
-    if desc_tensor is not None:
-        desc_tensor = repeat(desc_tensor, "1 d -> b d", b=batch_size)
-    if mapper_tensor is not None:
-        mapper_tensor = repeat(mapper_tensor, "1 d -> b d", b=batch_size)
+    # if desc_tensor is not None:
+    #     desc_tensor = repeat(desc_tensor, "1 d -> b d", b=batch_size)
+    # if mapper_tensor is not None:
+    #     mapper_tensor = repeat(mapper_tensor, "1 d -> b d", b=batch_size)
 
     # Generate
     with torch.inference_mode(), global_accelerator.autocast():
         generated = global_model.sample(
             a_tensor,
             c_tensor,
-            descriptors=desc_tensor,
-            mappers=mapper_tensor,
+            # descriptors=desc_tensor,
+            # mappers=mapper_tensor,
             cond_scale=cfg,
         )
 
@@ -231,14 +230,14 @@ def gradio_interface() -> Blocks:
             model_path = gr.Textbox(label="Model Path")
             model_size = gr.Dropdown(["s", "m", "l"], value="s", label="Model Size")
             mixed_precision = gr.Dropdown(["no", "fp16", "bf16"], value="bf16", label="Mixed Precision")
-            mapper_index_path = gr.Textbox(label="Mapper Index JSON (optional)", value="")
+            # mapper_index_path = gr.Textbox(label="Mapper Index JSON (optional)", value="")
 
         load_button = gr.Button("Load Model")
         load_output = gr.Textbox(label="Load Status")
 
         load_button.click(
             load_model,
-            inputs=[model_path, model_size, mixed_precision, mapper_index_path],
+            inputs=[model_path, model_size, mixed_precision],
             outputs=load_output,
         )
 
@@ -262,25 +261,25 @@ def gradio_interface() -> Blocks:
                 info="classic (≤2012), transitional (2013-2016), modern (2017-2020), current (2021+)",
             )
 
-        with gr.Row():
-            selected_descriptors = gr.CheckboxGroup(
-                choices=DESCRIPTOR_TAGS,
-                label="Style Descriptors",
-                info="Select mapping style tags (ancestors are auto-selected)",
-            )
+        # with gr.Row():
+        #     selected_descriptors = gr.CheckboxGroup(
+        #         choices=DESCRIPTOR_TAGS,
+        #         label="Style Descriptors",
+        #         info="Select mapping style tags (ancestors are auto-selected)",
+        #     )
 
-        selected_descriptors.change(
-            fn=expand_with_ancestors,
-            inputs=[selected_descriptors],
-            outputs=[selected_descriptors],
-        )
-        with gr.Row():
-            mapper_ids = gr.Textbox(
-                label="Mapper User IDs (comma-separated)",
-                value="",
-                placeholder="e.g., 4452992,896613",
-                info="Enter osu! user IDs for mapper style conditioning",
-            )
+        # selected_descriptors.change(
+        #     fn=expand_with_ancestors,
+        #     inputs=[selected_descriptors],
+        #     outputs=[selected_descriptors],
+        # )
+        # with gr.Row():
+        #     mapper_ids = gr.Textbox(
+        #         label="Mapper User IDs (comma-separated)",
+        #         value="",
+        #         placeholder="e.g., 4452992,896613",
+        #         info="Enter osu! user IDs for mapper style conditioning",
+        #     )
 
         with gr.Row():
             music_artists = gr.Textbox(label="Artist", value="Unknown Artists")
@@ -308,8 +307,8 @@ def gradio_interface() -> Blocks:
                 slider_multiplier,
                 slider_tick_rate,
                 era,
-                selected_descriptors,
-                mapper_ids,
+                # selected_descriptors,
+                # mapper_ids,
                 music_artists,
                 music_title,
                 version_name,
