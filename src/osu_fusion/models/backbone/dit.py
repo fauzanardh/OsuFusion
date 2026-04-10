@@ -264,6 +264,8 @@ class DiT(nn.Module):
         attn_context_len: int = 8192,
         num_descriptors: int = 0,
         num_mappers: int = 0,
+        descriptor_drop_prob: float = 0.2,
+        mapper_drop_prob: float = 0.1,
     ) -> None:
         super().__init__()
         self.attn_heads = attn_heads
@@ -272,6 +274,8 @@ class DiT(nn.Module):
         self.num_descriptors = num_descriptors
         self.num_mappers = num_mappers
         self.dim_cond_fourier = dim_cond_fourier
+        self.descriptor_drop_prob = descriptor_drop_prob
+        self.mapper_drop_prob = mapper_drop_prob
 
         self.x_embed = BeatmapPatchEmbedding(SEQ_DIM, dim_h, beatmap_patch_size)
         self.a_patch = AudioPatchEmbedding(AUDIO_DIM, dim_h, audio_patch_size)
@@ -424,7 +428,7 @@ class DiT(nn.Module):
         attn_bias = attn_bias.masked_fill(~mask, float("-inf"))
         return attn_bias[:, None, None, :]
 
-    def forward(
+    def forward(  # noqa: C901
         self: "DiT",
         x: torch.Tensor,
         a: torch.Tensor,
@@ -475,20 +479,28 @@ class DiT(nn.Module):
         era_feat = torch.where(era_mask.unsqueeze(-1), era_feat, torch.zeros_like(era_feat))
         cond_features.append(era_feat)
 
+        # Descriptor conditioning (multi-hot → linear projection)
         if self.descriptor_proj is not None:
-            desc_mask = prob_mask_like((b,), 1.0 - cond_drop_prob, device=c.device)
+            desc_cfg_mask = prob_mask_like((b,), 1.0 - cond_drop_prob, device=c.device)
             if descriptors is not None:
+                if self.descriptor_drop_prob > 0.0 and cond_drop_prob < 1.0:
+                    bit_keep = prob_mask_like(descriptors.shape, 1.0 - self.descriptor_drop_prob, device=c.device)
+                    descriptors = descriptors * bit_keep.float()
                 desc_feat = self.descriptor_proj(descriptors)  # (B, dim_cond_fourier)
-                desc_feat = torch.where(desc_mask.unsqueeze(-1), desc_feat, torch.zeros_like(desc_feat))
+                desc_feat = torch.where(desc_cfg_mask.unsqueeze(-1), desc_feat, torch.zeros_like(desc_feat))
             else:
                 desc_feat = torch.zeros(b, self.dim_cond_fourier, device=c.device, dtype=c.dtype)
             cond_features.append(desc_feat)
 
+        # Mapper conditioning (multi-hot → linear projection)
         if self.mapper_proj is not None:
-            mapper_mask = prob_mask_like((b,), 1.0 - cond_drop_prob, device=c.device)
+            mapper_cfg_mask = prob_mask_like((b,), 1.0 - cond_drop_prob, device=c.device)
             if mappers is not None:
+                if self.mapper_drop_prob > 0.0 and cond_drop_prob < 1.0:
+                    mapper_keep = prob_mask_like((b,), 1.0 - self.mapper_drop_prob, device=c.device)
+                    mappers = mappers * mapper_keep.unsqueeze(-1).float()
                 map_feat = self.mapper_proj(mappers)  # (B, dim_cond_fourier)
-                map_feat = torch.where(mapper_mask.unsqueeze(-1), map_feat, torch.zeros_like(map_feat))
+                map_feat = torch.where(mapper_cfg_mask.unsqueeze(-1), map_feat, torch.zeros_like(map_feat))
             else:
                 map_feat = torch.zeros(b, self.dim_cond_fourier, device=c.device, dtype=c.dtype)
             cond_features.append(map_feat)

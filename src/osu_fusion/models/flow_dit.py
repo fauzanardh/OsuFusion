@@ -32,6 +32,8 @@ class FlowDiTConfig:
     sampling_timesteps: int = 50
     num_descriptors: int = 0
     num_mappers: int = 0
+    descriptor_drop_prob: float = 0.2
+    mapper_drop_prob: float = 0.1
 
 
 FlowDiTConfig_S = FlowDiTConfig()
@@ -58,6 +60,8 @@ class OsuFusionFlowDiT(nn.Module):
         sampling_timesteps: int = 50,
         num_descriptors: int = 0,
         num_mappers: int = 0,
+        descriptor_drop_prob: float = 0.2,
+        mapper_drop_prob: float = 0.1,
         weighting_scheme: str = "logit_normal",
         logit_mean: float = 0.0,
         logit_std: float = 1.0,
@@ -79,6 +83,8 @@ class OsuFusionFlowDiT(nn.Module):
             attn_context_len=attn_context_len,
             num_descriptors=num_descriptors,
             num_mappers=num_mappers,
+            descriptor_drop_prob=descriptor_drop_prob,
+            mapper_drop_prob=mapper_drop_prob,
         )
 
         self.sampling_scheduler = FlowMatchEulerDiscreteScheduler(

@@ -31,6 +31,8 @@ class DiTConfig:
     min_snr_gamma: float = 5.0
     num_descriptors: int = 0
     num_mappers: int = 0
+    descriptor_drop_prob: float = 0.2
+    mapper_drop_prob: float = 0.1
 
 
 DiTConfig_S = DiTConfig()
@@ -58,6 +60,8 @@ class OsuFusionDiT(nn.Module):
         min_snr_gamma: float = 5.0,
         num_descriptors: int = 0,
         num_mappers: int = 0,
+        descriptor_drop_prob: float = 0.2,
+        mapper_drop_prob: float = 0.1,
     ) -> None:
         super().__init__()
 
@@ -75,6 +79,8 @@ class OsuFusionDiT(nn.Module):
             attn_context_len=attn_context_len,
             num_descriptors=num_descriptors,
             num_mappers=num_mappers,
+            descriptor_drop_prob=descriptor_drop_prob,
+            mapper_drop_prob=mapper_drop_prob,
         )
 
         self.train_scheduler = DDPMScheduler(

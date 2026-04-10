@@ -2,7 +2,7 @@ import json
 import math
 import random
 from pathlib import Path
-from typing import Iterator, List, NamedTuple, Optional, Tuple
+from typing import Dict, Iterator, List, NamedTuple, Optional, Tuple
 
 import h5py
 import numpy as np
@@ -123,6 +123,8 @@ def build_metadata_cache(dataset_dir: Path, cache_path: Path) -> None:
                 has_descriptors = "descriptor_indices" in f
                 has_mappers = "mapper_indices" in f
 
+                descriptor_indices = f["descriptor_indices"][:].astype(int).tolist() if has_descriptors else []
+
             entries.append(
                 {
                     "path": str(path.relative_to(dataset_dir)),
@@ -131,6 +133,7 @@ def build_metadata_cache(dataset_dir: Path, cache_path: Path) -> None:
                     "audio_exists": audio_exists,
                     "has_descriptors": has_descriptors,
                     "has_mappers": has_mappers,
+                    "descriptor_indices": descriptor_indices,
                 },
             )
         except Exception as e:
@@ -150,12 +153,13 @@ def filter_maps_cached(
     cache_path: Path,
     dataset_dir: Path,
     max_length: int = 0,
-) -> Tuple[List[Path], List[int]]:
+) -> Tuple[List[Path], List[int], List[List[int]]]:
     with open(cache_path) as fp:
         cache = json.load(fp)
 
     filtered: List[Path] = []
     lengths: List[int] = []
+    all_descriptor_indices: List[List[int]] = []
 
     for entry in cache["entries"]:
         x_len: int = entry["x_len"]
@@ -179,15 +183,38 @@ def filter_maps_cached(
 
         filtered.append(dataset_dir / entry["path"])
         lengths.append(x_len)
+        all_descriptor_indices.append(entry.get("descriptor_indices", []))
 
     print(f"Filtered dataset (from cache): {len(filtered)}/{len(cache['entries'])} maps")
-    return filtered, lengths
+    return filtered, lengths, all_descriptor_indices
 
 
 def count_num_mappers(dataset_path: Path) -> int:
     with open(dataset_path / "mapper_index.json", "r") as f:
         mapper_index = json.load(f)
     return max(int(v) for v in mapper_index.values()) + 1
+
+
+def compute_sample_weights(
+    all_descriptor_indices: List[List[int]],
+) -> List[float]:
+    idx_freq: Dict[int, int] = {}
+    for desc_idx in all_descriptor_indices:
+        for i in desc_idx:
+            idx_freq[int(i)] = idx_freq.get(int(i), 0) + 1
+
+    weights = []
+    for desc_idx in all_descriptor_indices:
+        if len(desc_idx) > 0:
+            freqs = [idx_freq.get(int(i), 1) for i in desc_idx]
+            min_freq = min(
+                freqs,
+            )  # Use minimum because we include ancestor descriptors too, which can be much more common
+            weights.append(1.0 / math.sqrt(max(min_freq, 1.0)))
+        else:
+            weights.append(1.0)
+
+    return weights
 
 
 class BucketBatchSampler(Sampler[List[int]]):
@@ -198,6 +225,7 @@ class BucketBatchSampler(Sampler[List[int]]):
         bucket_boundaries: Optional[List[int]] = None,
         drop_last: bool = False,
         seed: int = 0,
+        sample_weights: Optional[List[float]] = None,
     ) -> None:
         self.lengths = lengths
         self.batch_size = batch_size
@@ -205,6 +233,7 @@ class BucketBatchSampler(Sampler[List[int]]):
         self.drop_last = drop_last
         self.seed = seed
         self.epoch = 0
+        self.sample_weights = sample_weights
 
         self.buckets: List[List[int]] = [[] for _ in range(len(self.bucket_boundaries))]
         for idx, length in enumerate(lengths):
@@ -233,8 +262,12 @@ class BucketBatchSampler(Sampler[List[int]]):
             if len(bucket) == 0:
                 continue
 
-            indices = bucket.copy()
-            rng.shuffle(indices)
+            if self.sample_weights is not None:
+                bucket_weights = [self.sample_weights[idx] for idx in bucket]
+                indices = rng.choices(bucket, weights=bucket_weights, k=len(bucket))
+            else:
+                indices = bucket.copy()
+                rng.shuffle(indices)
 
             for i in range(0, len(indices), self.batch_size):
                 batch = indices[i : i + self.batch_size]

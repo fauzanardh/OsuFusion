@@ -23,6 +23,7 @@ from osu_fusion.data.dataset import (
     BeatmapDataset,
     BucketBatchSampler,
     beatmap_collate_fn,
+    compute_sample_weights,
     count_num_mappers,
     filter_maps,
     filter_maps_cached,
@@ -157,9 +158,14 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
 
     print("Loading dataset...")
     metadata_cache = args.dataset_dir / "metadata_cache.json"
+    all_descriptor_indices = []
     if metadata_cache.exists():
         print(f"Using metadata cache: {metadata_cache}")
-        all_maps, all_lengths = filter_maps_cached(metadata_cache, args.dataset_dir, max_length=args.max_length)
+        all_maps, all_lengths, all_descriptor_indices = filter_maps_cached(
+            metadata_cache,
+            args.dataset_dir,
+            max_length=args.max_length,
+        )
     else:
         print("No metadata cache found, scanning dataset (run build_dataset_metadata.py to speed this up)...")
         all_maps = list(args.dataset_dir.rglob("*.map.h5"))
@@ -167,6 +173,13 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
 
     num_mappers = count_num_mappers(args.dataset_dir)
     print(f"Number of mappers: {num_mappers}")
+
+    sample_weights = None
+    if args.use_weighted_sampling and len(all_descriptor_indices) > 0:
+        sample_weights = compute_sample_weights(all_descriptor_indices)
+        print(
+            f"Computed sqrt-frequency sample weights (min={min(sample_weights):.4f}, max={max(sample_weights):.4f})",
+        )
 
     config = MODEL_CONFIGS[args.model_size]
     config.num_mappers = num_mappers
@@ -185,6 +198,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         batch_size=args.batch_size,
         bucket_boundaries=args.bucket_boundaries,
         drop_last=True,
+        sample_weights=sample_weights,
     )
     dataloader = DataLoader(
         dataset,
@@ -225,7 +239,8 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     loss_history = []
     ema_loss = None
     ema_beta = 0.99
-    loss_spike_threshold = 50.0
+    loss_spike_multiplier = 50.0
+    loss_spike_threshold = 1.0
     num_spikes = 0
 
     with tqdm(
@@ -257,10 +272,14 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
                             f"skipping optimizer step. orig_lens={orig_lens.tolist()}",
                         )
                         is_spike = True
-                    elif ema_loss is not None and loss_val > loss_spike_threshold * ema_loss:
+                    elif (
+                        ema_loss is not None
+                        and loss_val > loss_spike_threshold
+                        and loss_val > loss_spike_multiplier * ema_loss
+                    ):
                         print(
                             f"[SPIKE] Step {current_step + 1}: loss {loss_val:.4f} exceeds "
-                            f"{loss_spike_threshold}x EMA ({ema_loss:.4f}), "
+                            f"{loss_spike_multiplier}x EMA ({ema_loss:.4f}), "
                             f"skipping optimizer step. orig_lens={orig_lens.tolist()}",
                         )
                         is_spike = True
@@ -376,6 +395,7 @@ def main() -> None:
     args.add_argument("--max-num-checkpoints", type=int, default=5, help="Maximum number of checkpoints to keep")
     args.add_argument("--sample-every", type=int, default=1_000, help="Sample and log every N steps")
     args.add_argument("--sample-audio", type=Path, default=None, help="Path to sample audio for visualization")
+    args.add_argument("--use-weighted-sampling", action="store_true", help="Enable sqrt-frequency weighted sampling")
     args = args.parse_args()
     train(args)
 
