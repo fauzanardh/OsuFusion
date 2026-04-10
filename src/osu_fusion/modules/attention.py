@@ -17,6 +17,7 @@ def rotate_half(x: torch.Tensor) -> torch.Tensor:
     return torch.cat((-x2, x1), dim=-1)
 
 
+@torch.amp.autocast("cuda", dtype=torch.float32)
 def apply_rotary_pos_emb(
     t: torch.Tensor,
     cos: torch.Tensor,
@@ -83,26 +84,26 @@ class RotaryPositionEmbedding(nn.Module):
         scale = torch.stack([scale, scale], dim=-1)
         return rearrange(scale, "... d r -> ... (d r)")
 
+    @torch.amp.autocast("cuda", dtype=torch.float32)
     def _get_cos_sin_scale(
         self: "RotaryPositionEmbedding",
         x: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         seq_len = x.shape[-2]
         device = x.device
-        dtype = x.dtype
 
         if seq_len > self._cached_seq_len or self._cached_device != device:
             t = torch.arange(seq_len, device=device, dtype=torch.float32)
             freqs = torch.einsum("i, j -> i j", t, self.inv_freq.to(torch.float32)) / self.interpolation_factor
             emb = torch.cat([freqs, freqs], dim=-1)
-            self._cached_cos = rearrange(emb.cos().to(dtype), "n d -> 1 1 n d")
-            self._cached_sin = rearrange(emb.sin().to(dtype), "n d -> 1 1 n d")
+            self._cached_cos = rearrange(emb.cos(), "n d -> 1 1 n d")
+            self._cached_sin = rearrange(emb.sin(), "n d -> 1 1 n d")
             self._cached_seq_len = seq_len
             self._cached_device = device
 
             scale = self._compute_scale(seq_len, device, torch.float32)
             if scale is not None:
-                scale = rearrange(scale.to(dtype), "n d -> 1 1 n d")
+                scale = rearrange(scale, "n d -> 1 1 n d")
             self._cached_scale = scale
 
         cos = self._cached_cos[:, :, :seq_len, :]
