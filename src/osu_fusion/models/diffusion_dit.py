@@ -74,12 +74,16 @@ class OsuFusionDiT(nn.Module):
         self.train_scheduler = DDPMScheduler(
             num_train_timesteps=train_timesteps,
             prediction_type="v_prediction",
+            beta_schedule="squaredcos_cap_v2",
+            rescale_betas_zero_snr=True,
         )
         self.sampling_scheduler = DPMSolverMultistepScheduler(
             num_train_timesteps=train_timesteps,
             prediction_type="v_prediction",
+            beta_schedule="squaredcos_cap_v2",
             algorithm_type="sde-dpmsolver++",
             thresholding=True,
+            rescale_betas_zero_snr=True,
         )
         self.train_timesteps = train_timesteps
         self.sampling_timesteps = sampling_timesteps

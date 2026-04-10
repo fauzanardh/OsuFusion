@@ -324,21 +324,13 @@ class DiT(nn.Module):
         self.initialize_weights()
 
     def initialize_weights(self: "DiT") -> None:
-        def _basic_init(module: nn.Module) -> None:
-            if isinstance(module, (nn.Linear, nn.Conv1d)):
-                nn.init.xavier_uniform_(module.weight)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
+        # def _basic_init(module: nn.Module) -> None:
+        #     if isinstance(module, (nn.Linear, nn.Conv1d)):
+        #         nn.init.xavier_uniform_(module.weight)
+        #         if module.bias is not None:
+        #             nn.init.zeros_(module.bias)
 
-        self.apply(_basic_init)
-
-        nn.init.normal_(self.time_mlp[1].weight, std=0.02)
-        nn.init.normal_(self.time_mlp[3].weight, std=0.02)
-
-        nn.init.normal_(self.cond_joint_mlp[0].weight, std=0.02)
-        nn.init.normal_(self.cond_joint_mlp[2].weight, std=0.02)
-
-        nn.init.normal_(self.era_embed.weight, std=0.02)
+        # self.apply(_basic_init)
 
         for block in self.mmdit_blocks:
             nn.init.zeros_(block.modulation_x[1].weight)
@@ -376,8 +368,6 @@ class DiT(nn.Module):
         a: torch.Tensor,
         t: torch.Tensor,
         c: torch.Tensor,
-        # descriptors: Optional[torch.Tensor] = None,
-        # mappers: Optional[torch.Tensor] = None,
         cond_scale: float = 1.0,
     ) -> torch.Tensor:
         logits = self.forward(x, a, t, c, cond_drop_prob=0.0)
@@ -418,8 +408,6 @@ class DiT(nn.Module):
         a: torch.Tensor,
         t: torch.Tensor,
         c: torch.Tensor,
-        # descriptors: Optional[torch.Tensor] = None,
-        # mappers: Optional[torch.Tensor] = None,
         cond_drop_prob: float = 0.0,
         orig_lens: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
@@ -463,11 +451,9 @@ class DiT(nn.Module):
         era_feat = torch.where(era_mask.unsqueeze(-1), era_feat, torch.zeros_like(era_feat))
         cond_features.append(era_feat)
 
-        # Concatenate all features → joint MLP learns cross-condition interactions
         all_features = torch.cat(cond_features, dim=-1)  # (B, (NUM_CONTINUOUS_CONDS + 1) * dim_cond_fourier)
         c_global = self.cond_joint_mlp(all_features)  # (B, dim_h)
 
-        # Add timestep
         c_global = c_global + self.time_mlp(t)
         c_global = c_global.unsqueeze(1)
 
