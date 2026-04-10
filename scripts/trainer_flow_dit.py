@@ -2,7 +2,7 @@ import time
 from argparse import ArgumentParser
 from dataclasses import asdict
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict
 
 import numpy as np
 import torch
@@ -13,39 +13,23 @@ from diffusers.optimization import get_cosine_schedule_with_warmup
 from matplotlib import pyplot as plt
 from PIL import Image
 from safetensors.torch import save_file
-from torch.nn import functional as F
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from trainer_utils import clear_checkpoints, get_total_norm, manage_checkpoints
 
 import wandb
-from osu_fusion.data.dataset import BeatmapDataset, BucketBatchSampler, filter_maps, filter_maps_cached
+from osu_fusion.data.dataset import (
+    BeatmapDataset,
+    BucketBatchSampler,
+    beatmap_collate_fn,
+    count_num_mappers,
+    filter_maps,
+    filter_maps_cached,
+)
 from osu_fusion.data.encode import SEQ_DIM
 from osu_fusion.data.prepare_data import load_audio
 from osu_fusion.models.flow_dit import FlowDiTConfig_L, FlowDiTConfig_M, FlowDiTConfig_S, OsuFusionFlowDiT
-
-
-def custom_collate_fn(
-    batch: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    orig_lens = torch.tensor([x.shape[0] for x, _, _ in batch], dtype=torch.int32)
-    max_len = max(x.shape[0] for x, _, _ in batch)
-
-    padded_x = []
-    padded_a = []
-    for x, a, _ in batch:
-        n_pad = max_len - x.shape[0]
-        if n_pad > 0:
-            x = F.pad(x, (0, 0, 0, n_pad), value=-1.0)
-            a = F.pad(a, (0, 0, 0, n_pad))
-        padded_x.append(x)
-        padded_a.append(a)
-
-    out_x = torch.stack(padded_x)
-    out_a = torch.stack(padded_a)
-    out_c = torch.stack([c for _, _, c in batch])
-    return out_x, out_a, out_c, orig_lens
 
 
 def visualize_and_log_sample(
@@ -181,11 +165,11 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         all_maps = list(args.dataset_dir.rglob("*.map.h5"))
         all_maps, all_lengths = filter_maps(all_maps, max_length=args.max_length)
 
+    num_mappers = count_num_mappers(args.dataset_dir)
+    print(f"Number of mappers: {num_mappers}")
+
     config = MODEL_CONFIGS[args.model_size]
-    config.weighting_scheme = args.weighting_scheme
-    config.logit_mean = args.logit_mean
-    config.logit_std = args.logit_std
-    config.mode_scale = args.mode_scale
+    config.num_mappers = num_mappers
 
     model = OsuFusionFlowDiT(**asdict(config))
     model.dit.set_gradient_checkpointing(args.gradient_checkpointing)
@@ -195,7 +179,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
     model.dit.compile_blocks()
     print("Model compiled, first forward pass will be slower due to compilation...")
 
-    dataset = BeatmapDataset(dataset=all_maps, lengths=all_lengths)
+    dataset = BeatmapDataset(dataset=all_maps, lengths=all_lengths, num_mappers=num_mappers)
     bucket_sampler = BucketBatchSampler(
         lengths=all_lengths,
         batch_size=args.batch_size,
@@ -209,7 +193,7 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
         prefetch_factor=4 if args.num_workers > 0 else None,
         persistent_workers=args.num_workers > 0,
         pin_memory=True,
-        collate_fn=custom_collate_fn,
+        collate_fn=beatmap_collate_fn,
     )
 
     steps_per_epoch = len(bucket_sampler)
@@ -253,11 +237,11 @@ def train(args: ArgumentParser) -> None:  # noqa: C901
             bucket_sampler.set_epoch(epoch)
 
             for batch in dataloader:
-                x, a, c, orig_lens = batch
+                x, a, c, desc, mapper, orig_lens = batch
 
                 with accelerator.autocast():
                     try:
-                        loss = model(x, a, c, orig_lens=orig_lens)
+                        loss = model(x, a, c, descriptors=desc, mappers=mapper, orig_lens=orig_lens)
                     except AssertionError:
                         print(f"AssertionError encountered at step {current_step + 1}, skipping batch.")
                         optimizer.zero_grad(set_to_none=True)
@@ -392,16 +376,6 @@ def main() -> None:
     args.add_argument("--max-num-checkpoints", type=int, default=5, help="Maximum number of checkpoints to keep")
     args.add_argument("--sample-every", type=int, default=1_000, help="Sample and log every N steps")
     args.add_argument("--sample-audio", type=Path, default=None, help="Path to sample audio for visualization")
-    args.add_argument(
-        "--weighting-scheme",
-        type=str,
-        default="logit_normal",
-        choices=["sigma_sqrt", "logit_normal", "mode", "cosmap"],
-        help="Timestep sampling / loss weighting scheme",
-    )
-    args.add_argument("--logit-mean", type=float, default=0.0, help="Mean for logit-normal weighting scheme")
-    args.add_argument("--logit-std", type=float, default=1.0, help="Std for logit-normal weighting scheme")
-    args.add_argument("--mode-scale", type=float, default=1.29, help="Scale for mode weighting scheme")
     args = args.parse_args()
     train(args)
 

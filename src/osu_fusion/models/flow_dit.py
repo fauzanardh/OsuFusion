@@ -30,6 +30,8 @@ class FlowDiTConfig:
     cond_drop_prob: float = 0.2
     train_timesteps: int = 1000
     sampling_timesteps: int = 50
+    num_descriptors: int = 0
+    num_mappers: int = 0
 
 
 FlowDiTConfig_S = FlowDiTConfig()
@@ -54,6 +56,8 @@ class OsuFusionFlowDiT(nn.Module):
         cond_drop_prob: float = 0.2,
         train_timesteps: int = 1000,
         sampling_timesteps: int = 50,
+        num_descriptors: int = 0,
+        num_mappers: int = 0,
         weighting_scheme: str = "logit_normal",
         logit_mean: float = 0.0,
         logit_std: float = 1.0,
@@ -73,6 +77,8 @@ class OsuFusionFlowDiT(nn.Module):
             attn_dim_head=attn_dim_head,
             attn_heads=attn_heads,
             attn_context_len=attn_context_len,
+            num_descriptors=num_descriptors,
+            num_mappers=num_mappers,
         )
 
         self.sampling_scheduler = FlowMatchEulerDiscreteScheduler(
@@ -102,6 +108,8 @@ class OsuFusionFlowDiT(nn.Module):
         self: "OsuFusionFlowDiT",
         a: torch.Tensor,
         c: torch.Tensor,
+        descriptors: Optional[torch.Tensor] = None,
+        mappers: Optional[torch.Tensor] = None,
         x: Optional[torch.Tensor] = None,
         cond_scale: float = 2.0,
     ) -> torch.Tensor:
@@ -118,6 +126,8 @@ class OsuFusionFlowDiT(nn.Module):
                 a,
                 t_batched,
                 c,
+                descriptors=descriptors,
+                mappers=mappers,
                 cond_scale=cond_scale,
             )
             x = self.sampling_scheduler.step(pred, t, x).prev_sample
@@ -129,6 +139,8 @@ class OsuFusionFlowDiT(nn.Module):
         x: torch.Tensor,
         a: torch.Tensor,
         c: torch.Tensor,
+        descriptors: Optional[torch.Tensor] = None,
+        mappers: Optional[torch.Tensor] = None,
         orig_lens: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         b = x.shape[0]
@@ -153,6 +165,8 @@ class OsuFusionFlowDiT(nn.Module):
             a,
             timesteps,
             c,
+            descriptors=descriptors,
+            mappers=mappers,
             cond_drop_prob=self.cond_drop_prob,
             orig_lens=orig_lens,
         )

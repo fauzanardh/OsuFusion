@@ -262,11 +262,16 @@ class DiT(nn.Module):
         attn_dim_head: int = 64,
         attn_heads: int = 6,
         attn_context_len: int = 8192,
+        num_descriptors: int = 0,
+        num_mappers: int = 0,
     ) -> None:
         super().__init__()
         self.attn_heads = attn_heads
         self.audio_patch_size = audio_patch_size
         self.beatmap_patch_size = beatmap_patch_size
+        self.num_descriptors = num_descriptors
+        self.num_mappers = num_mappers
+        self.dim_cond_fourier = dim_cond_fourier
 
         self.x_embed = BeatmapPatchEmbedding(SEQ_DIM, dim_h, beatmap_patch_size)
         self.a_patch = AudioPatchEmbedding(AUDIO_DIM, dim_h, audio_patch_size)
@@ -283,12 +288,27 @@ class DiT(nn.Module):
         )
         self.era_embed = nn.Embedding(NUM_ERAS + 1, dim_cond_fourier)
 
-        # Joint MLP: concatenated per-condition Fourier features + era embedding → dim_h
-        joint_input_dim = (NUM_CONTINUOUS_CONDS + 1) * dim_cond_fourier  # +1 for era
+        if num_descriptors > 0:
+            self.descriptor_proj = nn.Linear(num_descriptors, dim_cond_fourier)
+        else:
+            self.descriptor_proj = None
+
+        if num_mappers > 0:
+            self.mapper_proj = nn.Linear(num_mappers + 1, dim_cond_fourier)  # +1 for unknown
+        else:
+            self.mapper_proj = None
+
+        # Joint MLP: concatenated per-condition Fourier features + era + descriptors + mappers → dim_h
+        num_cond_slots = NUM_CONTINUOUS_CONDS + 1  # +1 for era
+        if num_descriptors > 0:
+            num_cond_slots += 1
+        if num_mappers > 0:
+            num_cond_slots += 1
+        joint_input_dim = num_cond_slots * dim_cond_fourier
         self.cond_joint_mlp = nn.Sequential(
-            nn.Linear(joint_input_dim, dim_h),
+            nn.Linear(joint_input_dim, dim_h * 2),
             nn.SiLU(),
-            nn.Linear(dim_h, dim_h),
+            nn.Linear(dim_h * 2, dim_h),
         )
 
         self.shared_rotary_emb = RotaryPositionEmbedding(attn_dim_head, scale_base=attn_context_len)
@@ -368,12 +388,14 @@ class DiT(nn.Module):
         a: torch.Tensor,
         t: torch.Tensor,
         c: torch.Tensor,
+        descriptors: Optional[torch.Tensor] = None,
+        mappers: Optional[torch.Tensor] = None,
         cond_scale: float = 1.0,
     ) -> torch.Tensor:
-        logits = self.forward(x, a, t, c, cond_drop_prob=0.0)
+        logits = self.forward(x, a, t, c, descriptors=descriptors, mappers=mappers, cond_drop_prob=0.0)
         if cond_scale == 1.0:
             return logits
-        null_logits = self.forward(x, a, t, c, cond_drop_prob=1.0)
+        null_logits = self.forward(x, a, t, c, descriptors=descriptors, mappers=mappers, cond_drop_prob=1.0)
         return null_logits + (logits - null_logits) * cond_scale
 
     def _build_patch_masks(
@@ -408,6 +430,8 @@ class DiT(nn.Module):
         a: torch.Tensor,
         t: torch.Tensor,
         c: torch.Tensor,
+        descriptors: Optional[torch.Tensor] = None,
+        mappers: Optional[torch.Tensor] = None,
         cond_drop_prob: float = 0.0,
         orig_lens: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
@@ -451,7 +475,25 @@ class DiT(nn.Module):
         era_feat = torch.where(era_mask.unsqueeze(-1), era_feat, torch.zeros_like(era_feat))
         cond_features.append(era_feat)
 
-        all_features = torch.cat(cond_features, dim=-1)  # (B, (NUM_CONTINUOUS_CONDS + 1) * dim_cond_fourier)
+        if self.descriptor_proj is not None:
+            desc_mask = prob_mask_like((b,), 1.0 - cond_drop_prob, device=c.device)
+            if descriptors is not None:
+                desc_feat = self.descriptor_proj(descriptors)  # (B, dim_cond_fourier)
+                desc_feat = torch.where(desc_mask.unsqueeze(-1), desc_feat, torch.zeros_like(desc_feat))
+            else:
+                desc_feat = torch.zeros(b, self.dim_cond_fourier, device=c.device, dtype=c.dtype)
+            cond_features.append(desc_feat)
+
+        if self.mapper_proj is not None:
+            mapper_mask = prob_mask_like((b,), 1.0 - cond_drop_prob, device=c.device)
+            if mappers is not None:
+                map_feat = self.mapper_proj(mappers)  # (B, dim_cond_fourier)
+                map_feat = torch.where(mapper_mask.unsqueeze(-1), map_feat, torch.zeros_like(map_feat))
+            else:
+                map_feat = torch.zeros(b, self.dim_cond_fourier, device=c.device, dtype=c.dtype)
+            cond_features.append(map_feat)
+
+        all_features = torch.cat(cond_features, dim=-1)  # (B, num_cond_slots * dim_cond_fourier)
         c_global = self.cond_joint_mlp(all_features)  # (B, dim_h)
 
         c_global = c_global + self.time_mlp(t)

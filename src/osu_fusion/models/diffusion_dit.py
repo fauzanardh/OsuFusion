@@ -29,6 +29,8 @@ class DiTConfig:
     train_timesteps: int = 1000
     sampling_timesteps: int = 35
     min_snr_gamma: float = 5.0
+    num_descriptors: int = 0
+    num_mappers: int = 0
 
 
 DiTConfig_S = DiTConfig()
@@ -54,6 +56,8 @@ class OsuFusionDiT(nn.Module):
         train_timesteps: int = 1000,
         sampling_timesteps: int = 35,
         min_snr_gamma: float = 5.0,
+        num_descriptors: int = 0,
+        num_mappers: int = 0,
     ) -> None:
         super().__init__()
 
@@ -69,6 +73,8 @@ class OsuFusionDiT(nn.Module):
             attn_dim_head=attn_dim_head,
             attn_heads=attn_heads,
             attn_context_len=attn_context_len,
+            num_descriptors=num_descriptors,
+            num_mappers=num_mappers,
         )
 
         self.train_scheduler = DDPMScheduler(
@@ -113,6 +119,8 @@ class OsuFusionDiT(nn.Module):
         self: "OsuFusionDiT",
         a: torch.Tensor,
         c: torch.Tensor,
+        descriptors: Optional[torch.Tensor] = None,
+        mappers: Optional[torch.Tensor] = None,
         x: Optional[torch.Tensor] = None,
         cond_scale: float = 2.0,
     ) -> torch.Tensor:
@@ -131,6 +139,8 @@ class OsuFusionDiT(nn.Module):
                 a,
                 t_batched,
                 c,
+                descriptors=descriptors,
+                mappers=mappers,
                 cond_scale=cond_scale,
             )
             x = self.sampling_scheduler.step(pred, t, x).prev_sample
@@ -142,6 +152,8 @@ class OsuFusionDiT(nn.Module):
         x: torch.Tensor,
         a: torch.Tensor,
         c: torch.Tensor,
+        descriptors: Optional[torch.Tensor] = None,
+        mappers: Optional[torch.Tensor] = None,
         orig_lens: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         noise = torch.randn_like(x, device=x.device)
@@ -159,6 +171,8 @@ class OsuFusionDiT(nn.Module):
             a,
             timesteps,
             c,
+            descriptors=descriptors,
+            mappers=mappers,
             cond_drop_prob=self.cond_drop_prob,
             orig_lens=orig_lens,
         )
