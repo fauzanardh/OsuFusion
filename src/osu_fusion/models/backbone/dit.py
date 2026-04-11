@@ -292,15 +292,24 @@ class DiT(nn.Module):
         )
         self.era_embed = nn.Embedding(NUM_ERAS + 1, dim_cond_fourier)
 
+        self.null_cond_embeds = nn.ParameterList(
+            [nn.Parameter(torch.randn(dim_cond_fourier)) for _ in range(NUM_CONTINUOUS_CONDS)],
+        )
+        self.null_era_embed = nn.Parameter(torch.randn(dim_cond_fourier))
+
         if num_descriptors > 0:
             self.descriptor_proj = nn.Linear(num_descriptors, dim_cond_fourier)
+            self.null_descriptor_embed = nn.Parameter(torch.randn(dim_cond_fourier))
         else:
             self.descriptor_proj = None
+            self.null_descriptor_embed = None
 
         if num_mappers > 0:
             self.mapper_proj = nn.Linear(num_mappers + 1, dim_cond_fourier)  # +1 for unknown
+            self.null_mapper_embed = nn.Parameter(torch.randn(dim_cond_fourier))
         else:
             self.mapper_proj = None
+            self.null_mapper_embed = None
 
         # Joint MLP: concatenated per-condition Fourier features + era + descriptors + mappers → dim_h
         num_cond_slots = NUM_CONTINUOUS_CONDS + 1  # +1 for era
@@ -469,40 +478,46 @@ class DiT(nn.Module):
         for i, cond_fourier in enumerate(self.cond_fourier_embeds):
             mask_i = prob_mask_like((b,), 1.0 - cond_drop_prob, device=c.device)
             feat = cond_fourier(c[:, i])  # (B, dim_cond_fourier)
-            feat = torch.where(mask_i.unsqueeze(-1), feat, torch.zeros_like(feat))
+            null_i = self.null_cond_embeds[i].unsqueeze(0).expand(b, -1)  # (B, dim_cond_fourier)
+            feat = torch.where(mask_i.unsqueeze(-1), feat, null_i)
             cond_features.append(feat)
 
         era_mask = prob_mask_like((b,), 1.0 - cond_drop_prob, device=c.device)
         era_raw = c[:, NUM_CONTINUOUS_CONDS].long()
         era_idx = torch.where(era_raw >= 0, era_raw, torch.full_like(era_raw, NUM_ERAS))
         era_feat = self.era_embed(era_idx)  # (B, dim_cond_fourier)
-        era_feat = torch.where(era_mask.unsqueeze(-1), era_feat, torch.zeros_like(era_feat))
+        null_era = self.null_era_embed.unsqueeze(0).expand(b, -1)
+        era_feat = torch.where(era_mask.unsqueeze(-1), era_feat, null_era)
         cond_features.append(era_feat)
 
         # Descriptor conditioning (multi-hot → linear projection)
         if self.descriptor_proj is not None:
             desc_cfg_mask = prob_mask_like((b,), 1.0 - cond_drop_prob, device=c.device)
             if descriptors is not None:
+                # Per-descriptor bit dropout (only during training, not during full CFG null pass)
                 if self.descriptor_drop_prob > 0.0 and cond_drop_prob < 1.0:
                     bit_keep = prob_mask_like(descriptors.shape, 1.0 - self.descriptor_drop_prob, device=c.device)
                     descriptors = descriptors * bit_keep.float()
                 desc_feat = self.descriptor_proj(descriptors)  # (B, dim_cond_fourier)
-                desc_feat = torch.where(desc_cfg_mask.unsqueeze(-1), desc_feat, torch.zeros_like(desc_feat))
+                null_desc = self.null_descriptor_embed.unsqueeze(0).expand(b, -1)
+                desc_feat = torch.where(desc_cfg_mask.unsqueeze(-1), desc_feat, null_desc)
             else:
-                desc_feat = torch.zeros(b, self.dim_cond_fourier, device=c.device, dtype=c.dtype)
+                desc_feat = self.null_descriptor_embed.unsqueeze(0).expand(b, -1)
             cond_features.append(desc_feat)
 
         # Mapper conditioning (multi-hot → linear projection)
         if self.mapper_proj is not None:
             mapper_cfg_mask = prob_mask_like((b,), 1.0 - cond_drop_prob, device=c.device)
             if mappers is not None:
+                # Full mapper dropout per sample (only during training, not during full CFG null pass)
                 if self.mapper_drop_prob > 0.0 and cond_drop_prob < 1.0:
                     mapper_keep = prob_mask_like((b,), 1.0 - self.mapper_drop_prob, device=c.device)
                     mappers = mappers * mapper_keep.unsqueeze(-1).float()
                 map_feat = self.mapper_proj(mappers)  # (B, dim_cond_fourier)
-                map_feat = torch.where(mapper_cfg_mask.unsqueeze(-1), map_feat, torch.zeros_like(map_feat))
+                null_map = self.null_mapper_embed.unsqueeze(0).expand(b, -1)
+                map_feat = torch.where(mapper_cfg_mask.unsqueeze(-1), map_feat, null_map)
             else:
-                map_feat = torch.zeros(b, self.dim_cond_fourier, device=c.device, dtype=c.dtype)
+                map_feat = self.null_mapper_embed.unsqueeze(0).expand(b, -1)
             cond_features.append(map_feat)
 
         all_features = torch.cat(cond_features, dim=-1)  # (B, num_cond_slots * dim_cond_fourier)
