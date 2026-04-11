@@ -143,7 +143,7 @@ def build_metadata_cache(dataset_dir: Path, cache_path: Path) -> None:
 
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     with open(cache_path, "w") as fp:
-        json.dump({"dataset_dir": str(dataset_dir), "entries": entries}, fp)
+        json.dump({"dataset_dir": str(dataset_dir), "entries": entries}, fp, indent=4)
 
     print(f"Metadata cache written to {cache_path}")
     print(f"  Total entries: {len(entries)}, skipped: {skipped}")

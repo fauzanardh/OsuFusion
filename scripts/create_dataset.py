@@ -70,7 +70,7 @@ def load_osu_data_json(path: Path, dataset_dir: Path) -> Tuple[Dict[int, List[in
 
     mapper_index_path = dataset_dir / "mapper_index.json"
     with mapper_index_path.open("w") as f:
-        json.dump({str(k): v for k, v in mapper_index.items()}, f)
+        json.dump({str(k): v for k, v in mapper_index.items()}, f, indent=4)
     print(f"Saved mapper index to {mapper_index_path}")
 
     user_lookup: Dict[int, List[int]] = {}
