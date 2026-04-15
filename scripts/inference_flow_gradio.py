@@ -39,6 +39,7 @@ global_model = None
 global_accelerator = None
 global_num_mappers = 0
 global_mapper_index = {}  # {user_id_str: index}
+global_mapper_choices = []  # ["username (user_id)", ...]
 global_temp_dir = tempfile.TemporaryDirectory()
 
 
@@ -57,17 +58,51 @@ def create_model_from_checkpoint(model_path: str, model_size: str, num_mappers: 
     return model.eval()
 
 
-def load_model(model_path: str, model_size: str, mixed_precision: str, mapper_index_path: str = "") -> str:
+def _build_uid_to_username(osu_data_path: str, valid_uids: set) -> dict:
+    """Build a {user_id_str: username} lookup from beatmap_osu_data.json, filtered to valid_uids."""
+    uid_to_name: dict = {}
+    if not osu_data_path or not Path(osu_data_path).exists():
+        return uid_to_name
+    with open(osu_data_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    for entry in data:
+        for uid, uname in zip(entry.get("user_id", []), entry.get("username", []), strict=True):
+            uid_str = str(uid)
+            if uid_str in valid_uids and uid_str not in uid_to_name:
+                uid_to_name[uid_str] = uname
+    return uid_to_name
+
+
+def load_model(
+    model_path: str,
+    model_size: str,
+    mixed_precision: str,
+    mapper_index_path: str = "",
+    osu_data_path: str = "",
+) -> Tuple[str, dict]:
     global global_model, global_accelerator
-    global global_num_mappers, global_mapper_index
+    global global_num_mappers, global_mapper_index, global_mapper_choices
 
     global_num_mappers = 0
     global_mapper_index = {}
+    global_mapper_choices = []
     if mapper_index_path and Path(mapper_index_path).exists():
         with open(mapper_index_path, "r") as f:
             global_mapper_index = json.load(f)
         global_num_mappers = max(int(v) for v in global_mapper_index.values()) + 1
         print(f"Loaded mapper index: {global_num_mappers} mappers")
+
+        # Build searchable choices: "username (user_id)" or "user_id" as fallback
+        uid_to_name = _build_uid_to_username(osu_data_path, set(global_mapper_index.keys()))
+        choices = []
+        for uid_str in sorted(global_mapper_index.keys(), key=lambda k: uid_to_name.get(k, k).lower()):
+            name = uid_to_name.get(uid_str)
+            if name:
+                choices.append(f"{name} ({uid_str})")
+            else:
+                choices.append(uid_str)
+        global_mapper_choices = choices
+        print(f"Built {len(choices)} mapper choices ({len(uid_to_name)} with usernames)")
 
     global_accelerator = Accelerator(mixed_precision=mixed_precision)
     global_model = create_model_from_checkpoint(model_path, model_size, global_num_mappers)
@@ -79,7 +114,7 @@ def load_model(model_path: str, model_size: str, mixed_precision: str, mapper_in
     }.get(global_accelerator.mixed_precision, torch.float32)
     global_model = global_model.to(dtype=model_dtype)
 
-    return "Model loaded!"
+    return "Model loaded!", gr.update(choices=global_mapper_choices, value=[])
 
 
 def expand_with_ancestors(selected_tags: list) -> list:
@@ -106,13 +141,20 @@ def build_descriptor_vector(selected_tags: list) -> Optional[torch.Tensor]:
     return vec if has_any else None
 
 
-def build_mapper_vector(mapper_id_str: str) -> Optional[torch.Tensor]:
-    if not mapper_id_str.strip() or global_num_mappers == 0:
+def _extract_uid_from_choice(choice: str) -> str:
+    choice = choice.strip()
+    if choice.endswith(")") and "(" in choice:
+        return choice.rsplit("(", 1)[1].rstrip(")")
+    return choice
+
+
+def build_mapper_vector(selected_mappers: list) -> Optional[torch.Tensor]:
+    if not selected_mappers or global_num_mappers == 0:
         return None
     vec = torch.zeros(global_num_mappers + 1, dtype=torch.float32)
     has_any = False
-    for uid_str in mapper_id_str.split(","):
-        uid_str = uid_str.strip()
+    for choice in selected_mappers:
+        uid_str = _extract_uid_from_choice(choice)
         if uid_str in global_mapper_index:
             vec[int(global_mapper_index[uid_str])] = 1.0
             has_any = True
@@ -133,7 +175,7 @@ def generate_beatmap(
     slider_tick_rate: float,
     era: str,
     selected_descriptors: list,
-    mapper_ids: str,
+    selected_mappers: list,
     music_artists: str,
     music_title: str,
     version_name: str,
@@ -165,7 +207,7 @@ def generate_beatmap(
     desc_vec = build_descriptor_vector(selected_descriptors)
     desc_tensor = desc_vec.unsqueeze(0).to(device, dtype) if desc_vec is not None else None
 
-    mapper_vec = build_mapper_vector(mapper_ids)
+    mapper_vec = build_mapper_vector(selected_mappers)
     mapper_tensor = mapper_vec.unsqueeze(0).to(device, dtype) if mapper_vec is not None else None
 
     # Batch
@@ -230,16 +272,16 @@ def gradio_interface() -> Blocks:
             model_path = gr.Textbox(label="Model Path")
             model_size = gr.Dropdown(["s", "m", "l"], value="s", label="Model Size")
             mixed_precision = gr.Dropdown(["no", "fp16", "bf16"], value="bf16", label="Mixed Precision")
+        with gr.Row():
             mapper_index_path = gr.Textbox(label="Mapper Index JSON (optional)", value="")
+            osu_data_path = gr.Textbox(
+                label="Osu Data JSON (optional)",
+                value="",
+                info="Path to beatmap_osu_data.json for mapper username lookup",
+            )
 
         load_button = gr.Button("Load Model")
         load_output = gr.Textbox(label="Load Status")
-
-        load_button.click(
-            load_model,
-            inputs=[model_path, model_size, mixed_precision, mapper_index_path],
-            outputs=load_output,
-        )
 
         with gr.Row():
             music_path = gr.File(label="Music File")
@@ -274,12 +316,20 @@ def gradio_interface() -> Blocks:
             outputs=[selected_descriptors],
         )
         with gr.Row():
-            mapper_ids = gr.Textbox(
-                label="Mapper User IDs (comma-separated)",
-                value="",
-                placeholder="e.g., 4452992,896613",
-                info="Enter osu! user IDs for mapper style conditioning",
+            selected_mappers = gr.Dropdown(
+                choices=[],
+                multiselect=True,
+                label="Mapper Style",
+                info="Search and select mappers for style conditioning (loaded after model load)",
+                filterable=True,
+                allow_custom_value=True,
             )
+
+        load_button.click(
+            load_model,
+            inputs=[model_path, model_size, mixed_precision, mapper_index_path, osu_data_path],
+            outputs=[load_output, selected_mappers],
+        )
 
         with gr.Row():
             music_artists = gr.Textbox(label="Artist", value="Unknown Artists")
@@ -308,7 +358,7 @@ def gradio_interface() -> Blocks:
                 slider_tick_rate,
                 era,
                 selected_descriptors,
-                mapper_ids,
+                selected_mappers,
                 music_artists,
                 music_title,
                 version_name,
