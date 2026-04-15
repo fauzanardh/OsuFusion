@@ -8,6 +8,7 @@ from einops import repeat
 from torch.nn import functional as F
 from tqdm.auto import tqdm
 
+from osu_fusion.data.descriptors import NUM_DESCRIPTORS
 from osu_fusion.data.encode import SEQ_DIM
 from osu_fusion.models.backbone.dit import DiT
 
@@ -29,10 +30,8 @@ class DiTConfig:
     train_timesteps: int = 1000
     sampling_timesteps: int = 35
     min_snr_gamma: float = 5.0
-    num_descriptors: int = 0
+    num_descriptors: int = NUM_DESCRIPTORS
     num_mappers: int = 0
-    descriptor_drop_prob: float = 0.2
-    mapper_drop_prob: float = 0.1
 
 
 DiTConfig_S = DiTConfig()
@@ -60,8 +59,6 @@ class OsuFusionDiT(nn.Module):
         min_snr_gamma: float = 5.0,
         num_descriptors: int = 0,
         num_mappers: int = 0,
-        descriptor_drop_prob: float = 0.2,
-        mapper_drop_prob: float = 0.1,
     ) -> None:
         super().__init__()
 
@@ -79,8 +76,6 @@ class OsuFusionDiT(nn.Module):
             attn_context_len=attn_context_len,
             num_descriptors=num_descriptors,
             num_mappers=num_mappers,
-            descriptor_drop_prob=descriptor_drop_prob,
-            mapper_drop_prob=mapper_drop_prob,
         )
 
         self.train_scheduler = DDPMScheduler(

@@ -264,8 +264,6 @@ class DiT(nn.Module):
         attn_context_len: int = 8192,
         num_descriptors: int = 0,
         num_mappers: int = 0,
-        descriptor_drop_prob: float = 0.2,
-        mapper_drop_prob: float = 0.1,
     ) -> None:
         super().__init__()
         self.attn_heads = attn_heads
@@ -274,8 +272,6 @@ class DiT(nn.Module):
         self.num_descriptors = num_descriptors
         self.num_mappers = num_mappers
         self.dim_cond_fourier = dim_cond_fourier
-        self.descriptor_drop_prob = descriptor_drop_prob
-        self.mapper_drop_prob = mapper_drop_prob
 
         self.x_embed = BeatmapPatchEmbedding(SEQ_DIM, dim_h, beatmap_patch_size)
         self.a_patch = AudioPatchEmbedding(AUDIO_DIM, dim_h, audio_patch_size)
@@ -437,7 +433,7 @@ class DiT(nn.Module):
         attn_bias = attn_bias.masked_fill(~mask, float("-inf"))
         return attn_bias[:, None, None, :]
 
-    def forward(  # noqa: C901
+    def forward(
         self: "DiT",
         x: torch.Tensor,
         a: torch.Tensor,
@@ -472,50 +468,42 @@ class DiT(nn.Module):
             )
             attn_mask_x = self._mask_to_attn_bias(mask_x, x.dtype)
 
-        # Global conditioning
+        # Global conditioning — sample-level all-or-nothing dropout for CFG alignment
         b = c.shape[0]
+        # Single mask per sample: when True the sample keeps all conditions, when False all go null
+        cond_keep_mask = prob_mask_like((b,), 1.0 - cond_drop_prob, device=c.device)  # (B,)
+        keep = cond_keep_mask.unsqueeze(-1)  # (B, 1) for broadcasting
+
         cond_features = []
         for i, cond_fourier in enumerate(self.cond_fourier_embeds):
-            mask_i = prob_mask_like((b,), 1.0 - cond_drop_prob, device=c.device)
             feat = cond_fourier(c[:, i])  # (B, dim_cond_fourier)
             null_i = self.null_cond_embeds[i].unsqueeze(0).expand(b, -1)  # (B, dim_cond_fourier)
-            feat = torch.where(mask_i.unsqueeze(-1), feat, null_i)
+            feat = torch.where(keep, feat, null_i)
             cond_features.append(feat)
 
-        era_mask = prob_mask_like((b,), 1.0 - cond_drop_prob, device=c.device)
         era_raw = c[:, NUM_CONTINUOUS_CONDS].long()
         era_idx = torch.where(era_raw >= 0, era_raw, torch.full_like(era_raw, NUM_ERAS))
         era_feat = self.era_embed(era_idx)  # (B, dim_cond_fourier)
         null_era = self.null_era_embed.unsqueeze(0).expand(b, -1)
-        era_feat = torch.where(era_mask.unsqueeze(-1), era_feat, null_era)
+        era_feat = torch.where(keep, era_feat, null_era)
         cond_features.append(era_feat)
 
         # Descriptor conditioning (multi-hot → linear projection)
         if self.descriptor_proj is not None:
-            desc_cfg_mask = prob_mask_like((b,), 1.0 - cond_drop_prob, device=c.device)
             if descriptors is not None:
-                # Per-descriptor bit dropout (only during training, not during full CFG null pass)
-                if self.descriptor_drop_prob > 0.0 and cond_drop_prob < 1.0:
-                    bit_keep = prob_mask_like(descriptors.shape, 1.0 - self.descriptor_drop_prob, device=c.device)
-                    descriptors = descriptors * bit_keep.float()
                 desc_feat = self.descriptor_proj(descriptors)  # (B, dim_cond_fourier)
                 null_desc = self.null_descriptor_embed.unsqueeze(0).expand(b, -1)
-                desc_feat = torch.where(desc_cfg_mask.unsqueeze(-1), desc_feat, null_desc)
+                desc_feat = torch.where(keep, desc_feat, null_desc)
             else:
                 desc_feat = self.null_descriptor_embed.unsqueeze(0).expand(b, -1)
             cond_features.append(desc_feat)
 
         # Mapper conditioning (multi-hot → linear projection)
         if self.mapper_proj is not None:
-            mapper_cfg_mask = prob_mask_like((b,), 1.0 - cond_drop_prob, device=c.device)
             if mappers is not None:
-                # Full mapper dropout per sample (only during training, not during full CFG null pass)
-                if self.mapper_drop_prob > 0.0 and cond_drop_prob < 1.0:
-                    mapper_keep = prob_mask_like((b,), 1.0 - self.mapper_drop_prob, device=c.device)
-                    mappers = mappers * mapper_keep.unsqueeze(-1).float()
                 map_feat = self.mapper_proj(mappers)  # (B, dim_cond_fourier)
                 null_map = self.null_mapper_embed.unsqueeze(0).expand(b, -1)
-                map_feat = torch.where(mapper_cfg_mask.unsqueeze(-1), map_feat, null_map)
+                map_feat = torch.where(keep, map_feat, null_map)
             else:
                 map_feat = self.null_mapper_embed.unsqueeze(0).expand(b, -1)
             cond_features.append(map_feat)
